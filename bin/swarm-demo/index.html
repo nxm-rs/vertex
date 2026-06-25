@@ -27,6 +27,12 @@
          registered on `window` before the wasm download path calls it. -->
     <script type="module" src="assets/download-sink.js"></script>
 
+    <!-- Random-access sink factory (File System Access picker + OPFS staging).
+         Writes carry a byte offset and may arrive out of order, so the
+         streaming download writes each leaf positionally the moment it decodes.
+         OPFS is the headless-driveable, read-back-verifiable path. -->
+    <script type="module" src="assets/random-access-sink.js"></script>
+
     <!-- wasm bootstrap (topology + Files panels mount into the scaffold below) -->
     <link data-trunk rel="rust" data-type="main" />
     <link data-trunk rel="css" href="styles.css" />

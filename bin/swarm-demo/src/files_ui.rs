@@ -7,7 +7,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Blob, Document, Event, HtmlInputElement};
 
 use crate::SwarmClient;
-use crate::client::DownloadSink;
+use crate::client::{DownloadSink, RandomAccessSink};
 
 #[wasm_bindgen]
 extern "C" {
@@ -24,6 +24,29 @@ extern "C" {
     /// the service-worker fallback will be used. Must be called before any await.
     #[wasm_bindgen(js_namespace = window, js_name = openSavePicker)]
     fn open_save_picker(filename: &str) -> bool;
+
+    /// Build a random-access download sink for `filename` (see
+    /// `random-access-sink.js`). On Chromium this consumes the save handle opened
+    /// in-gesture by [`open_random_access_picker`]; elsewhere it stages to OPFS.
+    #[wasm_bindgen(js_namespace = window, js_name = createRandomAccessSink, catch)]
+    async fn create_random_access_sink(filename: &str, size_hint: f64) -> Result<JsValue, JsValue>;
+
+    /// Open the File System Access save picker synchronously, in the click
+    /// gesture, stashing its handle for `create_random_access_sink`. Returns
+    /// `true` when a picker was opened; `false` when FSA is unavailable and OPFS
+    /// stages the file. Must be called before any await.
+    #[wasm_bindgen(js_namespace = window, js_name = openRandomAccessPicker)]
+    fn open_random_access_picker(filename: &str) -> bool;
+}
+
+/// Whether the page URL requests the streaming random-access download path
+/// (`?ra`, default off so the ordered path stays the A/B baseline).
+fn random_access_requested() -> bool {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+        .and_then(|p| p.get("ra"))
+        .is_some_and(|v| v != "0")
 }
 
 const FILES_ROOT_ID: &str = "files";
@@ -212,31 +235,30 @@ fn wire_download(client: SwarmClient) {
         // the picker would be rejected with a SecurityError. The async sink
         // factory consumes the stashed handle (and falls back if it failed).
         let filename = "swarm-download.bin";
+        // `?ra` selects the streaming random-access path; the default keeps the
+        // ordered path as the A/B baseline.
+        let random_access = random_access_requested();
         // Result is conveyed via the stashed save handle the factory consumes.
-        let _ = open_save_picker(filename);
+        let _ = if random_access {
+            open_random_access_picker(filename)
+        } else {
+            open_save_picker(filename)
+        };
         install_progress_hook();
 
         spawn_local(async move {
-            // The total is unknown until the joiner opens; pass NaN and let the
-            // sink switch from a bare byte count to a fraction via `setTotal`.
-            let sink_val = match create_download_sink(filename, f64::NAN).await {
-                Ok(v) => v,
-                Err(e) => {
-                    if is_abort_error(&e) {
-                        log_line("download: save cancelled");
-                    } else {
-                        log_line(&format!("download: could not start save: {e:?}"));
-                    }
-                    return;
-                }
-            };
-            let sink: DownloadSink = sink_val.unchecked_into();
-
             show_progress(true);
-            log_line(&format!("download {reference}…"));
-            match client.stream_to_sink(reference.clone(), sink).await {
+            let result = if random_access {
+                log_line(&format!("download (random-access) {reference}…"));
+                stream_random_access(&client, &reference, filename).await
+            } else {
+                log_line(&format!("download {reference}…"));
+                stream_ordered(&client, &reference, filename).await
+            };
+            match result {
                 Ok(()) => log_line("download complete"),
-                Err(e) => log_line(&format!("download failed: {e:?}")),
+                Err(DownloadStart::Cancelled) => log_line("download: save cancelled"),
+                Err(DownloadStart::Failed(msg)) => log_line(&msg),
             }
             show_progress(false);
         });
@@ -245,6 +267,59 @@ fn wire_download(client: SwarmClient) {
     btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
         .expect("add click listener");
     cb.forget();
+}
+
+/// Outcome of starting and running a download from the UI.
+enum DownloadStart {
+    /// The user cancelled the save dialog.
+    Cancelled,
+    /// The download failed; the variant carries the log line to show.
+    Failed(String),
+}
+
+/// Run the ordered streaming download to a `DownloadSink`.
+async fn stream_ordered(
+    client: &SwarmClient,
+    reference: &str,
+    filename: &str,
+) -> Result<(), DownloadStart> {
+    // The total is unknown until the joiner opens; pass NaN and let the sink
+    // switch from a bare byte count to a fraction via `setTotal`.
+    let sink_val = create_download_sink(filename, f64::NAN)
+        .await
+        .map_err(start_error)?;
+    let sink: DownloadSink = sink_val.unchecked_into();
+    client
+        .stream_to_sink(reference.to_string(), sink)
+        .await
+        .map_err(|e| DownloadStart::Failed(format!("download failed: {e:?}")))
+}
+
+/// Run the streaming random-access download to a `RandomAccessSink`, writing each
+/// leaf to its exact byte offset out of order.
+async fn stream_random_access(
+    client: &SwarmClient,
+    reference: &str,
+    filename: &str,
+) -> Result<(), DownloadStart> {
+    let sink_val = create_random_access_sink(filename, f64::NAN)
+        .await
+        .map_err(start_error)?;
+    let sink: RandomAccessSink = sink_val.unchecked_into();
+    client
+        .stream_to_sink_random_access(reference.to_string(), sink)
+        .await
+        .map_err(|e| DownloadStart::Failed(format!("download failed: {e:?}")))
+}
+
+/// Classify a sink-factory error: a user cancel maps to `Cancelled`, anything
+/// else to a `Failed` log line.
+fn start_error(e: JsValue) -> DownloadStart {
+    if is_abort_error(&e) {
+        DownloadStart::Cancelled
+    } else {
+        DownloadStart::Failed(format!("download: could not start save: {e:?}"))
+    }
 }
 
 /// Whether a `JsValue` error is a DOMException with `name === "AbortError"`,
@@ -302,7 +377,10 @@ fn render_progress(written: f64, total: f64, bps: f64) {
         String::new()
     };
     let label = if total.is_finite() && total > 0.0 {
-        format!("{} / {} bytes ({pct:.0}%){rate}", written as u64, total as u64)
+        format!(
+            "{} / {} bytes ({pct:.0}%){rate}",
+            written as u64, total as u64
+        )
     } else {
         format!("{} bytes{rate}", written as u64)
     };

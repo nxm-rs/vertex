@@ -20,8 +20,8 @@ use wasm_bindgen::prelude::*;
 
 pub(crate) use cache::MemoryCache;
 pub use download::{
-    DownloadSink, configure_prefetch, configure_prefetch_pipeline, configure_prefetch_refetch,
-    configure_yield_batch,
+    DownloadSink, RandomAccessSink, configure_prefetch, configure_prefetch_pipeline,
+    configure_prefetch_refetch, configure_yield_batch,
 };
 pub(crate) use download::{
     default_prefetch_width, download_range, fetch_leaves_at, file_size, list_leaf_offsets,
@@ -151,6 +151,21 @@ impl SwarmClient {
     ) -> Result<(), JsValue> {
         let root = parse_address(&reference_hex)?;
         download::stream_reference(root, self.provider.clone(), &self.cache, &sink).await
+    }
+
+    /// Stream the file at `reference_hex` to a random-access `sink`, writing each
+    /// leaf to its exact byte offset out of order at full concurrency. A slow
+    /// chunk never blocks the writes behind it; the whole file is never buffered
+    /// in wasm memory.
+    #[wasm_bindgen(js_name = streamToSinkRandomAccess)]
+    pub async fn stream_to_sink_random_access(
+        &self,
+        reference_hex: String,
+        sink: download::RandomAccessSink,
+    ) -> Result<(), JsValue> {
+        let root = parse_address(&reference_hex)?;
+        download::stream_reference_random_access(root, self.provider.clone(), &self.cache, &sink)
+            .await
     }
 
     /// List the entries of the manifest rooted at `root_hex` (JS `{ path, address }`).

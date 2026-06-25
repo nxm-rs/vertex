@@ -46,6 +46,35 @@ extern "C" {
     /// Cancel the download with a human-readable reason.
     #[wasm_bindgen(method)]
     fn abort(this: &DownloadSink, reason: &str);
+
+    /// A random-access browser download sink (see `assets/random-access-sink.js`):
+    /// positional writes that may arrive out of order, streamed to disk via a
+    /// File System Access writable or an OPFS-staged file. The Rust side never
+    /// inspects the chosen back-end.
+    #[wasm_bindgen(js_name = RandomAccessSink)]
+    pub type RandomAccessSink;
+
+    /// Announce the total byte count once the root span is known (drives progress
+    /// and lets the sink size the file up front).
+    #[wasm_bindgen(method, js_name = setTotal)]
+    fn set_total_ra(this: &RandomAccessSink, total: f64);
+
+    /// Write `data` at byte `offset`; resolves when the sink can accept more.
+    /// Offsets may be written in any order.
+    #[wasm_bindgen(method, catch, js_name = writeAt)]
+    async fn write_at(
+        this: &RandomAccessSink,
+        offset: f64,
+        data: Uint8Array,
+    ) -> Result<JsValue, JsValue>;
+
+    /// Finish the download, flushing and closing the underlying stream.
+    #[wasm_bindgen(method, catch, js_name = close)]
+    async fn close_ra(this: &RandomAccessSink) -> Result<JsValue, JsValue>;
+
+    /// Cancel the download with a human-readable reason.
+    #[wasm_bindgen(method, js_name = abort)]
+    fn abort_ra(this: &RandomAccessSink, reason: &str);
 }
 
 /// Bytes of a single child reference in a plain-mode intermediate node body.
@@ -278,6 +307,239 @@ pub async fn stream_file(
     prefetch_result?;
 
     finish(sink).await
+}
+
+/// Stream the file at `root` to a random-access `sink`, resolving a single-file
+/// manifest if `root` is one. Leaves are written to their exact byte offset out
+/// of order, so a slow chunk never blocks the writes ready behind it.
+pub async fn stream_reference_random_access(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &RandomAccessSink,
+) -> Result<(), JsValue> {
+    let file_root = match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries)?,
+        None => root,
+    };
+    stream_file_random_access(file_root, provider, sink).await
+}
+
+/// A node awaiting retrieval: its address, byte offset in the file, tree depth
+/// (for ancestors-first dispatch), and how many attempts it has cost so far.
+struct PendingNode {
+    addr: ChunkAddress,
+    offset: u64,
+    depth: u32,
+    attempt: u32,
+}
+
+/// Stream the file at `file_root` to `sink` with full-concurrency, out-of-order
+/// positional writes.
+///
+/// The chunk tree is traversed with the pipelined pattern: a single in-flight
+/// pool kept at the configured width, fed from a depth-ordered work queue so
+/// ancestors decode ahead of their leaves. Each node carries its byte offset; an
+/// intermediate enqueues its children at their computed offsets, a leaf is
+/// written to the sink at its own offset. There is no ordered joiner, so a slow
+/// chunk never gates the chunks behind it: every decoded leaf is written the
+/// instant it lands, wherever it belongs in the file.
+///
+/// A node that fails or times out after exhausting its inline retries is shunted
+/// to a non-blocking retry queue, drained alongside the main pool with a per-
+/// attempt backoff. A difficult chunk thus never stalls the stream; only
+/// exhausting the retry queue fails the download.
+pub async fn stream_file_random_access(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    sink: &RandomAccessSink,
+) -> Result<(), JsValue> {
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, VecDeque};
+
+    use futures::stream::FuturesUnordered;
+
+    // Branching factor of a plain intermediate node: child refs packed per body.
+    const BRANCHES: u64 = (DEFAULT_BODY_SIZE / REF_SIZE) as u64;
+    // Inline retries before a node is parked on the non-blocking retry queue. A
+    // congested wave can fail a whole candidate race on a transient transport
+    // error rather than chunk absence; a couple of immediate re-races recover the
+    // common case without parking.
+    const INLINE_RETRIES: u32 = 2;
+    // Times a parked node re-races from the retry queue before the download fails.
+    const MAX_RETRY_PASSES: u32 = 12;
+    // Backoff before a queued retry re-races, grown per attempt so a congested
+    // wave drains before the chunk re-hammers the same close peers.
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+    // Per-attempt retrieval timeout: a single retrieval can hang indefinitely when
+    // the neighbourhood momentarily drains, so each attempt is bounced and the
+    // node re-races once the peer set recovers rather than blocking a pool slot.
+    const ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(8000);
+
+    let getter_provider = Arc::clone(&provider);
+    // The root span gives the total file size, written to the sink up front so it
+    // can size the file and drive progress before any leaf lands.
+    let root_chunk = retrieve_with_timeout(&getter_provider, &file_root, ATTEMPT_TIMEOUT)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("root retrieve: {e}")))?;
+    let total = root_chunk.span();
+    sink.set_total_ra(total as f64);
+
+    if total == 0 {
+        return finish_ra(sink).await;
+    }
+
+    let limit = prefetch_concurrency().max(1);
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(file_root);
+
+    // Depth-ordered work queue: the shallowest node pops first, so the
+    // intermediate spine is discovered ahead of its leaves and the pool ramps to
+    // full width without waiting on the slowest intermediate.
+    let mut pending: BinaryHeap<Reverse<(u32, ChunkAddress, u64)>> = BinaryHeap::new();
+    // Non-blocking retry queue: a failed node lands here and re-races with a
+    // backoff while the main pool keeps writing the chunks that are ready.
+    let mut retry: VecDeque<PendingNode> = VecDeque::new();
+    let mut in_flight = FuturesUnordered::new();
+
+    // Spawn a retrieval leg. `skip_backoff` skips the inter-attempt wait for a
+    // connectivity failure (the dead peers are on cooldown, so re-racing a fresh
+    // live peer at once recovers the lost work); the backoff is kept for a
+    // queued retry and a not-found.
+    let spawn = |node: PendingNode, skip_backoff: bool| {
+        let provider = Arc::clone(&provider);
+        async move {
+            if node.attempt > 0 && !skip_backoff {
+                vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * node.attempt).await;
+            }
+            let outcome = retrieve_with_timeout(&provider, &node.addr, ATTEMPT_TIMEOUT).await;
+            // Cede between resolved retrievals so a wide fan-out does not drain a
+            // whole batch in one synchronous pass on the single browser thread and
+            // starve the swarm run loop that feeds the next responses.
+            maybe_yield_to_event_loop().await;
+            (node, outcome)
+        }
+    };
+
+    // The root chunk is already in hand: enqueue its children (or write it if the
+    // file is a single leaf) before priming the pool.
+    let mut written: u64 = 0;
+    if root_chunk.span() > DEFAULT_BODY_SIZE as u64 {
+        let child_span = child_subtree_span(root_chunk.span(), BRANCHES);
+        for (i, child) in parse_child_refs(root_chunk.data())?.into_iter().enumerate() {
+            let child_offset = (i as u64) * child_span;
+            if seen.insert(child) {
+                pending.push(Reverse((1, child, child_offset)));
+            }
+        }
+    } else {
+        written += write_leaf(sink, 0, root_chunk.data()).await?;
+    }
+
+    // Refill the in-flight pool to `limit`, taking the shallowest pending node
+    // first, then a queued retry. Returns false only when there is no more work.
+    macro_rules! refill {
+        () => {{
+            while in_flight.len() < limit {
+                if let Some(Reverse((depth, addr, offset))) = pending.pop() {
+                    in_flight.push(spawn(
+                        PendingNode {
+                            addr,
+                            offset,
+                            depth,
+                            attempt: 0,
+                        },
+                        false,
+                    ));
+                } else if let Some(node) = retry.pop_front() {
+                    in_flight.push(spawn(node, false));
+                } else {
+                    break;
+                }
+            }
+        }};
+    }
+
+    refill!();
+
+    while let Some((node, outcome)) = in_flight.next().await {
+        let chunk = match outcome {
+            Ok(chunk) => chunk,
+            Err(ref e) => {
+                let next_attempt = node.attempt + 1;
+                if next_attempt < INLINE_RETRIES {
+                    // Re-race immediately in the pool; a connectivity failure skips
+                    // the backoff, a not-found keeps it (ancestors may need warming).
+                    let skip_backoff = !e.is_not_found();
+                    in_flight.push(spawn(
+                        PendingNode {
+                            attempt: next_attempt,
+                            ..node
+                        },
+                        skip_backoff,
+                    ));
+                    continue;
+                }
+                if next_attempt < MAX_RETRY_PASSES {
+                    // Park on the non-blocking retry queue and free the slot for a
+                    // ready chunk, so this difficult node never gates the stream.
+                    retry.push_back(PendingNode {
+                        attempt: next_attempt,
+                        ..node
+                    });
+                    refill!();
+                    continue;
+                }
+                // Exhausted every retry pass: the chunk is genuinely unreachable.
+                sink.abort_ra(&format!("retrieve {}: {e}", node.addr));
+                return Err(JsValue::from_str(&format!(
+                    "retrieve {} exhausted retries: {e}",
+                    node.addr
+                )));
+            }
+        };
+
+        if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+            // Intermediate: enqueue each child at its computed byte offset.
+            let child_span = child_subtree_span(chunk.span(), BRANCHES);
+            for (i, child) in parse_child_refs(chunk.data())?.into_iter().enumerate() {
+                let child_offset = node.offset + (i as u64) * child_span;
+                if seen.insert(child) {
+                    pending.push(Reverse((node.depth + 1, child, child_offset)));
+                }
+            }
+        } else {
+            // Leaf: write its body at its exact byte offset. The await applies the
+            // sink's backpressure but does not block other ready writes from being
+            // dispatched, because each leg writes the moment its own chunk decodes.
+            written += write_leaf(sink, node.offset, chunk.data()).await?;
+        }
+        refill!();
+    }
+
+    // Every node has resolved; the sink holds the whole file at its offsets.
+    debug_assert_eq!(written, total, "written bytes match the file span");
+    let _ = written;
+    finish_ra(sink).await
+}
+
+/// Write a leaf body at `offset`, returning the bytes written. Maps a sink write
+/// failure to a `JsValue` error after aborting the sink.
+async fn write_leaf(sink: &RandomAccessSink, offset: u64, body: &[u8]) -> Result<u64, JsValue> {
+    let view = Uint8Array::from(body);
+    sink.write_at(offset as f64, view).await.map_err(|e| {
+        sink.abort_ra("write failed");
+        JsValue::from_str(&format!("sink write at {offset}: {e:?}"))
+    })?;
+    Ok(body.len() as u64)
+}
+
+/// Close a random-access `sink`, mapping a close failure to a `JsValue` error.
+async fn finish_ra(sink: &RandomAccessSink) -> Result<(), JsValue> {
+    sink.close_ra()
+        .await
+        .map(|_| ())
+        .map_err(|e| JsValue::from_str(&format!("sink close: {e:?}")))
 }
 
 /// Close `sink`, mapping a close failure to a `JsValue` error.
@@ -643,7 +905,9 @@ async fn prefetch_tree_pipelined(
                 // Refill the freed slot before continuing so the pool stays full.
                 while in_flight.len() < limit {
                     match pending.pop() {
-                        Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0, false)),
+                        Some(Reverse((depth, addr))) => {
+                            in_flight.push(spawn(addr, depth, 0, false))
+                        }
                         None => break,
                     }
                 }
@@ -877,9 +1141,9 @@ async fn retrieve_with_timeout(
     match futures::future::select(fetch, delay).await {
         futures::future::Either::Left((Ok(r), _)) => Ok(r.chunk),
         futures::future::Either::Left((Err(e), _)) => Err(e),
-        futures::future::Either::Right(_) => {
-            Err(vertex_swarm_api::SwarmError::network_msg("retrieval timed out"))
-        }
+        futures::future::Either::Right(_) => Err(vertex_swarm_api::SwarmError::network_msg(
+            "retrieval timed out",
+        )),
     }
 }
 
