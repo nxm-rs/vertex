@@ -204,6 +204,32 @@ pub fn configure_prefetch_pipeline(on: bool) {
 /// network miss is still bounded by the provider's per-peer cap.
 const JOIN_CONCURRENCY: usize = 64;
 
+/// Peak count of chunks held in wasm memory at once during a download.
+///
+/// The ordered path warms a shared map it never evicts, so this climbs to the
+/// whole fetched window; the random-access path writes each leaf to disk and
+/// drops it, so this stays bounded by the in-flight width. A measurement aid
+/// only (`peakRetainedChunks` / `resetPeakRetainedChunks` on the client) so a
+/// headless A/B can read the retained-memory high-water mark without a heap
+/// snapshot.
+static PEAK_RETAINED_CHUNKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record `current` retained chunks, bumping the peak high-water mark.
+fn observe_retained(current: usize) {
+    PEAK_RETAINED_CHUNKS.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The peak retained-chunk high-water mark since the last reset.
+pub fn peak_retained_chunks() -> usize {
+    PEAK_RETAINED_CHUNKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the retained-chunk high-water mark before a measured download.
+pub fn reset_peak_retained_chunks() {
+    PEAK_RETAINED_CHUNKS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
     root: ChunkAddress,
@@ -521,6 +547,264 @@ pub async fn stream_file_random_access(
     debug_assert_eq!(written, total, "written bytes match the file span");
     let _ = written;
     finish_ra(sink).await
+}
+
+/// Stream the byte range `[offset, offset + len)` of the file at `root` to a
+/// random-access `sink`, resolving a single-file manifest if `root` is one.
+pub async fn stream_reference_random_access_range(
+    root: ChunkAddress,
+    offset: u64,
+    len: u64,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &RandomAccessSink,
+) -> Result<(), JsValue> {
+    let file_root = match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries)?,
+        None => root,
+    };
+    stream_range_random_access(file_root, offset, len, width, provider, sink).await
+}
+
+/// Stream the byte range `[range_start, range_end)` of the file at `file_root` to
+/// `sink` with full-concurrency, out-of-order positional writes, writing each
+/// overlapping leaf to its range-relative offset and dropping it once on disk.
+///
+/// The whole-file random-access stream buffers nothing past the in-flight pool;
+/// this is its range-scoped sibling. It walks only the subtrees overlapping the
+/// range (the offset/overlap arithmetic the range prefetch uses) so a worker
+/// fetches just its slice, and clips a boundary leaf to the wanted bytes so the
+/// staged file is exactly `range_end - range_start` long. The sink offset is
+/// range-relative (`file_offset - range_start`), so a 60 MB range stages a 60 MB
+/// file regardless of where in an 800 MB original it sits. The retained-chunk
+/// gauge stays bounded by the width: a decoded leaf is written and dropped, never
+/// accumulated like the ordered range path's shared map.
+pub async fn stream_range_random_access(
+    file_root: ChunkAddress,
+    range_start: u64,
+    len: u64,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+    sink: &RandomAccessSink,
+) -> Result<(), JsValue> {
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, VecDeque};
+
+    use futures::stream::FuturesUnordered;
+
+    const BRANCHES: u64 = (DEFAULT_BODY_SIZE / REF_SIZE) as u64;
+    const INLINE_RETRIES: u32 = 2;
+    const MAX_RETRY_PASSES: u32 = 12;
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+    const ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(8000);
+
+    let getter_provider = Arc::clone(&provider);
+    let root_chunk = retrieve_with_timeout(&getter_provider, &file_root, ATTEMPT_TIMEOUT)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("root retrieve: {e}")))?;
+    let total = root_chunk.span();
+    if total == 0 || range_start >= total {
+        sink.set_total_ra(0.0);
+        return finish_ra(sink).await;
+    }
+    let range_end = range_start.saturating_add(len).min(total);
+    let want = range_end - range_start;
+    sink.set_total_ra(want as f64);
+
+    let limit = if width == 0 {
+        prefetch_concurrency()
+    } else {
+        width
+    }
+    .max(1);
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(file_root);
+
+    // Depth-ordered work queue carrying each node's absolute file offset, so a
+    // boundary leaf can be clipped to the wanted bytes.
+    let mut pending: BinaryHeap<Reverse<(u32, ChunkAddress, u64)>> = BinaryHeap::new();
+    let mut retry: VecDeque<PendingNode> = VecDeque::new();
+    let mut in_flight = FuturesUnordered::new();
+
+    let spawn = |node: PendingNode, skip_backoff: bool| {
+        let provider = Arc::clone(&provider);
+        async move {
+            if node.attempt > 0 && !skip_backoff {
+                vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * node.attempt).await;
+            }
+            let outcome = retrieve_with_timeout(&provider, &node.addr, ATTEMPT_TIMEOUT).await;
+            maybe_yield_to_event_loop().await;
+            (node, outcome)
+        }
+    };
+
+    // Enqueue only the children whose byte interval overlaps the wanted range.
+    let enqueue_overlapping = |pending: &mut BinaryHeap<Reverse<(u32, ChunkAddress, u64)>>,
+                               seen: &mut HashSet<ChunkAddress>,
+                               depth: u32,
+                               node_offset: u64,
+                               node_span: u64,
+                               body: &[u8]|
+     -> Result<(), JsValue> {
+        let child_span = child_subtree_span(node_span, BRANCHES);
+        for (i, child) in parse_child_refs(body)?.into_iter().enumerate() {
+            let child_offset = node_offset + (i as u64) * child_span;
+            let child_end = child_offset + child_span;
+            if child_end <= range_start || child_offset >= range_end {
+                continue;
+            }
+            if seen.insert(child) {
+                pending.push(Reverse((depth, child, child_offset)));
+            }
+        }
+        Ok(())
+    };
+
+    let mut written: u64 = 0;
+    if root_chunk.span() > DEFAULT_BODY_SIZE as u64 {
+        enqueue_overlapping(
+            &mut pending,
+            &mut seen,
+            1,
+            0,
+            root_chunk.span(),
+            root_chunk.data(),
+        )?;
+    } else {
+        written += write_clipped_leaf(sink, 0, root_chunk.data(), range_start, range_end).await?;
+    }
+
+    macro_rules! refill {
+        () => {{
+            while in_flight.len() < limit {
+                if let Some(Reverse((depth, addr, offset))) = pending.pop() {
+                    in_flight.push(spawn(
+                        PendingNode {
+                            addr,
+                            offset,
+                            depth,
+                            attempt: 0,
+                        },
+                        false,
+                    ));
+                } else if let Some(node) = retry.pop_front() {
+                    in_flight.push(spawn(node, false));
+                } else {
+                    break;
+                }
+            }
+        }};
+    }
+
+    refill!();
+
+    // Total leaves parked on the retry queue, and writes completed: a measurement
+    // aid (`ra-range` log lines) proving the parked nodes never gate the ready
+    // writes, which keep landing while retries are pending.
+    let mut parked: u64 = 0;
+    let mut writes: u64 = 0;
+
+    while let Some((node, outcome)) = in_flight.next().await {
+        // The retained-memory high-water mark is the pool size: a decoded leaf is
+        // written to disk and dropped, never accumulated, so this is bounded by
+        // the width rather than growing with the range.
+        observe_retained(in_flight.len() + 1);
+        let chunk = match outcome {
+            Ok(chunk) => chunk,
+            Err(ref e) => {
+                let next_attempt = node.attempt + 1;
+                if next_attempt < INLINE_RETRIES {
+                    let skip_backoff = !e.is_not_found();
+                    in_flight.push(spawn(
+                        PendingNode {
+                            attempt: next_attempt,
+                            ..node
+                        },
+                        skip_backoff,
+                    ));
+                    continue;
+                }
+                if next_attempt < MAX_RETRY_PASSES {
+                    parked += 1;
+                    // Park and free the slot for a ready chunk: the write loop
+                    // keeps draining while this difficult node waits its backoff.
+                    tracing::info!(
+                        "ra-range-park addr={} attempt={next_attempt} retry_depth={} writes={writes}",
+                        node.addr,
+                        retry.len() + 1
+                    );
+                    retry.push_back(PendingNode {
+                        attempt: next_attempt,
+                        ..node
+                    });
+                    refill!();
+                    continue;
+                }
+                sink.abort_ra(&format!("retrieve {}: {e}", node.addr));
+                return Err(JsValue::from_str(&format!(
+                    "retrieve {} exhausted retries: {e}",
+                    node.addr
+                )));
+            }
+        };
+
+        if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+            enqueue_overlapping(
+                &mut pending,
+                &mut seen,
+                node.depth + 1,
+                node.offset,
+                chunk.span(),
+                chunk.data(),
+            )?;
+        } else {
+            let n =
+                write_clipped_leaf(sink, node.offset, chunk.data(), range_start, range_end).await?;
+            if n > 0 {
+                written += n;
+                writes += 1;
+                // Surface a write that landed while a node was parked: the
+                // retry_depth being non-zero here is the non-blocking proof.
+                if writes.is_multiple_of(500) {
+                    tracing::info!(
+                        "ra-range-progress writes={writes} written={written} retry_depth={} pending={} inflight={}",
+                        retry.len(),
+                        pending.len(),
+                        in_flight.len()
+                    );
+                }
+            }
+        }
+        refill!();
+    }
+
+    tracing::info!(
+        "ra-range-done want={want} written={written} writes={writes} parked_total={parked}"
+    );
+    debug_assert_eq!(written, want, "written bytes match the wanted range");
+    finish_ra(sink).await
+}
+
+/// Write the portion of a leaf at file `leaf_offset` that overlaps
+/// `[range_start, range_end)`, at the range-relative sink offset. Returns the
+/// bytes written (0 if the leaf lies wholly outside the range).
+async fn write_clipped_leaf(
+    sink: &RandomAccessSink,
+    leaf_offset: u64,
+    body: &[u8],
+    range_start: u64,
+    range_end: u64,
+) -> Result<u64, JsValue> {
+    let leaf_end = leaf_offset + body.len() as u64;
+    let lo = leaf_offset.max(range_start);
+    let hi = leaf_end.min(range_end);
+    if lo >= hi {
+        return Ok(0);
+    }
+    let body_lo = (lo - leaf_offset) as usize;
+    let body_hi = (hi - leaf_offset) as usize;
+    write_leaf(sink, lo - range_start, &body[body_lo..body_hi]).await
 }
 
 /// Write a leaf body at `offset`, returning the bytes written. Maps a sink write
@@ -1112,10 +1396,12 @@ async fn prefetch_range_into_shared(
                     }
                 }
             }
-            shared
-                .lock()
-                .expect("cache mutex")
-                .insert(*chunk.address(), chunk);
+            let retained = {
+                let mut guard = shared.lock().expect("cache mutex");
+                guard.insert(*chunk.address(), chunk);
+                guard.len()
+            };
+            observe_retained(retained);
         }
         level = next;
     }

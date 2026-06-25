@@ -168,6 +168,73 @@ impl SwarmClient {
             .await
     }
 
+    /// Stream the byte range `[offset, offset + len)` of the file at
+    /// `reference_hex` to a random-access `sink`, writing each overlapping leaf to
+    /// its range-relative offset out of order. `width` 0 uses the default fan-out.
+    /// Each decoded leaf is written to disk and dropped, so wasm memory stays
+    /// bounded by the in-flight width rather than the range size.
+    #[wasm_bindgen(js_name = streamToSinkRandomAccessRange)]
+    pub async fn stream_to_sink_random_access_range(
+        &self,
+        reference_hex: String,
+        offset: f64,
+        len: f64,
+        width: usize,
+        sink: download::RandomAccessSink,
+    ) -> Result<(), JsValue> {
+        let root = parse_address(&reference_hex)?;
+        download::stream_reference_random_access_range(
+            root,
+            offset as u64,
+            len as u64,
+            width,
+            self.provider.clone(),
+            &self.cache,
+            &sink,
+        )
+        .await
+    }
+
+    /// Download the byte range `[offset, offset + len)` of the file at
+    /// `reference_hex` via the ordered path, buffering the whole window in the
+    /// shared map before assembly. Returns the slice bytes. `width` 0 uses the
+    /// default fan-out. The ordered counterpart to
+    /// [`SwarmClient::stream_to_sink_random_access_range`] for an A/B against the
+    /// bounded-memory random-access path.
+    #[wasm_bindgen(js_name = downloadRange)]
+    pub async fn download_range(
+        &self,
+        reference_hex: String,
+        offset: f64,
+        len: f64,
+        width: usize,
+    ) -> Result<Vec<u8>, JsValue> {
+        let root = parse_address(&reference_hex)?;
+        let file_root =
+            download::resolve_file_root(root, self.provider.clone(), &self.cache).await?;
+        download::download_range(
+            file_root,
+            offset as u64,
+            len as u64,
+            width,
+            self.provider.clone(),
+        )
+        .await
+    }
+
+    /// The peak count of chunks held in wasm memory since the last reset (the
+    /// retained-memory high-water mark; multiply by ~4 KiB for bytes).
+    #[wasm_bindgen(js_name = peakRetainedChunks)]
+    pub fn peak_retained_chunks(&self) -> usize {
+        download::peak_retained_chunks()
+    }
+
+    /// Reset the retained-chunk high-water mark before a measured download.
+    #[wasm_bindgen(js_name = resetPeakRetainedChunks)]
+    pub fn reset_peak_retained_chunks(&self) {
+        download::reset_peak_retained_chunks();
+    }
+
     /// List the entries of the manifest rooted at `root_hex` (JS `{ path, address }`).
     #[wasm_bindgen(js_name = lsManifest)]
     pub async fn ls_manifest(&self, root_hex: String) -> Result<js_sys::Array, JsValue> {
