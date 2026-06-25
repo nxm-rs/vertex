@@ -149,13 +149,13 @@ indexing_slicing = "warn"
 # BatchStore/StoreValidator/SnapshotStore conversion plus nectar-mantaray and
 # nectar-postage-usage's `client`/`issuer`/`seal` features that the browser
 # upload/download path (bin/swarm-demo) depends on.
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar", branch = "feat/joiner-offset-stream" }
 
 digest = "0.10"
 

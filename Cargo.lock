@@ -1336,7 +1336,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2747,7 +2747,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3979,7 +3979,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4924,7 +4924,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "nectar-contracts"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=main#0c191183ffd6458d529891487e1c8badcdd7b3e9"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4934,7 +4934,7 @@ dependencies = [
 [[package]]
 name = "nectar-postage"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=main#0c191183ffd6458d529891487e1c8badcdd7b3e9"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4949,7 +4949,7 @@ dependencies = [
 [[package]]
 name = "nectar-primitives"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=main#0c191183ffd6458d529891487e1c8badcdd7b3e9"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4977,7 +4977,7 @@ dependencies = [
 [[package]]
 name = "nectar-swarms"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=main#0c191183ffd6458d529891487e1c8badcdd7b3e9"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
 dependencies = [
  "alloy-chains",
  "num_enum",
@@ -5957,7 +5957,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -6002,7 +6002,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6015,7 +6015,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6679,7 +6679,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7494,7 +7494,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9964,7 +9964,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

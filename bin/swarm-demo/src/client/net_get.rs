@@ -66,3 +66,52 @@ impl ChunkGet<DEFAULT_BODY_SIZE> for NetworkChunkGet {
         Ok(result.chunk)
     }
 }
+
+/// A chunk getter that fetches over the network and re-races a transient
+/// failure inline, surfacing an error only once every pass is exhausted.
+///
+/// The bounded-memory streaming download drives the core joiner's offset stream,
+/// which fetches the chunk tree with bounded concurrency and reads through this
+/// getter. Per-chunk resilience lives here so the joiner keeps a difficult
+/// chunk's own concurrency slot busy re-racing it without gating the other
+/// in-flight leaves, which keep resolving and being written to their offsets.
+///
+/// The core `ChunkGet::get` future must be `Send`, so this path uses no browser
+/// macrotask yield or `setTimeout` timeout (both `!Send` on wasm): a congested
+/// wave is recovered by immediate re-races, bounded by `max_passes`, and the
+/// joiner's bounded concurrency caps the fan-out rather than a per-chunk
+/// timeout. Each `retrieve_chunk` awaits real socket I/O, so the executor still
+/// interleaves the in-flight legs at every await point.
+#[derive(Clone)]
+pub struct RetryingChunkGet {
+    provider: Arc<dyn SwarmChunkProvider>,
+    max_passes: u32,
+}
+
+impl RetryingChunkGet {
+    /// Build a retrying getter over `provider` with the streaming download's
+    /// inline re-race budget.
+    pub fn new(provider: Arc<dyn SwarmChunkProvider>) -> Self {
+        Self {
+            provider,
+            max_passes: 12,
+        }
+    }
+}
+
+impl ChunkGet<DEFAULT_BODY_SIZE> for RetryingChunkGet {
+    type Error = ChunkStoreError;
+
+    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk, Self::Error> {
+        let mut last = String::new();
+        for _ in 0..self.max_passes {
+            match self.provider.retrieve_chunk(address).await {
+                Ok(r) => return Ok(r.chunk),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(ChunkStoreError::Other(format!(
+            "retrieve {address} exhausted retries: {last}"
+        )))
+    }
+}
