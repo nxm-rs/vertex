@@ -363,12 +363,17 @@ struct PendingNode {
 /// Stream the file at `file_root` to `sink` with bounded-concurrency,
 /// out-of-order positional writes, driven by the core joiner's offset stream.
 ///
-/// The joiner's [`into_offset_stream`](nectar_primitives::Joiner::into_offset_stream)
-/// fetches the chunk tree with bounded concurrency and yields each leaf body
-/// tagged with its absolute byte offset the instant it lands, out of order. Each
-/// pair is written straight to the random-access `sink` at its offset and then
-/// dropped, so a slow chunk never gates the leaves ready behind it and peak wasm
-/// memory is bounded by the in-flight width, not the file size.
+/// The joiner's
+/// [`into_offset_stream_chunked`](nectar_primitives::Joiner::into_offset_stream_chunked)
+/// fetches the chunk tree at chunk granularity with bounded concurrency and
+/// yields each leaf body tagged with its absolute byte offset the instant it
+/// lands, out of order. Every intermediate and leaf fetch competes for one
+/// bounded pool, so the configured width of individual chunks is in flight
+/// regardless of how few top-level subtrees the tree has (the subtree-granular
+/// variant would fetch only one leaf per subtree at a time). Each pair is
+/// written straight to the random-access `sink` at its offset and then dropped,
+/// so a slow chunk never gates the leaves ready behind it and peak wasm memory
+/// is bounded by the in-flight width, not the file size.
 ///
 /// Per-chunk resilience (a per-attempt timeout, inline re-races, and a backoff
 /// for a congested wave) lives in the [`RetryingChunkGet`] the joiner reads from:
@@ -396,7 +401,7 @@ pub async fn stream_file_random_access(
     }
 
     let mut written: u64 = 0;
-    let stream = joiner.into_offset_stream();
+    let stream = joiner.into_offset_stream_chunked();
     futures::pin_mut!(stream);
     while let Some(pair) = stream.next().await {
         let (offset, body) = match pair {

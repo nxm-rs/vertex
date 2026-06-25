@@ -1860,7 +1860,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2747,7 +2747,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3979,7 +3979,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4924,7 +4924,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "nectar-contracts"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#2fb4ee854506a77c01e192cc26ec37f395629e7d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4934,7 +4934,7 @@ dependencies = [
 [[package]]
 name = "nectar-postage"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#2fb4ee854506a77c01e192cc26ec37f395629e7d"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4949,7 +4949,7 @@ dependencies = [
 [[package]]
 name = "nectar-primitives"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#2fb4ee854506a77c01e192cc26ec37f395629e7d"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4977,7 +4977,7 @@ dependencies = [
 [[package]]
 name = "nectar-swarms"
 version = "0.2.1"
-source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#73ff62a0b5a38e433935e152b87ec8011b099acc"
+source = "git+https://github.com/nxm-rs/nectar?branch=feat%2Fjoiner-offset-stream#2fb4ee854506a77c01e192cc26ec37f395629e7d"
 dependencies = [
  "alloy-chains",
  "num_enum",
@@ -6679,7 +6679,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6737,7 +6737,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7494,7 +7494,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
