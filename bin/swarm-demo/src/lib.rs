@@ -425,13 +425,15 @@ fn apply_retrieval_overrides_from_page() {
         parse("busy"),
     );
     client::configure_prefetch(parse("pf").map(|v| v as usize));
-    // The download client raises the per-peer in-flight cap above the
-    // interop-conservative node default: a browser owns one neighbourhood, so the
-    // tail of a large file is served by only a handful of close peers and a deeper
-    // per-peer fan-out is what keeps those few peers busy. Live storers tolerate
-    // it (transport resets stay a small minority of legs). Overridable via
-    // `inflight` for sweeping.
-    vertex_swarm_node::set_inflight_per_peer(parse("inflight").map_or(16, |v| v as usize));
+    // The download client runs a shallow per-peer in-flight cap. A deep per-peer
+    // fan-out piles the prefetch onto a handful of close peers, overruns their
+    // stream budget and churns the connection (transport resets dominate the
+    // legs), while each peer only forgives its own debt at a fixed rate, so the
+    // extra depth buys no throughput. A shallow cap spreads the same prefetch
+    // across the wider connected footprint, holds that footprint steady under
+    // load, and collapses the transport-reset rate, lifting aggregate free
+    // throughput. Overridable via `inflight` for sweeping.
+    vertex_swarm_node::set_inflight_per_peer(parse("inflight").map_or(2, |v| v as usize));
     client::configure_yield_batch(parse("yieldn").map(|v| v as usize));
     client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
     // Re-fetch the prefetch-skipped tail by default: warming those few hard,
