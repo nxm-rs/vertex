@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::*;
 pub(crate) use cache::MemoryCache;
 pub use download::{
     DownloadSink, RandomAccessSink, configure_prefetch, configure_prefetch_pipeline,
-    configure_prefetch_refetch, configure_yield_batch,
+    configure_prefetch_refetch, configure_yield_batch, stream_range_to_shared_sink,
 };
 pub(crate) use download::{
     default_prefetch_width, download_range, fetch_leaves_at, file_size, list_leaf_offsets,

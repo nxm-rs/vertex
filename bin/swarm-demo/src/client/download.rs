@@ -541,27 +541,55 @@ pub async fn stream_reference_random_access_range(
         Some(entries) => pick_manifest_file(&entries)?,
         None => root,
     };
-    stream_range_random_access(file_root, offset, len, width, provider, sink).await
+    // Range-relative: a 60 MB range stages a 60 MB local file, so the sink base is
+    // the range start.
+    stream_range_random_access(file_root, offset, len, width, offset, provider, sink).await
+}
+
+/// Stream the byte range `[offset, offset + len)` of the file at `file_root` to a
+/// shared sink at absolute file offsets, for the unified multi-worker download.
+///
+/// Each fetch worker calls this with its slice and a port-backed sink wired to the
+/// one OPFS sink worker, so K workers stream their slices concurrently into the
+/// single staged file. The sink base is `0`: a leaf at file offset `o` is written
+/// at `o`, so the K out-of-order slices assemble the whole file without a
+/// coordinator relay. Only this worker's slice is fetched (the overlap walk prunes
+/// non-overlapping subtrees), so K workers fetch the file once between them, not K
+/// times.
+pub async fn stream_range_to_shared_sink(
+    file_root: ChunkAddress,
+    offset: u64,
+    len: u64,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+    sink: &RandomAccessSink,
+) -> Result<(), JsValue> {
+    stream_range_random_access(file_root, offset, len, width, 0, provider, sink).await
 }
 
 /// Stream the byte range `[range_start, range_end)` of the file at `file_root` to
 /// `sink` with full-concurrency, out-of-order positional writes, writing each
-/// overlapping leaf to its range-relative offset and dropping it once on disk.
+/// overlapping leaf at `file_offset - sink_base` and dropping it once on disk.
 ///
 /// The whole-file random-access stream buffers nothing past the in-flight pool;
 /// this is its range-scoped sibling. It walks only the subtrees overlapping the
 /// range (the offset/overlap arithmetic the range prefetch uses) so a worker
-/// fetches just its slice, and clips a boundary leaf to the wanted bytes so the
-/// staged file is exactly `range_end - range_start` long. The sink offset is
-/// range-relative (`file_offset - range_start`), so a 60 MB range stages a 60 MB
-/// file regardless of where in an 800 MB original it sits. The retained-chunk
-/// gauge stays bounded by the width: a decoded leaf is written and dropped, never
-/// accumulated like the ordered range path's shared map.
+/// fetches just its slice, and clips a boundary leaf to the wanted bytes.
+///
+/// `sink_base` selects the sink's coordinate frame. Pass `range_start` for a
+/// stand-alone range download that stages a `len`-byte file from zero. Pass `0`
+/// for the unified multi-worker download, where every worker writes its slice at
+/// the absolute file offset into one shared sink so K out-of-order slices assemble
+/// the whole file. The retained-chunk gauge stays bounded by the width: a decoded
+/// leaf is written and dropped, never accumulated like the ordered range path's
+/// shared map.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_range_random_access(
     file_root: ChunkAddress,
     range_start: u64,
     len: u64,
     width: usize,
+    sink_base: u64,
     provider: Arc<dyn SwarmChunkProvider>,
     sink: &RandomAccessSink,
 ) -> Result<(), JsValue> {
@@ -649,7 +677,15 @@ pub async fn stream_range_random_access(
             root_chunk.data(),
         )?;
     } else {
-        written += write_clipped_leaf(sink, 0, root_chunk.data(), range_start, range_end).await?;
+        written += write_clipped_leaf(
+            sink,
+            0,
+            root_chunk.data(),
+            range_start,
+            range_end,
+            sink_base,
+        )
+        .await?;
     }
 
     macro_rules! refill {
@@ -736,8 +772,15 @@ pub async fn stream_range_random_access(
                 chunk.data(),
             )?;
         } else {
-            let n =
-                write_clipped_leaf(sink, node.offset, chunk.data(), range_start, range_end).await?;
+            let n = write_clipped_leaf(
+                sink,
+                node.offset,
+                chunk.data(),
+                range_start,
+                range_end,
+                sink_base,
+            )
+            .await?;
             if n > 0 {
                 written += n;
                 writes += 1;
@@ -764,14 +807,17 @@ pub async fn stream_range_random_access(
 }
 
 /// Write the portion of a leaf at file `leaf_offset` that overlaps
-/// `[range_start, range_end)`, at the range-relative sink offset. Returns the
-/// bytes written (0 if the leaf lies wholly outside the range).
+/// `[range_start, range_end)`, at sink offset `lo - sink_base`. Returns the bytes
+/// written (0 if the leaf lies wholly outside the range). `sink_base` is the
+/// sink's zero point: `range_start` for a range-relative local file, `0` for the
+/// absolute-offset shared sink of the unified multi-worker download.
 async fn write_clipped_leaf(
     sink: &RandomAccessSink,
     leaf_offset: u64,
     body: &[u8],
     range_start: u64,
     range_end: u64,
+    sink_base: u64,
 ) -> Result<u64, JsValue> {
     let leaf_end = leaf_offset + body.len() as u64;
     let lo = leaf_offset.max(range_start);
@@ -781,7 +827,7 @@ async fn write_clipped_leaf(
     }
     let body_lo = (lo - leaf_offset) as usize;
     let body_hi = (hi - leaf_offset) as usize;
-    write_leaf(sink, lo - range_start, &body[body_lo..body_hi]).await
+    write_leaf(sink, lo - sink_base, &body[body_lo..body_hi]).await
 }
 
 /// Write a leaf body at `offset`, returning the bytes written. Maps a sink write

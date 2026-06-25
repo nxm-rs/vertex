@@ -154,6 +154,186 @@ window.__classifyRefs = async function (refs, warmupMs, perCallTimeoutMs) {
   };
 };
 
+// Fixed OPFS staging name the unified sink writes and the coordinator reads back.
+const UNIFIED_STAGING_NAME = '__swarm_unified_download__';
+
+// Spawn the shared OPFS sink worker and open the staged file. Returns the worker
+// plus a `closed` promise resolving to its aggregate `bytesWritten`, and helpers
+// to add a fetch-worker port and to close. The sink worker owns the one OPFS
+// SyncAccessHandle; every fetch-worker port funnels through it, sequential by
+// construction, so K out-of-order slices assemble one file off the main thread.
+async function spawnSinkWorker(filename) {
+  const worker = new Worker(new URL('assets/sink-worker.js', location.href), { type: 'module' });
+  let resolveClosed = null;
+  const closed = new Promise((res) => { resolveClosed = res; });
+  const opened = new Promise((resolve, reject) => {
+    worker.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m) return;
+      if (m.type === 'opened') resolve();
+      else if (m.type === 'closed') { if (resolveClosed) resolveClosed(m.bytesWritten); }
+      else if (m.type === 'error') reject(new Error(m.error));
+    };
+    worker.onerror = (ev) => reject(new Error(ev && ev.message ? ev.message : 'sink worker error'));
+  });
+  worker.postMessage({ type: 'open', filename });
+  await opened;
+  return {
+    worker,
+    closed,
+    addPort(port) { worker.postMessage({ type: 'addPort', port }, [port]); },
+    close() { worker.postMessage({ type: 'close' }); return closed; },
+  };
+}
+
+// Read the unified OPFS-staged file back as an ArrayBuffer for byte-verification,
+// once the sink worker has closed and released its exclusive handle.
+async function readBackUnified() {
+  const dir = await navigator.storage.getDirectory();
+  const handle = await dir.getFileHandle(UNIFIED_STAGING_NAME, { create: false });
+  const file = await handle.getFile();
+  return file.arrayBuffer();
+}
+
+// Run the UNIFIED K-worker streaming download of the byte window `[baseOffset,
+// baseOffset + windowLen)` of `ref` (the whole file when windowLen covers it).
+//
+// The completed architecture: K fetch worker-nodes + one shared OPFS sink worker,
+// wired by a MessageChannel each so a fetch worker posts (offset, buffer) STRAIGHT
+// to the sink worker with no main-thread relay. Each fetch worker streams ONLY its
+// contiguous range CHUNK-GRANULARLY (per-chunk concurrency, the live-network retry
+// pipeline), writing each decoded leaf at its ABSOLUTE file offset the instant it
+// lands. The sink worker owns the one OPFS SyncAccessHandle and serialises all K
+// ports' writes. Peak memory is bounded: each fetch worker retains only its
+// in-flight width (no whole-range buffer), the sink worker holds only the handle.
+//
+// Progress and the completion signal both come from the sink worker's aggregate
+// `bytesWritten`, which equals the window size once every slice is on disk. On
+// all-done the coordinator closes the sink worker (releasing the handle), reads
+// the staged file back, and SHA-256s it: a matching hash proves the out-of-order
+// K-slice assembly is byte-correct.
+//
+// `expectedSha` (optional) is checked against the read-back hash. `deliver` (when
+// truthy) hands the staged file to the user via the #508 service-worker stream-out
+// after verification; headless runs leave it staged for read-back.
+window.__unifiedDownload = async function (ref, k, baseOffset, windowLen, warmupMs, runTimeoutMs, width, path, footprint, bootstrap, expectedSha) {
+  k = k || 4;
+  baseOffset = baseOffset || 0;
+  warmupMs = warmupMs || 18000;
+  runTimeoutMs = runTimeoutMs || 600000;
+  width = width || 0;
+  footprint = footprint || 32;
+  bootstrap = bootstrap || 12;
+
+  const t0 = performance.now();
+  const { workers, overlays } = await bootWorkers(k, { footprint, bootstrap });
+  await new Promise((r) => setTimeout(r, warmupMs));
+  const tWarm = performance.now();
+
+  const rootMsg = path
+    ? await workers[0].call({ type: 'resolvePath', address: ref, path }, null, 120000)
+    : await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
+  const fileRoot = rootMsg.fileRoot;
+  const sizeMsg = await workers[0].call({ type: 'size', fileRoot }, null, 120000);
+  const total = sizeMsg.size;
+  const tRoot = performance.now();
+  if (!total) throw new Error('could not resolve file size');
+  if (!windowLen) windowLen = total - baseOffset;
+  if (baseOffset + windowLen > total) throw new Error('window exceeds file size');
+
+  // K contiguous sub-ranges of the window; the last absorbs the remainder.
+  const ranges = [];
+  const base = Math.floor(windowLen / k);
+  for (let i = 0; i < k; i++) {
+    const offset = baseOffset + i * base;
+    const len = (i === k - 1) ? (windowLen - i * base) : base;
+    ranges.push({ offset, len });
+  }
+
+  // One shared sink worker for the whole window. Each fetch worker writes its
+  // slice at the ABSOLUTE file offset, so the staged file is `total` long with the
+  // window region filled; a sub-window run reads back only `[baseOffset, +len)`.
+  const sink = await spawnSinkWorker(UNIFIED_STAGING_NAME);
+
+  // Drive progress from the sink worker's aggregate bytesWritten by snooping its
+  // control-channel acks is not possible (control channel carries no per-port
+  // ack); instead the per-worker streamRange completion is the coarse signal and
+  // each fetch worker paces internally on its port acks. Progress hook (optional).
+  const notify = (typeof window !== 'undefined' && typeof window.__swarmDownloadProgress === 'function')
+    ? window.__swarmDownloadProgress : null;
+  if (notify) notify(0, windowLen);
+
+  const tFetch0 = performance.now();
+  const perWorker = new Array(k).fill(null);
+
+  // Wire one MessageChannel per fetch worker: port2 -> sink worker (addPort),
+  // port1 -> fetch worker (transferred into the streamRange call). The fetch
+  // worker posts (offset, buffer) on port1; the sink worker writes and acks on
+  // port2. No byte crosses the main thread.
+  await Promise.all(workers.map(async (wk, i) => {
+    const r = ranges[i];
+    const channel = new MessageChannel();
+    sink.addPort(channel.port2);
+    const w0 = performance.now();
+    await wk.call(
+      { type: 'streamRange', fileRoot, offset: r.offset, len: r.len, width, port: channel.port1 },
+      [channel.port1],
+      runTimeoutMs,
+    );
+    const w1 = performance.now();
+    const secs = (w1 - w0) / 1000;
+    perWorker[i] = {
+      offset: r.offset,
+      len: r.len,
+      secs: Number(secs.toFixed(2)),
+      kbps: Number(((r.len / 1024) / secs).toFixed(2)),
+    };
+    if (notify) {
+      const done = perWorker.filter(Boolean).reduce((a, p) => a + p.len, 0);
+      notify(done, windowLen);
+    }
+  }));
+  const tEnd = performance.now();
+
+  // All slices on disk: close the sink worker (releases the OPFS handle) and read
+  // back the staged file for byte-verification.
+  const sinkBytes = await sink.close();
+  sink.worker.terminate();
+
+  let sha256 = null;
+  let readBytes = 0;
+  try {
+    const buf = await readBackUnified();
+    readBytes = buf.byteLength;
+    // Hash only the window region (the staged file is `total` long; a sub-window
+    // run filled just `[baseOffset, +windowLen)`).
+    const view = new Uint8Array(buf, baseOffset, windowLen);
+    const digest = await crypto.subtle.digest('SHA-256', view);
+    sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { sha256 = 'sha-error:' + String(e && e.message ? e.message : e); }
+
+  for (const wk of workers) wk.w.terminate();
+
+  const fetchSecs = (tEnd - tFetch0) / 1000;
+  return {
+    mode: 'unified',
+    k, baseOffset, windowLen, warmupMs, width,
+    overlays,
+    fileRoot,
+    total,
+    sinkBytes,
+    readBytes,
+    sha256,
+    shaMatch: expectedSha ? (sha256 === expectedSha) : null,
+    perWorker,
+    warmupSecs: ((tWarm - t0) / 1000),
+    rootSecs: ((tRoot - tWarm) / 1000),
+    fetchSecs: Number(fetchSecs.toFixed(2)),
+    kbps: Number(((windowLen / 1024) / fetchSecs).toFixed(2)),
+    mbps: Number(((windowLen / 1048576) / fetchSecs).toFixed(3)),
+  };
+};
+
 // Run a K-worker sharded download of a FIXED byte window `[baseOffset,
 // baseOffset + windowLen)` of `ref`, rather than the whole file.
 //

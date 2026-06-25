@@ -17,7 +17,9 @@ use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::KademliaConfig;
 use wasm_bindgen::prelude::*;
 
-use crate::client::{BrowserChunkProvider, parse_address};
+use crate::client::{
+    BrowserChunkProvider, RandomAccessSink, parse_address, stream_range_to_shared_sink,
+};
 
 /// A node running inside a Web Worker, exposing chunk retrieval to the worker's
 /// message handler. Holds the task manager so the spawned node tasks live for the
@@ -108,6 +110,35 @@ impl WorkerNode {
             len as u64,
             width,
             self.provider.clone(),
+        )
+        .await
+    }
+
+    /// Stream the byte range `[offset, offset + len)` of the file at
+    /// `file_root_hex` to `sink` at absolute file offsets, for the unified
+    /// multi-worker download. `sink` is a port-backed `RandomAccessSink` that posts
+    /// each `(offset, buffer)` straight to the shared OPFS sink worker over its
+    /// `MessagePort` and awaits the worker's ack (backpressure), so this worker
+    /// streams its slice chunk-granularly with no whole-range buffer: peak
+    /// retention is the in-flight fetch width, and the bytes land in the one staged
+    /// file the moment they decode.
+    #[wasm_bindgen(js_name = streamRangeToSink)]
+    pub async fn stream_range_to_sink(
+        &self,
+        file_root_hex: String,
+        offset: f64,
+        len: f64,
+        width: usize,
+        sink: RandomAccessSink,
+    ) -> Result<(), JsValue> {
+        let file_root = parse_address(&file_root_hex)?;
+        stream_range_to_shared_sink(
+            file_root,
+            offset as u64,
+            len as u64,
+            width,
+            self.provider.clone(),
+            &sink,
         )
         .await
     }

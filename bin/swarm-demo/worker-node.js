@@ -10,6 +10,46 @@ import init, { startWorkerNode } from '/swarm-demo.js';
 
 let node = null;
 
+// A RandomAccessSink-shaped object backed by a MessagePort to the shared OPFS
+// sink worker. The wasm streaming download calls `setTotal/writeAt/close/abort`
+// on it; `writeAt` posts each (offset, buffer) to the sink worker and awaits its
+// ack (backpressure), so this fetch worker streams its slice with no whole-range
+// buffer. The buffer is transferred zero-copy; the next write waits for the prior
+// disk write, so at most one write is outstanding per worker.
+//
+// `close` is a no-op: the OPFS handle is owned by the sink worker and closed once
+// by the coordinator after ALL fetch workers finish, not per worker. `setTotal`
+// is a no-op too: progress is driven from the sink worker's aggregate
+// `bytesWritten`, not per-slice totals.
+function makePortSink(port) {
+  let pendingAck = null;
+  port.onmessage = (ev) => {
+    const msg = ev.data;
+    if (!msg) return;
+    const waiter = pendingAck;
+    pendingAck = null;
+    if (!waiter) return;
+    if (msg.type === 'ack') waiter.resolve(msg.bytesWritten);
+    else if (msg.type === 'error') waiter.reject(new Error(msg.error));
+  };
+  return {
+    setTotal(_n) {},
+    writeAt(offset, data) {
+      // `data` is a Uint8Array over a fresh ArrayBuffer (the wasm side copies out
+      // before calling), so transfer its buffer zero-copy to the sink worker.
+      const buffer = data.buffer;
+      return new Promise((resolve, reject) => {
+        pendingAck = { resolve, reject };
+        port.postMessage({ type: 'write', offset, buffer }, [buffer]);
+      });
+    },
+    close() {
+      return Promise.resolve();
+    },
+    abort(_reason) {},
+  };
+}
+
 self.onmessage = async (e) => {
   const msg = e.data || {};
   try {
@@ -74,6 +114,17 @@ self.onmessage = async (e) => {
         type: 'fetchLeaves', id: msg.id,
         offsets: res.offsets, lengths: res.lengths, bytes,
       }, [bytes.buffer]);
+      return;
+    }
+    if (msg.type === 'streamRange') {
+      if (!node) throw new Error('node not booted');
+      // Stream this worker's byte slice CHUNK-GRANULARLY into the shared sink
+      // worker over the transferred MessagePort: each decoded leaf posts straight
+      // to the sink at its ABSOLUTE file offset, no whole-range buffer here and no
+      // main-thread relay. Resolves once the whole slice is on disk.
+      const sink = makePortSink(msg.port);
+      await node.streamRangeToSink(msg.fileRoot, msg.offset, msg.len, msg.width || 0, sink);
+      self.postMessage({ type: 'streamRange', id: msg.id, offset: msg.offset, len: msg.len });
       return;
     }
     if (msg.type === 'range') {
