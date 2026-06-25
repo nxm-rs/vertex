@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use vertex_swarm_accounting_pricing::NoPricer;
 use vertex_swarm_api::{
-    PeerReporter, SwarmAccountingConfig, SwarmIdentity, SwarmPricing, SwarmPricingBuilder,
-    SwarmPricingConfig, SwarmSettlementProvider, SwarmSpec,
+    SwarmAccountingConfig, SwarmIdentity, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
+    SwarmSettlementProvider, SwarmSpec,
 };
 
 use crate::{Accounting, ClientAccounting};
@@ -27,7 +27,6 @@ pub struct AccountingBuilder<C, P = NoPricer> {
     config: C,
     pricing: P,
     providers: Vec<Box<dyn SwarmSettlementProvider>>,
-    reporter: Option<Arc<dyn PeerReporter>>,
 }
 
 impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
@@ -37,7 +36,6 @@ impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
             config,
             pricing: NoPricer,
             providers: Vec::new(),
-            reporter: None,
         }
     }
 }
@@ -52,14 +50,7 @@ impl<C, P> AccountingBuilder<C, P> {
             config: self.config,
             pricing,
             providers: self.providers,
-            reporter: self.reporter,
         }
-    }
-
-    /// Attach a peer reporter so accounting violations feed peer scoring.
-    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
-        self.reporter = Some(reporter);
-        self
     }
 
     /// Add a settlement provider.
@@ -112,12 +103,7 @@ impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send 
         self,
         identity: &I,
     ) -> ClientAccounting<Arc<Accounting<C, I>>, P> {
-        let mut accounting =
-            Accounting::with_providers(self.config, identity.clone(), self.providers);
-        if let Some(reporter) = self.reporter {
-            accounting = accounting.with_reporter(reporter);
-        }
-
+        let accounting = Accounting::with_providers(self.config, identity.clone(), self.providers);
         ClientAccounting::new(Arc::new(accounting), self.pricing)
     }
 }

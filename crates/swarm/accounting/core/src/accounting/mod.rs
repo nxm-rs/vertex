@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    Au, Direction, PeerAffordability, PeerReporter, ReportSource, SwarmAccountingConfig,
-    SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult, SwarmScoringEvent,
+    Au, Direction, PeerAffordability, SwarmAccountingConfig, SwarmBandwidthAccounting,
+    SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -47,7 +47,6 @@ pub struct Accounting<C, I: SwarmIdentity> {
     identity: I,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
     peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>>>,
-    reporter: Option<Arc<dyn PeerReporter>>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -58,7 +57,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(Vec::new()),
             peers: RwLock::new(HashMap::new()),
-            reporter: None,
         }
     }
 
@@ -76,17 +74,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(providers),
             peers: RwLock::new(HashMap::new()),
-            reporter: None,
         }
-    }
-
-    /// Attach a peer reporter so accounting violations feed peer scoring.
-    ///
-    /// Reporting is best-effort and non-blocking. Without a reporter,
-    /// violations only surface as errors to the caller, exactly as before.
-    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
-        self.reporter = Some(reporter);
-        self
     }
 
     /// Get a reference to the configuration.
@@ -122,28 +110,25 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let disconnect_threshold = self.config.disconnect_threshold();
         let threshold = -disconnect_threshold;
         if projected < threshold {
-            // Law broken: the peer stopped accepting settlement (refresh or
-            // payment), letting our debt reach the disconnect threshold.
+            // Refuse the receive: our debt to this peer would cross our own
+            // disconnect line. The caller routes the chunk elsewhere while a
+            // background settle drains the debt below the line.
             //
-            // Reported once per breach episode: a successful grant ends the
-            // episode, so retries against an already-broken balance do not
-            // stack score penalties.
-            if state.mark_breach()
-                && let Some(reporter) = &self.reporter
-            {
-                reporter.report_peer(
-                    &peer,
-                    SwarmScoringEvent::AccountingViolation,
-                    ReportSource::Accounting,
-                );
-            }
+            // The breach is never scored against the peer. Our debt reaching our
+            // own disconnect line is a local pacing outcome, not peer
+            // misbehaviour: a debtor cannot blame its creditor for its own
+            // unpaid debt, and under a sustained download the closest serving
+            // peers reach this line purely because the download outruns the rate
+            // at which they forgive our pseudosettle debt. Scoring it evicted and
+            // banned the healthy storers the download depends on. The remote
+            // enforces its own view by refusing or resetting us; we mirror that
+            // with the refusal alone.
             return Err(AccountingError::DisconnectThreshold {
                 peer,
                 balance: current_balance,
                 threshold: disconnect_threshold,
             });
         }
-        state.clear_breach();
 
         state.add_reserved(price);
         Ok(ReceiveAction::new(state, price))
@@ -681,22 +666,6 @@ mod tests {
         assert_eq!(handle.balance(), au(300));
     }
 
-    #[derive(Default)]
-    struct RecordingReporter {
-        reports: parking_lot::Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
-    }
-
-    impl PeerReporter for RecordingReporter {
-        fn report_peer(
-            &self,
-            overlay: &OverlayAddress,
-            event: SwarmScoringEvent,
-            source: ReportSource,
-        ) {
-            self.reports.lock().push((*overlay, event, source));
-        }
-    }
-
     /// Config with payment threshold 1000 and 25% tolerance, so the
     /// disconnect threshold is 1250.
     fn small_config() -> BandwidthConfig {
@@ -714,38 +683,30 @@ mod tests {
     const SMALL_DISCONNECT_THRESHOLD: Au = Au::new(1250);
 
     #[test]
-    fn test_violation_reported_once_per_breach_episode() {
-        let reporter = Arc::new(RecordingReporter::default());
-        let accounting = Accounting::new(small_config(), test_identity())
-            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+    fn test_receive_breach_refuses_without_scoring_the_peer() {
+        // A debtor breaching its own disconnect line refuses the receive so the
+        // caller routes elsewhere, but never scores the creditor: the debt
+        // reaching our own line is a local pacing outcome, not peer
+        // misbehaviour. Accounting holds no reporter, so a breach can never feed
+        // peer scoring.
+        let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
 
-        // First breach reports exactly once.
         assert!(matches!(
             accounting.prepare_receive(peer, au(2000), true),
             Err(AccountingError::DisconnectThreshold { .. })
         ));
-        assert_eq!(reporter.reports.lock().len(), 1);
-        let (reported_peer, event, source) = reporter.reports.lock()[0];
-        assert_eq!(reported_peer, peer);
-        assert_eq!(event, SwarmScoringEvent::AccountingViolation);
-        assert_eq!(source, ReportSource::Accounting);
-
-        // Retrying against the same broken state does not stack reports.
+        // Retrying against the broken state keeps refusing.
         assert!(accounting.prepare_receive(peer, au(2000), true).is_err());
         assert!(accounting.prepare_receive(peer, au(3000), true).is_err());
-        assert_eq!(reporter.reports.lock().len(), 1);
 
-        // A successful grant ends the episode...
+        // A receive within the line is granted again (episode clears), then a
+        // fresh breach refuses once more.
         let action = accounting
             .prepare_receive(peer, au(100), true)
             .expect("within threshold");
         drop(action);
-        assert_eq!(reporter.reports.lock().len(), 1);
-
-        // ...so the next breach is a new episode and reports again.
         assert!(accounting.prepare_receive(peer, au(2000), true).is_err());
-        assert_eq!(reporter.reports.lock().len(), 2);
     }
 
     #[test]

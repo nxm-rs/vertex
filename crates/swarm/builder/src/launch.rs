@@ -1267,10 +1267,13 @@ mod tests {
         );
     }
 
-    /// An accounting violation must reach the peer manager wired as reporter and
-    /// lower the peer's score.
+    /// A debtor breaching its own disconnect line refuses the receive but never
+    /// scores the creditor: downloading past our own debt line is a local pacing
+    /// outcome, not peer misbehaviour, so a peer wired as reporter keeps its
+    /// score. Scoring it evicted and banned the healthy storers a download
+    /// depends on.
     #[test]
-    fn accounting_violation_reaches_peer_manager() {
+    fn receive_breach_does_not_lower_peer_score() {
         let identity = test_identity_arc();
         let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
         let overlay = peer_manager.store_discovered_peer(test_swarm_peer(0xab));
@@ -1278,25 +1281,23 @@ mod tests {
             .get_peer_score(&overlay)
             .expect("stored peer has a score");
 
-        let reporter: Arc<dyn PeerReporter> = peer_manager.clone();
         let config = DefaultBandwidthConfig::default();
         let over_limit = config.disconnect_threshold() + Au::new(1);
         let accounting = AccountingBuilder::new(config)
             .with_pricer_from_config(identity.spec().clone())
-            .with_reporter(reporter)
             .build(&identity);
 
-        // A debit projected past the disconnect threshold is the violation the
-        // accounting reports.
+        // A debit projected past the disconnect threshold is refused.
         let result = accounting
             .bandwidth()
             .prepare_receive(overlay, over_limit, true);
         assert!(result.is_err());
 
+        // The peer's score is unchanged: the breach is never scored.
         let after = peer_manager
             .get_peer_score(&overlay)
             .expect("peer still scored");
-        assert!(after < baseline, "violation must lower the score");
+        assert_eq!(after, baseline, "a receive breach must not score the peer");
     }
 
     /// The shared accounting wired into the client service via `with_accounting`
