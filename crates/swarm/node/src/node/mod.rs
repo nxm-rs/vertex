@@ -25,7 +25,7 @@ mod launch;
 #[cfg_attr(target_arch = "wasm32", path = "nat_wasm.rs")]
 mod nat;
 pub(crate) mod stats;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 #[allow(unreachable_pub)]
 mod storer;
 pub(crate) mod task;
@@ -45,5 +45,5 @@ pub use error::NodeBuildError;
 #[cfg(feature = "swap")]
 pub use launch::LauncherSwapConfig;
 pub use launch::{ClientLauncher, LaunchedClient};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};

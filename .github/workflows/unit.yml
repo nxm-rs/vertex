@@ -62,6 +62,52 @@ jobs:
           fi
           echo "cone guard: vertex-ffi is free of the observability server stack"
 
+  # The `vertex` binary ships two cones: the default bare client (no storer code,
+  # no chain, no swap) and the full storer node behind `--features storer`. The
+  # --all-features clippy/test jobs already cover the union; this job pins the two
+  # shipped cones and enforces that the default tree never resolves the storer
+  # crates.
+  features:
+    name: features
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build default client cone
+        run: cargo build -p vertex
+      - name: Clippy default client cone
+        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets -- -D warnings
+      - name: Build storer cone
+        run: cargo build -p vertex --features storer
+      - name: Clippy storer cone
+        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets --features storer -- -D warnings
+      # The default binary must not resolve the storer code cone. Pure
+      # `cargo tree`, no compile.
+      - name: Storer cone guard (default vertex)
+        run: |
+          tree="$(cargo tree -p vertex -e features)"
+          leaked=""
+          for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
+            if grep -q "$crate" <<<"$tree"; then
+              leaked="$leaked $crate"
+            fi
+          done
+          if [ -n "$leaked" ]; then
+            echo "cone guard: default vertex pulls the storer cone:$leaked" >&2
+            exit 1
+          fi
+          echo "cone guard: default vertex is free of the storer cone"
+
   test:
     name: test
     runs-on: ubuntu-latest
@@ -177,7 +223,7 @@ jobs:
     name: ci success
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, test, doc, wasm]
+    needs: [fmt, clippy, features, test, doc, wasm]
     steps:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1

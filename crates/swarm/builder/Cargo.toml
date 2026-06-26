@@ -31,10 +31,22 @@ chain = [
 # Combine with `chain` to enable on-chain cashout of received cheques. Off by
 # default so the chain-free client node stays the default cone.
 swap = ["vertex-swarm-node/swap"]
-# Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
-# stack, the on-chain chequebook client, and the swap settlement service.
-# Client nodes leave this off.
-storer = ["chain", "swap"]
+# The storer code cone: the persisting reserve, the neighbourhood puller, the
+# batch store, and the redistribution config, plus the storer node module in
+# `vertex-swarm-node`. Pulling this keeps the storer builders, configs and launch
+# path out of the default client build. It carries no chain or settlement on its
+# own; the role feature below adds those.
+storer-core = [
+    "dep:vertex-swarm-storer",
+    "dep:vertex-swarm-puller",
+    "dep:vertex-swarm-postage",
+    "dep:vertex-swarm-redistribution",
+    "vertex-swarm-node/storer",
+]
+# Node role: the storer settles bandwidth over SWAP, so it pulls in the storer
+# cone plus the chain stack, the on-chain chequebook client, and the swap
+# settlement service. Client nodes leave this off.
+storer = ["storer-core", "chain", "swap"]
 
 [dependencies]
 # vertex - node infrastructure
@@ -52,14 +64,14 @@ vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-storage-redb.workspace = true
-vertex-swarm-redistribution.workspace = true
-# The persisting reserve the storer launch path wires as the node's local store.
-vertex-swarm-storer.workspace = true
-# The neighbourhood pull-sync service the storer launch path spawns over the
-# reserve, with the node providing the concrete seam impls.
-vertex-swarm-puller.workspace = true
-# The batch store and admission validator the reserve requires for stamped admission.
-vertex-swarm-postage.workspace = true
+# The storer cone (behind `storer-core`): the redistribution config, the
+# persisting reserve, the neighbourhood pull-sync service, and the batch store and
+# admission validator the reserve requires for stamped admission. Optional so the
+# default client build never compiles them.
+vertex-swarm-redistribution = { workspace = true, optional = true }
+vertex-swarm-storer = { workspace = true, optional = true }
+vertex-swarm-puller = { workspace = true, optional = true }
+vertex-swarm-postage = { workspace = true, optional = true }
 vertex-swarm-topology.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }

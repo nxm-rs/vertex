@@ -47,6 +47,20 @@ check-cone:
         exit 1
     fi
     echo "cone guard: vertex-ffi is free of the observability server stack"
+    # The default `vertex` binary is a bare client: it must not resolve the
+    # storer code cone. The full storer node lives behind `--features storer`.
+    default_tree="$(cargo tree -p vertex -e features)"
+    storer_leaked=""
+    for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
+        if grep -q "$crate" <<<"$default_tree"; then
+            storer_leaked="$storer_leaked $crate"
+        fi
+    done
+    if [ -n "$storer_leaked" ]; then
+        echo "cone guard: default vertex pulls the storer cone:$storer_leaked" >&2
+        exit 1
+    fi
+    echo "cone guard: default vertex is free of the storer cone"
 
 build:
     cargo build --all-features

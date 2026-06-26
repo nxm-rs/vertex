@@ -105,13 +105,14 @@ vertex-swarm-redistribution = { workspace = true, optional = true }
 # p2p: the native transport pulls tcp/dns/mdns/upnp/autonat; the browser build
 # trims to the wire-protocol features and dials over a websocket transport.
 #
-# The storer protocol tier (pullsync syncer and puller) is native-only: the
-# storer node module is `cfg(not(wasm32))`, so these stay out of the wasm client
-# cone.
+# The storer protocol tier (pullsync syncer and puller) is native-only and gated
+# behind the `storer` feature: the storer node module is `cfg(all(not(wasm32),
+# feature = "storer"))`, so these stay out of both the wasm client cone and the
+# default native client build.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libp2p.workspace = true
-vertex-swarm-storer-behaviour.workspace = true
-vertex-swarm-puller.workspace = true
+vertex-swarm-storer-behaviour = { workspace = true, optional = true }
+vertex-swarm-puller = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", default-features = false, features = [
@@ -177,10 +178,18 @@ cli = [
     "dep:serde",
     "dep:vertex-node-api",
     "dep:vertex-swarm-accounting-pricing",
-    "dep:vertex-swarm-redistribution",
     "vertex-swarm-localstore/cli",
     "vertex-swarm-primitives/serde",
     "alloy-primitives/serde",
+]
+# The storer node cone: the `StorerNode` composite over the pullsync syncer and
+# puller, plus the redistribution config the CLI surfaces. Off by default so the
+# default native build is a bare client; the storer node module is gated on this
+# feature in addition to `cfg(not(wasm32))`.
+storer = [
+    "dep:vertex-swarm-storer-behaviour",
+    "dep:vertex-swarm-puller",
+    "dep:vertex-swarm-redistribution",
 ]
 # Browser-only IndexedDB cache backend for the embedded client. Test-facing on
 # the node crate: it enables the localstore backend so the wasm acceptance test

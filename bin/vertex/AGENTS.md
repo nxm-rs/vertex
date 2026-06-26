@@ -4,6 +4,12 @@ The shipped binary. It is intentionally thin: it picks a global allocator, build
 
 Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-specific overlay.
 
+## Build cones
+
+The default `vertex` build is a bare client: it compiles neither the storer code cone (reserve, puller, batch store, redistribution, the `StorerNode` composite) nor the chain or swap stacks. Selecting `--features storer` compiles the full storer node and pulls the chain and swap stacks with it; a default binary asked to run a storer at runtime returns an error rather than panicking, telling the operator to rebuild with `--features storer`. The `chain` and `swap` features add their stacks on their own for a swap-capable client without the storer cone.
+
+The cone guard (`just check-cone`, mirrored in the `features` CI job) enforces that the default tree never resolves the storer crates. The CI matrix must exercise at least the default client build, the `--features storer` build, and the existing `--all-features` build.
+
 ## Dos
 
 - Keep `main.rs` small. New CLI behaviour goes into `vertex-node-commands` or the relevant protocol args crate, not here.

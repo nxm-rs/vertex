@@ -19,6 +19,7 @@ use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
+#[cfg(feature = "storer-core")]
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
@@ -150,6 +151,7 @@ impl_common_config_getters!(ClientConfig);
 impl_builds_protocol!(ClientConfig, "Swarm Client");
 
 /// Validated configuration for storer (full) node with storage and redistribution.
+#[cfg(feature = "storer-core")]
 #[derive(Clone)]
 pub struct StorerConfig {
     spec: Arc<Spec>,
@@ -163,6 +165,7 @@ pub struct StorerConfig {
     swap: SwapConfig,
 }
 
+#[cfg(feature = "storer-core")]
 impl StorerConfig {
     #[expect(
         clippy::too_many_arguments,
@@ -219,5 +222,7 @@ impl StorerConfig {
     }
 }
 
+#[cfg(feature = "storer-core")]
 impl_common_config_getters!(StorerConfig);
+#[cfg(feature = "storer-core")]
 impl_builds_protocol!(StorerConfig, "Swarm Storer");

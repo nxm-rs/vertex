@@ -36,6 +36,7 @@
 
 #[cfg(feature = "chain")]
 mod chain;
+#[cfg(feature = "storer-core")]
 mod composite;
 pub mod config;
 mod error;
@@ -43,14 +44,14 @@ mod handle;
 mod launch;
 mod node;
 mod providers;
+#[cfg(feature = "storer-core")]
 mod pullsync;
 pub mod verify;
 
 // Builders
-pub use node::{
-    ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder, NodeBuilder,
-    StorerNodeBuilder,
-};
+pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
+#[cfg(feature = "storer-core")]
+pub use node::{DefaultStorerBuilder, StorerNodeBuilder};
 
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
@@ -60,10 +61,14 @@ pub use providers::NetworkChunkProvider;
 pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs
-pub use config::{BootnodeConfig, ClientConfig, StorerConfig};
+#[cfg(feature = "storer-core")]
+pub use config::StorerConfig;
+pub use config::{BootnodeConfig, ClientConfig};
 
 // Launch types (for SwarmLaunchConfig associated types)
-pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes, StorerLaunchTypes};
+#[cfg(feature = "storer-core")]
+pub use launch::StorerLaunchTypes;
+pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes};
 
 // Errors
 pub use error::SwarmNodeError;

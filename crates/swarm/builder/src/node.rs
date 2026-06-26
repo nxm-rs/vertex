@@ -8,22 +8,30 @@ use std::sync::Arc;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
+#[cfg(feature = "storer-core")]
+use vertex_swarm_api::{BinCursorStore, SwarmLocalStoreConfig, SwarmStorageConfig};
 use vertex_swarm_api::{
-    BinCursorStore, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
-    SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig,
-    SwarmRoutingConfig, SwarmStorageConfig,
+    SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore, SwarmNetworkConfig,
+    SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
+#[cfg(feature = "storer-core")]
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
-use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
+#[cfg(feature = "storer-core")]
+use crate::config::StorerConfig;
+use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
-use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
-use crate::launch::{CacheSeam, ReserveSeam};
+#[cfg(feature = "storer-core")]
+use crate::handle::BuiltStorer;
+use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode};
+use crate::launch::CacheSeam;
+#[cfg(feature = "storer-core")]
+use crate::launch::ReserveSeam;
 use crate::verify::ChunkVerifyConfig;
 
 /// Builder for bootnodes.
@@ -75,6 +83,7 @@ where
             chain: ChainConfig::default(),
             swap: SwapConfig::default(),
             cache: None,
+            #[cfg(feature = "storer-core")]
             reserve: None,
         }
     }
@@ -97,6 +106,7 @@ where
     cache: Option<CacheSeam>,
     /// Carried here so a wrapping storer builder keeps it across the storage
     /// transition; consumed only by the storer build path.
+    #[cfg(feature = "storer-core")]
     reserve: Option<ReserveSeam>,
 }
 
@@ -171,6 +181,7 @@ where
     /// consumed only by the storer build path. A client never wires a reserve.
     /// The reserve must implement [`BinCursorStore`] so the served reserve
     /// capabilities can query per-bin counts and insertion cursors.
+    #[cfg(feature = "storer-core")]
     pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
         self.reserve = Some(ReserveSeam::Ready(reserve));
         self
@@ -181,6 +192,7 @@ where
     /// The factory receives the opened shared database (`None` in-memory). The
     /// reserve must implement [`BinCursorStore`] so the served reserve
     /// capabilities can query per-bin counts and insertion cursors.
+    #[cfg(feature = "storer-core")]
     pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
     where
         F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
@@ -192,6 +204,7 @@ where
     }
 
     /// Transition to storer builder by adding storage.
+    #[cfg(feature = "storer-core")]
     pub fn with_storage<S, St>(
         self,
         local_store: S,
@@ -210,6 +223,7 @@ where
 }
 
 /// Builder for storer nodes.
+#[cfg(feature = "storer-core")]
 pub struct StorerNodeBuilder<I, N, A, S, St>
 where
     I: SwarmIdentity,
@@ -223,6 +237,7 @@ where
     storage: St,
 }
 
+#[cfg(feature = "storer-core")]
 impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
 where
     I: SwarmIdentity,
@@ -282,6 +297,7 @@ pub type DefaultClientBuilder =
     ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
 
 /// Default storer builder.
+#[cfg(feature = "storer-core")]
 pub type DefaultStorerBuilder = StorerNodeBuilder<
     Arc<Identity>,
     NetworkConfig<KademliaConfig>,
@@ -368,6 +384,7 @@ impl DefaultClientBuilder {
     }
 }
 
+#[cfg(feature = "storer-core")]
 impl DefaultStorerBuilder {
     pub fn from_parts(
         spec: Arc<Spec>,
@@ -441,6 +458,7 @@ impl From<ClientConfig> for DefaultClientBuilder {
     }
 }
 
+#[cfg(feature = "storer-core")]
 impl From<StorerConfig> for DefaultStorerBuilder {
     fn from(config: StorerConfig) -> Self {
         Self::from_config(config)

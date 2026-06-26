@@ -10,11 +10,13 @@ use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
+#[cfg(feature = "storer-core")]
+use vertex_swarm_api::StorerComponents;
 #[cfg(feature = "chain")]
 use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmClientAccounting,
-    SwarmLaunchConfig, SwarmNodeType, construct,
+    BootnodeComponents, ClientComponents, PeerReporter, SwarmClientAccounting, SwarmLaunchConfig,
+    SwarmNodeType, construct,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
@@ -24,13 +26,17 @@ use vertex_swarm_node::{
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
+#[cfg(feature = "storer-core")]
 use vertex_swarm_postage::DbBatchStore;
 use vertex_swarm_spec::{Loggable, Spec};
+#[cfg(feature = "storer-core")]
 use vertex_swarm_storer::DbReserve;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::{GracefulShutdown, NodeTaskFn};
 
-use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
+#[cfg(feature = "storer-core")]
+use crate::config::StorerConfig;
+use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
 use crate::providers::NetworkChunkProvider;
 use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
@@ -216,6 +222,7 @@ define_launch_types!(
     ClientLaunchTypes,
     with_client
 );
+#[cfg(feature = "storer-core")]
 define_launch_types!(
     /// Storer launch types: bootnode types plus the default accounting stack.
     StorerLaunchTypes,
@@ -231,6 +238,7 @@ type StoreFactory<'a> =
     Box<dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<NodeStore, SwarmNodeError> + Send + 'a>;
 
 /// Guard message: a storer with no reserve is an internal wiring bug, not config.
+#[cfg(feature = "storer-core")]
 const STORER_RESERVE_MISSING: &str = "storer reserve missing";
 
 /// The node's local store, plus the storer reserve view when the node is a storer.
@@ -244,15 +252,18 @@ const STORER_RESERVE_MISSING: &str = "storer reserve missing";
 /// leaves `reserve` `None`.
 struct NodeStore {
     local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    #[cfg(feature = "storer-core")]
     reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
     /// The reserve as the pullsync server snapshot, carried only for a storer
     /// whose reserve is the default [`DbReserve`]. A reserve seam that is not a
     /// `DbReserve` leaves this `None`, so pullsync inbound serving is skipped.
+    #[cfg(feature = "storer-core")]
     pullsync: Option<Arc<dyn vertex_swarm_api::PullStorage>>,
     /// A second handle onto the reserve's batch set, carried only for the default
     /// [`DbReserve`], so the puller's funding verifier reads the same batches the
     /// reserve admits against. A reserve seam leaves this `None` and the puller
     /// falls back to the signature-only verifier.
+    #[cfg(feature = "storer-core")]
     batches: Option<DbBatchStore<RedbDatabase>>,
 }
 
@@ -269,6 +280,7 @@ pub(crate) enum CacheSeam {
 /// A reserve override supplied through the builder. With no seam the storer
 /// launch path builds the default admission-gated [`DbReserve`] over the shared
 /// database.
+#[cfg(feature = "storer-core")]
 pub(crate) enum ReserveSeam {
     /// A pre-built reserve, used as-is.
     Ready(Arc<dyn vertex_swarm_api::BinCursorStore>),
@@ -285,6 +297,7 @@ pub(crate) type CacheFactory = Box<
 >;
 
 /// Builds a reserve from the opened shared database (if any).
+#[cfg(feature = "storer-core")]
 pub(crate) type ReserveFactory = Box<
     dyn FnOnce(
             Option<Arc<RedbDatabase>>,
@@ -317,10 +330,12 @@ struct ClientNodeParts {
     chunks: VerifiedChunkProvider,
     /// The node's local store, erased to the trait; the storer wires this same
     /// instance into its components so retrieval and storage share one store.
+    #[cfg(feature = "storer-core")]
     store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     /// The storer reserve, erased to [`BinCursorStore`]; `None` for a client. The
     /// storer wires this same instance so its components and the run loop share
     /// one reserve.
+    #[cfg(feature = "storer-core")]
     reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
 }
 
@@ -366,8 +381,11 @@ async fn build_client_backed_node(
 
     let NodeStore {
         local: store,
+        #[cfg(feature = "storer-core")]
         reserve,
+        #[cfg(feature = "storer-core")]
         pullsync,
+        #[cfg(feature = "storer-core")]
         batches,
     } = (params.make_store)(db.clone())?;
     let node_store = Arc::clone(&store);
@@ -400,6 +418,7 @@ async fn build_client_backed_node(
     // client-backed node runs the bare client behaviour. The branch differs only
     // in node assembly and the optional puller spawn; accounting, selection, and
     // settlement wiring below is identical.
+    #[cfg(feature = "storer-core")]
     let StorerCapable {
         topology,
         client_service,
@@ -433,6 +452,23 @@ async fn build_client_backed_node(
         )
         .await?
     };
+    // Without the storer cone the only client-backed node is a bare client.
+    #[cfg(not(feature = "storer-core"))]
+    let StorerCapable {
+        topology,
+        client_service,
+        client_handle,
+        run,
+    } = assemble_client_node(
+        params.identity,
+        params.network,
+        node_store,
+        peer_store,
+        pseudosettle_event_sender,
+        #[cfg(feature = "swap")]
+        swap_event_sender,
+    )
+    .await?;
 
     spawn_peer_manager_task(
         Arc::clone(topology.peer_manager()),
@@ -527,7 +563,9 @@ async fn build_client_backed_node(
         task,
         topology,
         chunks,
+        #[cfg(feature = "storer-core")]
         store,
+        #[cfg(feature = "storer-core")]
         reserve,
     })
 }
@@ -604,6 +642,7 @@ async fn assemble_client_node(
 
 /// Assemble a `StorerNode` with the reserve-backed pullsync syncer, spawn its
 /// puller over the topology seams, and return the run-task factory.
+#[cfg(feature = "storer-core")]
 #[allow(clippy::too_many_arguments)]
 async fn assemble_storer_node(
     ctx: &dyn InfrastructureContext,
@@ -687,11 +726,13 @@ async fn assemble_storer_node(
 
 /// Guard message: a storer whose reserve is not the default `DbReserve` cannot
 /// serve pullsync.
+#[cfg(feature = "storer-core")]
 const STORER_PULLSYNC_MISSING: &str = "storer pullsync reserve view missing";
 
 /// Open the puller's interval store over the shared database, or an in-memory
 /// database when persistence is off (intervals reset on restart, matching the
 /// in-memory reserve).
+#[cfg(feature = "storer-core")]
 fn open_interval_store(
     db: Option<Arc<RedbDatabase>>,
 ) -> Result<Arc<vertex_swarm_storer::DbIntervalStore<RedbDatabase>>, SwarmNodeError> {
@@ -709,6 +750,7 @@ fn open_interval_store(
 /// Spawn the neighbourhood puller, returning the handle the node forwards
 /// pullsync events through. The control surface lives on the node side and is
 /// driven by the puller's `PullsyncControl` command channel.
+#[cfg(feature = "storer-core")]
 fn spawn_storer_puller(
     ctx: &dyn InfrastructureContext,
     topology: TopologyHandle<Arc<Identity>>,
@@ -863,24 +905,33 @@ fn client_store_factory(
         None => Box::new(move |_db| {
             Ok(NodeStore {
                 local: default_cache(cache_budget_bytes, soc_cache_ttl),
+                #[cfg(feature = "storer-core")]
                 reserve: None,
+                #[cfg(feature = "storer-core")]
                 pullsync: None,
+                #[cfg(feature = "storer-core")]
                 batches: None,
             })
         }),
         Some(CacheSeam::Ready(local)) => Box::new(move |_db| {
             Ok(NodeStore {
                 local,
+                #[cfg(feature = "storer-core")]
                 reserve: None,
+                #[cfg(feature = "storer-core")]
                 pullsync: None,
+                #[cfg(feature = "storer-core")]
                 batches: None,
             })
         }),
         Some(CacheSeam::Factory(factory)) => Box::new(move |db| {
             Ok(NodeStore {
                 local: factory(db)?,
+                #[cfg(feature = "storer-core")]
                 reserve: None,
+                #[cfg(feature = "storer-core")]
                 pullsync: None,
+                #[cfg(feature = "storer-core")]
                 batches: None,
             })
         }),
@@ -898,6 +949,7 @@ fn default_cache(
     ))
 }
 
+#[cfg(feature = "storer-core")]
 impl SwarmLaunchConfig for StorerConfig {
     type Types = StorerLaunchTypes;
     type Providers = StorerComponents<
@@ -917,6 +969,7 @@ impl SwarmLaunchConfig for StorerConfig {
 }
 
 /// Shared return type for the seam-aware entrypoint and the trait impl.
+#[cfg(feature = "storer-core")]
 type StorerProviders = StorerComponents<
     TopologyHandle<Arc<Identity>>,
     VerifiedChunkProvider,
@@ -931,6 +984,7 @@ type StorerProviders = StorerComponents<
 /// pushsync-ingest reserve, layered under a default in-memory forwarding cache for
 /// the retrieval-serve view. A reserve seam replaces the reserve; a cache seam
 /// replaces the forwarding cache.
+#[cfg(feature = "storer-core")]
 pub(crate) async fn build_storer(
     config: StorerConfig,
     ctx: &dyn InfrastructureContext,
@@ -983,6 +1037,7 @@ pub(crate) async fn build_storer(
 /// The storer reserve resolved from its seam: the reserve view, the optional
 /// pullsync server snapshot, and the optional second batch-store handle (both
 /// present only for the default [`DbReserve`]).
+#[cfg(feature = "storer-core")]
 type ResolvedReserve = (
     Arc<dyn vertex_swarm_api::BinCursorStore>,
     Option<Arc<dyn vertex_swarm_api::PullStorage>>,
@@ -995,6 +1050,7 @@ type ResolvedReserve = (
 /// view is a [`CacheThenReserve`] over both backends (reserve wins on overlap).
 /// Defaults: the admission-gated [`DbReserve`] and an in-memory
 /// [`vertex_swarm_localstore::ChunkStore`] cache sized from the local-store config.
+#[cfg(feature = "storer-core")]
 fn storer_store_factory(
     cache: Option<CacheSeam>,
     reserve: Option<ReserveSeam>,
@@ -1043,6 +1099,7 @@ fn storer_store_factory(
 
 /// Block confirmations a batch must accrue before the reserve admits chunks
 /// stamped under it, so a reorg cannot retroactively invalidate admitted chunks.
+#[cfg(feature = "storer-core")]
 const RESERVE_CONFIRMATION_THRESHOLD: u64 = 10;
 
 /// Build the storer reserve over the shared database, erased to the local-store
@@ -1056,6 +1113,7 @@ const RESERVE_CONFIRMATION_THRESHOLD: u64 = 10;
 /// `AdmissionValidator` enforcing [`RESERVE_CONFIRMATION_THRESHOLD`] confirmations
 /// plus structural and signature checks. The batch store starts empty, so the
 /// reserve admits nothing until the postage indexer populates it.
+#[cfg(feature = "storer-core")]
 fn build_storer_reserve(
     db: Option<Arc<RedbDatabase>>,
     identity: &Arc<Identity>,
@@ -1351,6 +1409,7 @@ mod tests {
     /// The storer factory builds the admission-gated reserve, not the cache-only
     /// client store: a put for an unknown batch is rejected, proving admission is
     /// wired. The full admissible-put path is covered by the reserve crate.
+    #[cfg(feature = "storer-core")]
     #[test]
     fn storer_reserve_factory_builds_admission_gated_store() {
         use alloy_primitives::{B256, Signature};
@@ -1415,6 +1474,7 @@ mod tests {
 
         let factory = client_store_factory(None, 1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST);
         let node_store = factory(None).expect("default cache builds");
+        #[cfg(feature = "storer-core")]
         assert!(
             node_store.reserve.is_none(),
             "a client never carries a reserve"
@@ -1445,9 +1505,11 @@ mod tests {
             Arc::ptr_eq(&cache, &node_store.local),
             "the supplied cache must reach the node store unchanged"
         );
+        #[cfg(feature = "storer-core")]
         assert!(node_store.reserve.is_none());
     }
 
+    #[cfg(feature = "storer-core")]
     #[test]
     fn storer_factory_honors_a_ready_reserve_seam() {
         use nectar_primitives::{AnyChunk, ContentChunk};
@@ -1495,6 +1557,7 @@ mod tests {
 
     /// The default storer path (`None`, `None`) layers the default cache over the
     /// built reserve, with serve-view writes reaching the cache only.
+    #[cfg(feature = "storer-core")]
     #[test]
     fn storer_factory_default_layers_cache_over_built_reserve() {
         use nectar_primitives::{AnyChunk, ContentChunk};

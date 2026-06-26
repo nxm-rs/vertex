@@ -27,9 +27,11 @@ pub use node::{
     assemble_client_core, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
 pub use node::{LauncherSwapConfig, SwapWiring};
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
+pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 
 pub use vertex_swarm_api::SwarmNodeType;
 

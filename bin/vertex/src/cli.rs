@@ -11,8 +11,9 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_builder::{
     BootnodeConfig, ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder,
-    DefaultStorerBuilder, StorerConfig,
 };
+#[cfg(feature = "storer")]
+use vertex_swarm_builder::{DefaultStorerBuilder, StorerConfig};
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_primitives::SwarmNodeType;
@@ -170,6 +171,7 @@ pub async fn run() -> Result<()> {
                     .into_parts();
                 run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
             }
+            #[cfg(feature = "storer")]
             SwarmNodeType::Storer => {
                 let bandwidth = config
                     .protocol
@@ -198,6 +200,12 @@ pub async fn run() -> Result<()> {
                     .into_parts();
                 run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
             }
+            // The default binary compiles without the storer cone; refuse the
+            // role at runtime rather than panicking.
+            #[cfg(not(feature = "storer"))]
+            SwarmNodeType::Storer => Err(eyre::eyre!(
+                "this build was compiled without storer support; rebuild with `--features storer`"
+            )),
         }
     })
     .await

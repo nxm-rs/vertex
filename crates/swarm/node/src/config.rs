@@ -10,6 +10,7 @@ use vertex_swarm_accounting::{BandwidthArgs, BandwidthConfigError, DefaultBandwi
 use vertex_swarm_identity::{Identity, IdentityArgs};
 use vertex_swarm_localstore::{LocalStoreArgs, LocalStoreConfig};
 use vertex_swarm_primitives::SwarmNodeType;
+#[cfg(feature = "storer")]
 use vertex_swarm_redistribution::{RedistributionArgs, StorageConfig};
 use vertex_swarm_spec::Spec;
 
@@ -34,6 +35,7 @@ pub struct ProtocolConfig {
     pub bandwidth: BandwidthArgs,
     pub retrieval: RetrievalArgs,
     pub localstore: LocalStoreArgs,
+    #[cfg(feature = "storer")]
     pub redistribution: RedistributionArgs,
     pub chain: ChainArgs,
     pub swap: SwapArgs,
@@ -61,6 +63,7 @@ impl ProtocolConfig {
     }
 
     /// Create storage incentives configuration.
+    #[cfg(feature = "storer")]
     pub fn storage_config(&self) -> StorageConfig {
         self.redistribution.storage_config()
     }
@@ -98,7 +101,10 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.bandwidth = args.bandwidth.clone();
         self.retrieval = args.retrieval.clone();
         self.localstore = args.localstore.clone();
-        self.redistribution = args.redistribution.clone();
+        #[cfg(feature = "storer")]
+        {
+            self.redistribution = args.redistribution.clone();
+        }
         self.chain = args.chain.clone();
         self.swap = args.swap.clone();
     }
