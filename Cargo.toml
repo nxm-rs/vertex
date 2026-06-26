@@ -470,3 +470,8 @@ strip = false  # Don't strip symbols
 [profile.profiling]
 inherits = "release"
 debug = 2  # Full debug info for profiling
+
+# Release profile for the cross-platform binary matrix (cargo-dist).
+[profile.dist]
+inherits = "release"
+lto = "thin"
