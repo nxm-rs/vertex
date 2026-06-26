@@ -472,6 +472,11 @@ inherits = "release"
 debug = 2  # Full debug info for profiling
 
 # Release profile for the cross-platform binary matrix (cargo-dist).
+# debug = 0 drops DWARF (release inherits debug = 1) while keeping the symbol
+# table, so backtraces stay function-named; codegen-units = 1 plus thin LTO
+# trade build time for a smaller, faster binary.
 [profile.dist]
 inherits = "release"
 lto = "thin"
+codegen-units = 1
+debug = 0
