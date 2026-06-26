@@ -21,3 +21,16 @@ ci = ["github"]
 # without cutting a release.
 pr-run-mode = "upload"
 install-path = "CARGO_HOME"
+
+# The build needs the protobuf compiler on every platform for the gRPC server
+# crate, and Windows additionally needs nasm to build aws-lc-sys. The runners
+# do not ship these, so cargo-dist installs them before each build job.
+[dist.dependencies.apt]
+protobuf-compiler = '*'
+
+[dist.dependencies.homebrew]
+protobuf = '*'
+
+[dist.dependencies.chocolatey]
+protoc = '*'
+nasm = '*'
