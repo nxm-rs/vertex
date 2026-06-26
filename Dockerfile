@@ -24,28 +24,24 @@ COPY . .
 
 # Build the default bare client. BuildKit cache mounts speed up the registry,
 # git, and target directories; the binary is copied out within the same layer
-# because the target cache mount does not persist to later stages.
+# because the target cache mount does not persist to later stages. The dist
+# profile keeps the symbol table so panic backtraces show function names; the
+# container ships it as-is rather than stripping, since named backtraces from a
+# node daemon are worth more than the few megabytes a strip would save.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --profile dist -p vertex && \
     cp target/dist/vertex /usr/local/bin/vertex
 
-# Runtime stage.
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Non-root user.
-RUN useradd -m -u 1000 vertex
-USER vertex
-WORKDIR /home/vertex
+# Runtime stage. distroless/cc carries glibc, libgcc, and the CA bundle, which
+# is everything the binary links against (rustls plus aws-lc means no openssl,
+# so no libssl is needed). The :nonroot tag runs as an unprivileged user.
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 COPY --from=builder /usr/local/bin/vertex /usr/local/bin/vertex
 
 # p2p and gRPC.
 EXPOSE 1634 1635
 
-ENTRYPOINT ["vertex"]
+ENTRYPOINT ["/usr/local/bin/vertex"]
