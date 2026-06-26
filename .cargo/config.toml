@@ -1,9 +1,11 @@
 # Cargo configuration for vertex workspace
 
-[build]
-# Enable tokio's unstable APIs for tokio-console support.
-# Force frame pointers for CPU profiling with pprof.
-rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes"]
+# The native build carries no global rustflags. The tokio-console and pprof
+# profiling builds are opt-in and pass their own flags via RUSTFLAGS (see the
+# justfile recipes and docs/observability/profiling.md): tokio_unstable so
+# tokio emits the task instrumentation the tokio-console feature consumes,
+# force-frame-pointers for pprof flamegraphs. Keeping them out of the default
+# build leaves release artifacts free of dev-only codegen.
 
 # Threaded-wasm flags for wasm32 builds. nectar-primitives requires the
 # atomics, bulk-memory, and mutable-globals target features on wasm32

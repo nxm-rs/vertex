@@ -81,6 +81,20 @@ build:
 build-release:
     cargo build --release --all-features
 
+# Build with tokio-console. tokio only emits the task instrumentation the
+# console consumes under the tokio_unstable cfg, no longer a global rustflag.
+build-tokio-console:
+    RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features tokio-console
+
+# Build with the pprof CPU profiler. force-frame-pointers gives pprof readable
+# flamegraphs; it is no longer a global rustflag.
+build-profiling:
+    RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --features profiling
+
+# Build every profiling feature at once; needs both opt-in rustflags.
+build-profiling-all:
+    RUSTFLAGS="--cfg tokio_unstable -C force-frame-pointers=yes" cargo build --release --features "profiling,jemalloc,tokio-console"
+
 doc:
     cargo doc --all-features --no-deps
 
