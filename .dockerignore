@@ -1,0 +1,19 @@
+# Keep the build context lean: exclude build output, history, agent scaffolding,
+# and prose docs the build never reads.
+/target
+**/target
+target-wasm
+.git
+.github
+.claude
+.claude/worktrees
+docs/
+*.md
+bin/swarm-demo/dist
+.direnv
+result*
+.cargo/registry
+.zed
+.playwright-mcp
+*.tar.gz
+heap.svg
