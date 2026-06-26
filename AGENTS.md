@@ -72,6 +72,17 @@ How to apply this:
 - `vertex-swarm-primitives` is the canonical re-export surface. New nectar exports flow into the rest of the workspace through it, so consumers only see one path.
 - If something is genuinely vertex-only (a `Validated*` wrapper that depends on a vertex storage trait, for example), it stays here and the comment at the top of the type says why.
 
+## Feature and cfg contract
+
+Vertex ships three artefacts: a bare client (the default), a storer (`--features storer`), and the FFI client library (the `vertex-ffi` cdylib). This contract keeps that split idiomatic and stops cfg gates proliferating. The cone guards (`just check-cone`, the `features` CI job) enforce it.
+
+- `default = []` IS the bare client and is load-bearing: no storer cone, no chain, no swap. Never write `default = ["..."]` on a shipped crate.
+- Features are for CAPABILITIES (`chain`, `swap`, the `storer` composite, observability slices), never for node TYPES. A node type is the runtime `SwarmNodeType`, dispatched at launch, never a per-type feature.
+- `#[cfg(feature = ...)]` lives only at composition roots: `bin/vertex` (cli), `vertex-swarm-builder` (launch), `crates/ffi` (lib). Domain crates (`client-behaviour`, `client-protocol`, `api`, `topology`, the node protocol) carry no feature cfg; they take their capabilities through traits and optional providers.
+- Platform boundaries are `target_arch` cfg, never a feature. Never combine a feature and a target in one dependency table entry.
+- FFI is a crate (the cdylib artefact), not a feature. There is no `ffi` feature anywhere; the crate boundary is what scopes it.
+- A workspace member must not unconditionally enable `chain`, `swap`, or `storer` on a shared crate. Cargo unifies features across the build graph, so one such edge pulls the cone into the default client. This is the unification footgun the cone guards exist to catch.
+
 ## Build, test, lint
 
 - Edition `2024`, MSRV `1.92`. Do not raise MSRV without bumping the workspace `Cargo.toml` in the same commit.
