@@ -83,14 +83,25 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # A workspace member must not enable chain/swap/storer on a shared crate:
+      # feature unification would pull that cone into the default client. Checking
+      # the binary in isolation with no default features guards that footgun.
+      - name: Check bare client cone (no default features)
+        run: cargo check -p vertex --no-default-features
       - name: Build default client cone
         run: cargo build -p vertex
       - name: Clippy default client cone
         run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets -- -D warnings
+      # The chain-free swap client: cheque exchange without the storer cone.
+      - name: Build swap client cone
+        run: cargo build -p vertex --features swap
       - name: Build storer cone
         run: cargo build -p vertex --features storer
       - name: Clippy storer cone
         run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets --features storer -- -D warnings
+      # The embedded FFI client cdylib: native-only, client-only.
+      - name: Build FFI cone
+        run: cargo build -p vertex-ffi
       # The default binary must not resolve the storer code cone. Pure
       # `cargo tree`, no compile.
       - name: Storer cone guard (default vertex)
@@ -107,6 +118,22 @@ jobs:
             exit 1
           fi
           echo "cone guard: default vertex is free of the storer cone"
+      # The embedded FFI client must not resolve the storer code cone either: it
+      # is a client, and never enables the builder's `storer-core`.
+      - name: Storer cone guard (vertex-ffi)
+        run: |
+          tree="$(cargo tree -p vertex-ffi -e normal)"
+          leaked=""
+          for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
+            if grep -q "$crate" <<<"$tree"; then
+              leaked="$leaked $crate"
+            fi
+          done
+          if [ -n "$leaked" ]; then
+            echo "cone guard: vertex-ffi pulls the storer cone:$leaked" >&2
+            exit 1
+          fi
+          echo "cone guard: vertex-ffi is free of the storer cone"
 
   test:
     name: test
