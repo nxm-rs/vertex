@@ -1,0 +1,23 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for `dist` (cargo-dist). Generates the cross-platform binary release
+# pipeline in `.github/workflows/release.yml`. Regenerate after edits with
+# `dist generate`. Only the `vertex` package produces a binary, so the matrix
+# ships the bare client and nothing else.
+[dist]
+cargo-dist-version = "0.32.0"
+# The installers fetch the matching prebuilt archive for the host.
+installers = ["shell", "powershell"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+ci = ["github"]
+# Per-PR runs upload throwaway artefacts so reviewers can smoke-test a build
+# without cutting a release.
+pr-run-mode = "upload"
+install-path = "CARGO_HOME"

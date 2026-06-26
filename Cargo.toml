@@ -5,7 +5,7 @@ rust-version = "1.92"
 authors = ["Nexum Contributors"]
 license = "AGPL-3.0-or-later"
 homepage = "https://nxm-rs.github.io/vertex"
-repository = "https://nxm-rs.github.io/vertex"
+repository = "https://github.com/nxm-rs/vertex"
 
 [workspace]
 members = [
