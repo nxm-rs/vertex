@@ -28,8 +28,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release -p vertex && \
-    cp target/release/vertex /usr/local/bin/vertex
+    cargo build --profile dist -p vertex && \
+    cp target/dist/vertex /usr/local/bin/vertex
 
 # Runtime stage.
 FROM debian:bookworm-slim
