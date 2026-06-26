@@ -8320,6 +8320,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tracing",
+ "vergen-gitcl",
  "vertex-node-api",
  "vertex-node-builder",
  "vertex-node-commands",

@@ -1,5 +1,7 @@
 //! Swarm CLI entry point.
 
+use std::sync::LazyLock;
+
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use vertex_node_builder::NodeBuilder;
@@ -15,9 +17,19 @@ use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_spec::SwarmSpec;
 use vertex_tasks::TaskExecutor;
 
+/// Short git commit sha captured at build time, or `unknown` outside a checkout.
+const GIT_SHA: &str = match option_env!("VERGEN_GIT_SHA") {
+    Some(sha) => sha,
+    None => "unknown",
+};
+
+/// `--version` output: package version plus the short commit sha, e.g. `0.1.0 (abc1234)`.
+static VERSION: LazyLock<String> =
+    LazyLock::new(|| format!("{} ({GIT_SHA})", env!("CARGO_PKG_VERSION")));
+
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION.as_str(), about, long_about = None)]
 pub struct SwarmCli {
     /// Logging configuration (applies to all subcommands).
     #[command(flatten)]

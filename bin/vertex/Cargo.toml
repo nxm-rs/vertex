@@ -6,6 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Vertex Swarm node binary"
+build = "build.rs"
 
 [[bin]]
 name = "vertex"
@@ -82,3 +83,6 @@ console-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+vergen-gitcl = { workspace = true }
