@@ -126,3 +126,16 @@ watch:
 
 watch-test:
     cargo watch -x test
+
+# Build the release container image locally (amd64). The published image is
+# multi-arch; arm64 is built in CI.
+docker-build TAG="vertex:dev":
+    docker build -t {{TAG}} .
+
+# Show the cross-platform binary release plan (the five-target matrix).
+dist-plan:
+    dist plan
+
+# Regenerate .github/workflows/release.yml after editing dist-workspace.toml.
+dist-generate:
+    dist generate

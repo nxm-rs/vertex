@@ -30,3 +30,11 @@ The cone guard (`just check-cone`, mirrored in the `features` CI job) enforces t
 - `cargo build --release -p vertex --features jemalloc` enables jemalloc.
 - `cargo build --release -p vertex --features heap-profiling` turns on jemalloc heap profiling sampling via `MALLOC_CONF`.
 - `just run -- <args>` runs the release binary against your local config.
+
+## Versioning
+
+`--version` prints the package version plus the short commit sha, for example `0.1.0 (abc1234)`. `build.rs` stamps the sha via `vergen-gitcl` into `VERGEN_GIT_SHA`; outside a git checkout (the Docker build context excludes `.git`) it degrades to `unknown`. The version string lives in `cli.rs`, not `main.rs`.
+
+## Releasing
+
+Maintainers cut releases locally with `cargo release <level> --execute`, which bumps the workspace version, regenerates `CHANGELOG.md`, and creates the signed `vX.Y.Z` tag. Pushing the tag triggers the cargo-dist binary matrix (`release.yml`) and the multi-arch Docker build (`docker.yml`). The matrix ships the default bare client for five targets: `x86_64`/`aarch64` Linux (gnu), `x86_64`/`aarch64` macOS, and `x86_64` Windows (msvc). Full flow in `RELEASING.md`. The storer build is `--features storer`; the release artefacts are the default bare client only.
