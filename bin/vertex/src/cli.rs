@@ -6,6 +6,7 @@ use vertex_node_builder::NodeBuilder;
 use vertex_node_commands::{HasLogs, HasTracing, InfraArgs, LogArgs, TracingArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
+use vertex_node_core::version;
 #[cfg(feature = "storer")]
 use vertex_swarm_builder::StorerConfig;
 use vertex_swarm_builder::{BootnodeConfig, ChunkVerifyConfig, ClientConfig};
@@ -17,7 +18,7 @@ use vertex_tasks::TaskExecutor;
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = version::LONG_VERSION.as_str(), about, long_about = None)]
 pub struct SwarmCli {
     /// Logging configuration (applies to all subcommands).
     #[command(flatten)]
@@ -116,11 +117,15 @@ pub async fn run() -> Result<()> {
             .start_metrics_server()
             .await?;
 
-        // Build validated configs
+        // Build validated configs. Announce the build-stamped agent string
+        // (`vertex/<version>-<sha>`) over libp2p identify; the binary is the
+        // injection point because the lower node and builder crates stay free of
+        // the version crate.
         let network = config
             .protocol
             .network_config()
-            .map_err(|e| eyre::eyre!("network config error: {}", e))?;
+            .map_err(|e| eyre::eyre!("network config error: {}", e))?
+            .with_agent_version(version::AGENT_VERSION.clone());
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
 
         let retrieval = config.protocol.retrieval();

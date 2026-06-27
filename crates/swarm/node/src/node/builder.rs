@@ -15,10 +15,25 @@ use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyBehaviourBuilder, TopologyConfig, TopologyHandle,
 };
 
+use vertex_swarm_net_identify as identify;
+
 use super::base::BaseNode;
 use super::error::NodeBuildError;
 
 use crate::BootnodeProvider;
+
+/// Build the identify config, announcing `agent_version` when the assembly layer
+/// supplied one and otherwise keeping the protocol library default.
+pub(crate) fn identify_config(
+    local_public_key: PublicKey,
+    agent_version: Option<&str>,
+) -> identify::Config {
+    let config = identify::Config::new(local_public_key);
+    match agent_version {
+        Some(agent_version) => config.with_agent_version(agent_version),
+        None => config,
+    }
+}
 
 pub(crate) type PeerStore = std::sync::Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
@@ -92,6 +107,10 @@ struct ConfigWithBootnodes<'a, C> {
 impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
     fn listen_addrs(&self) -> &[Multiaddr] {
         self.inner.listen_addrs()
+    }
+
+    fn agent_version(&self) -> Option<&str> {
+        self.inner.agent_version()
     }
 
     fn bootnodes(&self) -> &[Multiaddr] {
@@ -288,4 +307,30 @@ where
         .build();
 
     Ok(swarm)
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::identity::Keypair;
+    use vertex_swarm_api::SwarmNetworkConfig;
+
+    use super::{identify, identify_config};
+    use crate::args::NetworkConfig;
+
+    #[test]
+    fn agent_version_flows_from_network_config_into_identify() {
+        let pk = Keypair::generate_ed25519().public();
+        let announced = "vertex/9.9.9-deadbeef";
+        let network = NetworkConfig::default().with_agent_version(announced);
+        let config = identify_config(pk, network.agent_version());
+        assert_eq!(config.agent_version(), announced);
+    }
+
+    #[test]
+    fn absent_agent_version_keeps_the_library_default() {
+        let pk = Keypair::generate_ed25519().public();
+        let network = NetworkConfig::default();
+        let config = identify_config(pk, network.agent_version());
+        assert_eq!(config.agent_version(), identify::AGENT_VERSION);
+    }
 }

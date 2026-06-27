@@ -131,6 +131,13 @@ pub trait SwarmNetworkConfig {
     /// Listen addresses (parsed).
     fn listen_addrs(&self) -> &[Multiaddr];
 
+    /// libp2p identify agent string to announce, or `None` to use the protocol
+    /// library default. Injected at node assembly rather than the CLI so it can
+    /// carry the build sha.
+    fn agent_version(&self) -> Option<&str> {
+        None
+    }
+
     /// Bootnode addresses (parsed).
     fn bootnodes(&self) -> &[Multiaddr];
 

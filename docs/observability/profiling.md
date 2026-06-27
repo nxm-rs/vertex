@@ -23,20 +23,30 @@ If jemalloc fails to build, use the other profiling features which work without 
 
 ## Quick Start
 
-Enable profiling features when building:
+Enable profiling features when building. These builds are opt-in: the
+tokio_unstable and force-frame-pointers rustflags are no longer global in
+`.cargo/config.toml`, so the profiling builds pass them through `RUSTFLAGS`
+(the `just build-*` recipes wrap this). `tokio_unstable` makes tokio emit the
+task instrumentation the `tokio-console` feature consumes; without it the
+console connects but shows no task data. `force-frame-pointers=yes` gives
+pprof readable flamegraphs.
 
 ```bash
 # CPU profiling with pprof
-cargo build --release --features profiling
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --features profiling
+# or: just build-profiling
 
-# Memory profiling with jemalloc
+# Memory profiling with jemalloc (no extra rustflags needed)
 cargo build --release --features jemalloc
 
 # Async runtime inspection with tokio-console
-cargo build --release --features tokio-console
+RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features tokio-console
+# or: just build-tokio-console
 
 # All profiling features
-cargo build --release --features "profiling,jemalloc,tokio-console"
+RUSTFLAGS="--cfg tokio_unstable -C force-frame-pointers=yes" \
+  cargo build --release --features "profiling,jemalloc,tokio-console"
+# or: just build-profiling-all
 ```
 
 ## CPU Profiling
@@ -117,13 +127,16 @@ Response format:
 
 ### tokio-console Setup
 
-1. Ensure `.cargo/config.toml` has `rustflags = ["--cfg", "tokio_unstable"]` (already configured in this workspace)
-2. Build with `--features tokio-console`
-3. Install tokio-console: `cargo install tokio-console`
-4. Run vertex
-5. Connect with console: `tokio-console`
+1. Build with the `tokio_unstable` rustflag and the `tokio-console` feature:
+   `RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features tokio-console`
+   (or `just build-tokio-console`). The flag is no longer global in
+   `.cargo/config.toml`, so it must be set for this build.
+2. Install tokio-console: `cargo install tokio-console`
+3. Run vertex
+4. Connect with console: `tokio-console`
 
-**Note:** If you see a panic about "tokio_unstable", rebuild with:
+**Note:** If you see a panic about "tokio_unstable", you built without the
+flag. Rebuild with:
 ```bash
 RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features tokio-console
 ```

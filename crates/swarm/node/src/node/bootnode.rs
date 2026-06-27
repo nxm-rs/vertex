@@ -63,6 +63,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
         connection_limits: connection_limits::Behaviour,
+        agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
@@ -71,7 +72,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
             // `addresses_for_remote`): a public peer never receives our private
             // or loopback addresses, matching the handshake's policy.
             identify: identify::Behaviour::new(
-                identify::Config::new(local_public_key),
+                super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
             ),
             nat,
@@ -328,7 +329,13 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             "Bootnode",
             move |pk, topology| {
                 let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
-                BootnodeBehaviour::from_parts(pk, topology, nat, connection_limits)
+                BootnodeBehaviour::from_parts(
+                    pk,
+                    topology,
+                    nat,
+                    connection_limits,
+                    network_config.agent_version(),
+                )
             },
         )
         .await?;
