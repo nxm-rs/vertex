@@ -8,7 +8,7 @@ The maintainer has locked the four decisions that were previously open (storer c
 
 ## 0. Summary
 
-The progression light Client -> Client+SWAP CDN -> Storer is already real: `NodeBuilder -> ClientNodeBuilder -> StorerNodeBuilder` (`crates/swarm/builder/src/node.rs`), one shared assembly `build_client_backed_node` (`crates/swarm/builder/src/launch.rs:263`), and "a Storer IS a Client plus a reserve" is literally true. The only difference between the Client and Storer launch paths is the `StoreFactory` closure and one `node.enable_storage(reserve)` call (`launch.rs:341`). The four seams the maintainer wants pluggable (cache, reserve, settlement, pricer) are already object-safe traits.
+The progression light Client -> Client+SWAP CDN -> Storer is already real: `NodeBuilder -> ClientNodeBuilder` (`crates/swarm/builder/src/node.rs`) plus `StorerNodeBuilder`, which now lives behind the gated `reserve` seam module (`crates/swarm/builder/src/storer.rs`) and wraps a client builder internally, one shared assembly `build_client_backed_node` (`crates/swarm/builder/src/launch.rs`), and "a Storer IS a Client plus a reserve" is literally true. The only difference between the Client and Storer launch paths is the `StoreFactory` closure and one `node.enable_storage(reserve)` call (`launch.rs:341`). The four seams the maintainer wants pluggable (cache, reserve, settlement, pricer) are already object-safe traits.
 
 The chain-provider seam is also already present in a different shape than first proposed: the chain is a shared `alloy_provider::Provider` (see `docs/design/chain-service.md`), not a parallel trait hierarchy, and alloy runs on `wasm32-unknown-unknown` with the right transport. So "chain access for a wasm SWAP client" is a transport-and-feature question, not a missing abstraction.
 
@@ -41,7 +41,7 @@ Two prerequisites gate everything and land first, in order: split the pseudosett
 
 ### 2.1 Node-type construction progression
 
-Keep the three-level fluent transition builder. The node-type axis is expressed by transition methods (`with_accounting` -> Client, `with_storage` / `with_reserve` -> Storer) and by which seams are wired, not by phantom type-state on every field. A type-state builder is rejected: it explodes the signatures FFI and gRPC must name, and it fights the cfg-gating. The legal progression is enforced by construction; you cannot reach `StorerNodeBuilder` without going through `ClientNodeBuilder`.
+Keep the builder layered by node type, but do not hang the storer transition off the client builder. The node-type axis is expressed by which builder you hold and which seams are wired, not by phantom type-state on every field. A type-state builder is rejected: it explodes the signatures FFI and gRPC must name, and it fights the cfg-gating. The storer build path now lives behind the gated `reserve` seam module in `vertex-swarm-builder`: the storer is built through `StorerNodeBuilder` (constructed via `from_config` / `from_parts` / `build`, wrapping a client builder internally), and the reserve seams (`with_reserve` / `with_reserve_factory`) live on it. The fluent `.with_storage()` transition that used to hang off the client builder was dropped so the storer cfg stays concentrated in the seam module and off the shared client builder.
 
 ### 2.2 Settlement default matrix
 
@@ -201,22 +201,28 @@ impl<I, N, A> ClientNodeBuilder<I, N, A> /* same bounds */ {
     #[cfg(feature = "chain")]
     pub fn with_chain(self, chain: ChainConfig) -> Self;
 
-    /// Transition: config-driven storer (default DbReserve built at build()).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_storage<S, St>(self, local_store: S, storage: St)
-        -> StorerNodeBuilder<I, N, A, S, St>
-    where S: SwarmLocalStoreConfig, St: SwarmStorageConfig;
+    // No storer transition here: the client builder carries no storer-only
+    // seams. A storer is built through StorerNodeBuilder (below), gated by the
+    // `reserve` feature, so the storer cfg stays off the shared client builder.
 
     pub async fn build(self, ctx: &dyn InfrastructureContext)
         -> Result<BuiltClient, SwarmNodeError>;
 }
 
 // ============================================================================
-// StorerNodeBuilder -- reserve becomes injectable; default stays DbReserve.
+// StorerNodeBuilder -- lives behind the `reserve` seam module; reserve is
+// injectable, default stays DbReserve. Constructed via from_config / from_parts
+// (it wraps a client builder internally), never via a client-builder transition.
 // The forwarding cache is the inherited `with_cache` seam (section 2.5).
 // ============================================================================
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "reserve")]
 impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St> /* existing bounds */ {
+    /// Construct from a storer config (yields the concrete DefaultStorerBuilder).
+    pub fn from_config(config: StorerConfig) -> DefaultStorerBuilder;
+    /// Construct from already-built parts (yields DefaultStorerBuilder).
+    pub fn from_parts(/* spec, identity, network, accounting, store, storage, verify */)
+        -> DefaultStorerBuilder;
+
     /// Inject any reserve. One Arc yields both the pushsync-ingest ReserveStore
     /// view and the `reserve` leg of the CacheThenReserve served view
     /// (arc upcast, as launch.rs:597-598 already does today).
@@ -246,18 +252,14 @@ let cdn = NodeBuilder::new(spec, identity, network)
     .build(ctx).await?;
 
 // 3. Storer: swap defaulted ON by swap_default(), default DbReserve, chain mandatory.
-let storer = NodeBuilder::new(spec, identity, network)
-    .with_accounting(accounting_cfg)
-    .with_chain(chain_cfg)                         // build hard-fails without it
-    .with_storage(local_store_cfg, storage_cfg)    // builds default DbReserve at build()
+//    Built through StorerNodeBuilder (the `reserve` seam), not a client-builder transition.
+//    from_config wires chain and swap from the StorerConfig; build hard-fails without chain.
+let storer = StorerNodeBuilder::from_config(storer_cfg)
     .build(ctx).await?;
 
 // 3b. Storer with a custom reserve and a persistent forwarding cache:
-let storer = NodeBuilder::new(spec, identity, network)
-    .with_accounting(accounting_cfg)
-    .with_chain(chain_cfg)
+let storer = StorerNodeBuilder::from_config(storer_cfg)
     .with_cache_factory(|db| Ok(Arc::new(RedbForwardCache::open(db)?) as _)) // forwarding layer
-    .with_storage(local_store_cfg, storage_cfg)
     .with_reserve(Arc::new(MyReserve::new()) as Arc<dyn ReserveStore>)
     .build(ctx).await?;
 ```
@@ -287,7 +289,7 @@ All three drive the same `ClientConfig` / `StorerConfig` -> `Default*Builder` pa
 The old "gate the whole swap surface by `cfg(not(target_arch = "wasm32"))`" rule is replaced by gating per feature and per provider impl:
 
 - The swap and chain code (`with_swap`, `SwapConfig`, the settlement service, the chequebook contract reads) is gated by the `swap` and `chain` cargo features, not by `target_arch`. It compiles for wasm when those features are on and a wasm chain-provider transport is supplied.
-- What stays genuinely native-only and `cfg(not(target_arch = "wasm32"))`: anything pulling tokio-only runtime pieces, libp2p, redb, or tonic. The `with_storage` / `with_reserve` reserve surface and `RedbDatabase`-typed signatures stay native-gated (a storer is native). The native HTTP chain provider construction stays native; the wasm provider is a sibling impl behind `cfg(target_arch = "wasm32")`.
+- What stays genuinely native-only and `cfg(not(target_arch = "wasm32"))`: anything pulling tokio-only runtime pieces, libp2p, redb, or tonic. The storer reserve surface (`StorerNodeBuilder` with `with_reserve` / `with_reserve_factory`, and `RedbDatabase`-typed signatures) is concentrated behind the `reserve` feature seam module and stays out of the wasm and default-client cones (a storer is native). The native HTTP chain provider construction stays native; the wasm provider is a sibling impl behind `cfg(target_arch = "wasm32")`.
 - The provider impl, not the swap surface, is what differs by target: native uses a direct alloy HTTP/WS provider; wasm uses an alloy provider over a browser-reachable RPC. Both satisfy the same `alloy_provider::Provider` bound the settlement service consumes.
 
 Extend `just check-cone` to assert (a) the split pseudosettle provider stays in the wasm cone and the node crate does not, (b) the reserve and redb surface is absent from the wasm and FFI cones, and (c) the swap and chain surface compiles for `wasm32-unknown-unknown` under the `swap` and `chain` features with the wasm provider impl. The libp2p boundary and the FFI/gRPC-only public-API rule are unchanged: wasm swap exposure is through wasm-bindgen and the same library API, never HTTP+JSON.
