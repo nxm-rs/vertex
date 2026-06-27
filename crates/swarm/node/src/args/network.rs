@@ -248,12 +248,21 @@ pub struct NetworkConfig<R = KademliaConfig> {
     idle_timeout: Duration,
     peer: PeerConfig,
     routing: R,
+    /// libp2p identify agent string, set at node assembly. `None` defers to the
+    /// protocol library default.
+    agent_version: Option<String>,
 }
 
 impl<R> NetworkConfig<R> {
     /// Get the peer configuration.
     pub fn peer(&self) -> &PeerConfig {
         &self.peer
+    }
+
+    /// Set the libp2p identify agent string announced to peers.
+    pub fn with_agent_version(mut self, agent_version: impl Into<String>) -> Self {
+        self.agent_version = Some(agent_version.into());
+        self
     }
 
     /// Get the routing configuration.
@@ -279,6 +288,7 @@ impl<R> NetworkConfig<R> {
             idle_timeout: self.idle_timeout,
             peer: self.peer,
             routing,
+            agent_version: self.agent_version,
         }
     }
 
@@ -313,6 +323,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             peer: PeerConfig::default(),
             routing: KademliaConfig::default(),
+            agent_version: None,
         }
     }
 }
@@ -391,6 +402,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
             peer: PeerConfig::from(&args.peer),
             routing: args.routing.routing_config(),
+            agent_version: None,
         })
     }
 }
@@ -398,6 +410,10 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
 impl<R> SwarmNetworkConfig for NetworkConfig<R> {
     fn listen_addrs(&self) -> &[Multiaddr] {
         &self.listen_addrs
+    }
+
+    fn agent_version(&self) -> Option<&str> {
+        self.agent_version.as_deref()
     }
 
     fn bootnodes(&self) -> &[Multiaddr] {

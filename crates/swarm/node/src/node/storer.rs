@@ -117,6 +117,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
         connection_limits: connection_limits::Behaviour,
         store: Arc<dyn SwarmLocalStore>,
         pullsync_storage: Arc<dyn PullStorage>,
+        agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         let client = ClientBehaviour::new(
@@ -127,7 +128,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
         Self {
             connection_limits,
             identify: identify::Behaviour::new(
-                identify::Config::new(local_public_key),
+                super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
             ),
             nat,
@@ -162,6 +163,7 @@ where
             connection_limits,
             store,
             pullsync_storage,
+            network_config.agent_version(),
         )
     })
     .await

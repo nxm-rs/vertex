@@ -50,6 +50,11 @@ impl Config {
         self
     }
 
+    /// The agent version string announced to peers.
+    pub fn agent_version(&self) -> &str {
+        &self.agent_version
+    }
+
     /// Set the interval between periodic identify exchanges.
     ///
     /// `None` disables periodic re-identification (default). The initial

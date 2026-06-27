@@ -53,6 +53,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         nat: NatBehaviour,
         connection_limits: connection_limits::Behaviour,
         store: Arc<dyn SwarmLocalStore>,
+        agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
@@ -61,7 +62,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
             // `addresses_for_remote`), so a public peer never receives our
             // private or loopback addresses.
             identify: identify::Behaviour::new(
-                identify::Config::new(local_public_key),
+                super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
             ),
             nat,
@@ -92,7 +93,14 @@ where
     let connection_limits = super::base::build_connection_limits(network_config);
     super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
         let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
-        ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits, store)
+        ClientNodeBehaviour::from_parts(
+            pk,
+            topology,
+            nat,
+            connection_limits,
+            store,
+            network_config.agent_version(),
+        )
     })
     .await
 }

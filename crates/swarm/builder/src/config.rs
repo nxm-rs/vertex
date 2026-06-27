@@ -147,3 +147,31 @@ impl ClientConfig {
 
 impl_common_config_getters!(ClientConfig);
 impl_builds_protocol!(ClientConfig, "Swarm Client");
+
+#[cfg(test)]
+mod tests {
+    use vertex_swarm_api::SwarmNetworkConfig;
+
+    use super::NetworkConfig;
+
+    /// The binary stamps `vertex-node-core`'s build-stamped agent string onto the
+    /// network config the launch path reads; this asserts that exact value carries
+    /// the git sha and round-trips through the config the node assembles from.
+    #[test]
+    fn stamped_network_config_announces_the_build_sha() {
+        let agent = vertex_node_core::version::AGENT_VERSION.clone();
+        let network = NetworkConfig::default().with_agent_version(agent.clone());
+
+        assert_eq!(network.agent_version(), Some(agent.as_str()));
+        assert!(agent.starts_with("vertex/"));
+        assert_ne!(
+            vertex_node_core::version::GIT_SHA,
+            "unknown",
+            "build.rs did not stamp the git sha"
+        );
+        assert!(
+            agent.contains(vertex_node_core::version::GIT_SHA),
+            "agent string {agent} is missing the build sha"
+        );
+    }
+}
