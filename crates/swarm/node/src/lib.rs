@@ -24,13 +24,15 @@ mod throttle;
 
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
-    ClientNodeBuilder, LaunchedClient, NodeBuildError, PseudosettleWiring, SharedAccounting,
-    assemble_client_core, spawn_client_command_bridge,
+    ClientNodeBuilder, ClientNodeParts, ClientTailParams, LaunchedClient, NodeBuildError,
+    NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn, SettlementEventSenders,
+    SharedAccounting, VerifiedChunkProvider, assemble_client_core, build_client_core_tail,
+    single_task, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
-pub use node::{LauncherSwapConfig, SwapWiring};
+pub use node::{ClientSwapParams, LauncherSwapConfig, SwapWiring};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 

@@ -1,6 +1,5 @@
 //! SwarmLaunchConfig implementations for config types.
 
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,30 +12,26 @@ use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConf
 #[cfg(feature = "chain")]
 use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, PeerReporter, SwarmClientAccounting, SwarmLaunchConfig,
-    SwarmNodeType, construct,
+    BootnodeComponents, ClientComponents, SwarmLaunchConfig, SwarmNodeType, construct,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{
-    BootNode, ClientCoreCtx, ClientNode, PseudosettleWiring, SharedAccounting, assemble_client_core,
+    BootNode, ChunkVerifyConfig, ClientNode, ClientNodeParts, ClientTailParams, NodeRunParts,
+    RunTaskFn, VerifiedChunkProvider, build_client_core_tail, single_task,
 };
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
 use vertex_swarm_spec::{Loggable, Spec};
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
-use vertex_tasks::{GracefulShutdown, NodeTaskFn};
+use vertex_tasks::NodeTaskFn;
 
 use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
-use vertex_swarm_node::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
-
-/// Network chunk provider wrapped with config-gated download verification.
-pub(crate) type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
 #[cfg(feature = "swap")]
-use vertex_swarm_node::SwapWiring;
+use vertex_swarm_node::ClientSwapParams;
 #[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
@@ -53,15 +48,6 @@ const DB_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 fn log_build_start(node_type: SwarmNodeType, spec: &Spec) {
     info!(%node_type, "Building node...");
     spec.log();
-}
-
-/// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
-pub(crate) fn single_task<F, Fut>(f: F) -> NodeTaskFn
-where
-    F: FnOnce(GracefulShutdown) -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    Box::new(move |shutdown| Box::pin(f(shutdown)))
 }
 
 /// Open the shared database when persistence is configured.
@@ -262,17 +248,6 @@ pub(crate) struct ClientNodeParams<'a> {
     pub(crate) swap: &'a SwapConfig,
 }
 
-/// Outputs of [`build_client_backed_node`]: the node task plus the handles the
-/// node-type-specific RPC providers wrap. `provider_store` carries whatever the
-/// node type's RPC providers need (the client carries `()`; the storer carries
-/// its serve view and reserve), produced by the [`NodeAssembly`] during assembly.
-pub(crate) struct ClientNodeParts<P> {
-    pub(crate) task: NodeTaskFn,
-    pub(crate) topology: TopologyHandle<Arc<Identity>>,
-    pub(crate) chunks: VerifiedChunkProvider,
-    pub(crate) provider_store: P,
-}
-
 /// Shared inputs every node assembly consumes, independent of node type. The seam
 /// builds its own local serve store from `db`.
 pub(crate) struct AssemblyInputs<'a> {
@@ -366,10 +341,11 @@ impl NodeAssembly for ClientAssembly {
 
 /// Shared launch path for the client- and storer-backed node types.
 ///
-/// Wires accounting (violations to the peer manager, SWAP settlement when
-/// enabled) and the selection-aware verified chunk provider, then spawns the run
-/// loop in a task owning the accounting and chain handles for the node's lifetime.
-/// The node-type-specific store and node assembly are injected through `assembly`.
+/// Resolves the chain precondition, opens the database, and builds the peer
+/// store, then delegates the wasm-clean wiring (accounting, settlement, the
+/// verified chunk provider, service spawning) to [`build_client_core_tail`]. The
+/// node-type-specific local store and node assembly are injected through
+/// `assembly`, invoked by the tail over the prepared settlement event sinks.
 pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     ctx: &dyn InfrastructureContext,
     params: ClientNodeParams<'_>,
@@ -379,7 +355,8 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     log_build_start(node_type, params.spec);
 
     // SWAP defaults on for storers (maximum support) and off for clients; an
-    // explicit --swap overrides. Resolved once and shared with the chain check.
+    // explicit --swap overrides. The tail derives the same value for its swap
+    // wiring; here it gates the chain precondition.
     #[cfg(feature = "swap")]
     let swap_enabled = params.swap.enable.unwrap_or(node_type.swap_default());
     #[cfg(not(feature = "swap"))]
@@ -406,172 +383,48 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
 
-    // Pseudosettle (soft accounting) is always on for client and storer nodes:
-    // prepare the provider so it embeds in the accounting, and the event sink so
-    // pseudosettle wire events route at node build time.
-    let (pseudosettle_provider, pseudosettle_wiring) =
-        PseudosettleWiring::prepare(params.bandwidth);
-    let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
-
-    // SWAP settlement is prepared next: the provider embeds in the accounting
-    // and the swap event sink routes at node build time.
-    #[cfg(feature = "swap")]
-    let (swap_provider, swap_wiring) = SwapWiring::prepare(
-        params.spec,
-        params.identity,
-        params.bandwidth,
-        params.swap.chequebook,
-        params.swap.beneficiary,
-        params.swap.deploy,
-        params.swap.bounce_limit,
-        swap_enabled,
-    )
-    .unzip();
-    #[cfg(feature = "swap")]
-    let swap_event_sender = swap_wiring.as_ref().map(|w| w.swap_event_sender());
-
-    // The seam builds its local serve store and assembles the concrete node: a
-    // bare client behaviour, or (for a storer) the pullsync-capable
-    // `StorerBehaviour` plus the puller. Accounting, selection, and settlement
-    // wiring below is identical for both.
-    let (
-        NodeRunParts {
-            topology,
-            client_service,
-            client_handle,
-            run,
-        },
-        provider_store,
-    ) = assembly
-        .assemble(
-            ctx,
-            AssemblyInputs {
-                db,
-                identity: params.identity,
-                network: params.network,
-                peer_store,
-                pseudosettle_event_sender,
-                #[cfg(feature = "swap")]
-                swap_event_sender,
-            },
-        )
-        .await?;
-
-    spawn_peer_manager_task(
-        Arc::clone(topology.peer_manager()),
-        DEFAULT_TICK_INTERVAL,
-        ctx.executor(),
-    );
-
-    // The peer manager is the reporting authority: accounting and the settlement
-    // services report violations through it so misbehaving peers are scored down.
-    let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
-
-    // SWAP is the only native-only provider; pseudosettle is registered first
-    // inside the core so soft accounting forgives total debt before SWAP settles.
-    let extra_settlement: Vec<Box<dyn vertex_swarm_api::SwarmSettlementProvider>> = {
+    let tail_params = ClientTailParams {
+        node_type,
+        spec: params.spec,
+        identity: params.identity,
+        bandwidth: params.bandwidth,
+        verify: params.verify,
         #[cfg(feature = "swap")]
-        {
-            swap_provider
-                .map(|provider| {
-                    Box::new(provider) as Box<dyn vertex_swarm_api::SwarmSettlementProvider>
-                })
-                .into_iter()
-                .collect()
-        }
-        #[cfg(not(feature = "swap"))]
-        Vec::new()
+        swap: ClientSwapParams {
+            enable: params.swap.enable,
+            chequebook: params.swap.chequebook,
+            beneficiary: params.swap.beneficiary,
+            deploy: params.swap.deploy,
+            bounce_limit: params.swap.bounce_limit,
+        },
     };
 
-    // Assemble the shared client middle (accounting, selector, throttle, service)
-    // once; both client entry points wire the same instances through this.
-    let core = assemble_client_core(ClientCoreCtx {
-        spec: Arc::clone(params.spec),
-        identity: params.identity.clone(),
-        bandwidth: params.bandwidth.clone(),
-        topology: topology.clone(),
-        client_service,
-        client_handle: client_handle.clone(),
-        pseudosettle_provider,
-        extra_settlement,
-        reporter: Arc::clone(&reporter),
-    });
-
-    // Multi-hop forwarding plus storer ingest must precede the event loop. The
-    // run closure applies both to its concrete node over the shared accounting,
-    // then returns the run task. The forwarder relay legs run over the
-    // unthrottled handle: the self-throttle paces only our own origin retrieval
-    // and pushsync, never chunks we relay on another peer's behalf.
-    let task = (run)(
-        Arc::clone(&core.accounting),
-        reporter.clone(),
-        core.client_handle.clone(),
-    );
-
-    let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
-        .with_selector(Arc::clone(&core.selector));
-    let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
-
-    ctx.executor()
-        .spawn_service("swarm.client_service", core.client_service);
-
-    // Pseudosettle settlement service over the shared accounting: applies
-    // time-based refresh and forwards our outbound settlement to the node.
-    pseudosettle_wiring.spawn(
+    let parts = build_client_core_tail(
         ctx.executor(),
-        core.accounting.bandwidth().clone(),
-        client_handle.clone(),
-        Arc::clone(&reporter),
-    );
-
-    // SWAP settlement service over the shared accounting: forwards cheque
-    // commands to the node and cashes received cheques on chain when a provider
-    // is present.
-    #[cfg(feature = "swap")]
-    if let Some(wiring) = swap_wiring {
-        wiring.spawn(
-            ctx.executor(),
-            core.accounting.bandwidth().clone(),
-            client_handle,
-            Arc::clone(&reporter),
-            #[cfg(feature = "chain")]
-            chain_provider.as_ref(),
-            #[cfg(feature = "chain")]
-            params.spec,
-        );
-    }
-
-    // The chain provider is kept alive for the node's lifetime by the run task.
-    #[cfg(feature = "chain")]
-    let task = wrap_with_chain(task, chain_provider);
+        tail_params,
+        // The builder's `chain` feature turns on the node crate's `swap-chequebook`
+        // gate, so the tail accepts the resolved provider here.
+        #[cfg(feature = "chain")]
+        chain_provider,
+        |events| {
+            assembly.assemble(
+                ctx,
+                AssemblyInputs {
+                    db,
+                    identity: params.identity,
+                    network: params.network,
+                    peer_store,
+                    pseudosettle_event_sender: events.pseudosettle,
+                    #[cfg(feature = "swap")]
+                    swap_event_sender: events.swap,
+                },
+            )
+        },
+    )
+    .await?;
 
     info!(%node_type, "Node built successfully");
-    Ok(ClientNodeParts {
-        task,
-        topology,
-        chunks,
-        provider_store,
-    })
-}
-
-/// A run-task factory: applies multi-hop forwarding (and storer ingest) over the
-/// shared accounting, then returns the node's event-loop task. The factory keeps
-/// the concrete node type out of the shared launch tail.
-pub(crate) type RunTaskFn = Box<
-    dyn FnOnce(
-        SharedAccounting,
-        Arc<dyn PeerReporter>,
-        vertex_swarm_node::ClientHandle,
-    ) -> NodeTaskFn,
->;
-
-/// Node-type-agnostic outputs of node assembly: the topology handle, the client
-/// service and handle, and the run-task factory. Every assembly produces these.
-pub(crate) struct NodeRunParts {
-    pub(crate) topology: TopologyHandle<Arc<Identity>>,
-    pub(crate) client_service: vertex_swarm_node::ClientService,
-    pub(crate) client_handle: vertex_swarm_node::ClientHandle,
-    pub(crate) run: RunTaskFn,
+    Ok(parts)
 }
 
 /// Assemble a bare `ClientNode` and its run-task factory.
@@ -621,17 +474,6 @@ async fn assemble_client_node(
         client_service,
         client_handle,
         run,
-    })
-}
-
-/// Wrap a run task so the chain provider stays alive for the node's lifetime.
-#[cfg(feature = "chain")]
-fn wrap_with_chain(task: NodeTaskFn, chain_provider: Option<SharedChainProvider>) -> NodeTaskFn {
-    Box::new(move |shutdown| {
-        Box::pin(async move {
-            let _chain_provider = chain_provider;
-            task(shutdown).await;
-        })
     })
 }
 
@@ -747,7 +589,9 @@ mod tests {
 
     use nectar_primitives::Nonce;
     use vertex_swarm_accounting::AccountingBuilder;
-    use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmIdentity};
+    use vertex_swarm_api::{
+        Au, PeerReporter, SwarmAccountingConfig, SwarmClientAccounting, SwarmIdentity,
+    };
     use vertex_swarm_node::args::NetworkArgs;
     use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
     use vertex_swarm_spec::init_dev;

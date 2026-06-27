@@ -40,11 +40,12 @@ use vertex_tasks::NodeTaskFn;
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltNode, BuiltStorer};
 use crate::launch::{
-    AssemblyInputs, CacheSeam, ClientLaunchTypes, ClientNodeParams, NodeAssembly, NodeRunParts,
-    RunTaskFn, VerifiedChunkProvider, build_client_backed_node, resolve_cache, single_task,
+    AssemblyInputs, CacheSeam, ClientLaunchTypes, ClientNodeParams, NodeAssembly,
+    build_client_backed_node, resolve_cache,
 };
 use crate::node::{ClientNodeBuilder, NodeBuilder};
 use vertex_swarm_node::ChunkVerifyConfig;
+use vertex_swarm_node::{NodeRunParts, RunTaskFn, VerifiedChunkProvider, single_task};
 
 /// A reserve override supplied through the builder. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.
