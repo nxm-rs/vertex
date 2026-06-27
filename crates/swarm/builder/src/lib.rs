@@ -48,8 +48,6 @@ pub mod verify;
 
 // Builders
 pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
-#[cfg(feature = "reserve")]
-pub use storer::{DefaultStorerBuilder, StorerNodeBuilder};
 
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
@@ -60,13 +58,14 @@ pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs
 pub use config::{BootnodeConfig, ClientConfig};
-#[cfg(feature = "reserve")]
-pub use storer::StorerConfig;
 
 // Launch types (for SwarmLaunchConfig associated types)
 pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes};
+
+// The storer cone (builder and config) behind the `reserve` feature; its launch
+// types are the shared `ClientLaunchTypes`.
 #[cfg(feature = "reserve")]
-pub use storer::StorerLaunchTypes;
+pub use storer::{DefaultStorerBuilder, StorerConfig, StorerNodeBuilder};
 
 // Errors
 pub use error::SwarmNodeError;

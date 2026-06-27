@@ -249,9 +249,9 @@ pub(crate) fn resolve_cache(
 }
 
 /// Borrowed inputs for [`build_client_backed_node`], gathered from a validated
-/// client or storer config.
+/// client or storer config. The node type comes from the assembly seam
+/// ([`NodeAssembly::NODE_TYPE`]), not this struct, so the two cannot desync.
 pub(crate) struct ClientNodeParams<'a> {
-    pub(crate) node_type: SwarmNodeType,
     pub(crate) spec: &'a Arc<Spec>,
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
@@ -266,7 +266,7 @@ pub(crate) struct ClientNodeParams<'a> {
 /// Outputs of [`build_client_backed_node`]: the node task plus the handles the
 /// node-type-specific RPC providers wrap. `provider_store` carries whatever the
 /// node type's RPC providers need (the client carries `()`; the storer carries
-/// its serve view and reserve), produced by the [`NodeFlavour`] during assembly.
+/// its serve view and reserve), produced by the [`NodeAssembly`] during assembly.
 pub(crate) struct ClientNodeParts<P> {
     pub(crate) task: NodeTaskFn,
     pub(crate) topology: TopologyHandle<Arc<Identity>>,
@@ -274,13 +274,12 @@ pub(crate) struct ClientNodeParts<P> {
     pub(crate) provider_store: P,
 }
 
-/// Shared inputs every node assembly consumes, independent of node type. The
-/// infrastructure context and opened database are passed to [`NodeFlavour::assemble`]
-/// directly, since only the storer reads them.
-pub(crate) struct AssemblyCtx<'a> {
+/// Shared inputs every node assembly consumes, independent of node type. The seam
+/// builds its own local serve store from `db`.
+pub(crate) struct AssemblyInputs<'a> {
+    pub(crate) db: Option<Arc<RedbDatabase>>,
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
-    pub(crate) node_store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     pub(crate) peer_store: Option<PeerStore>,
     pub(crate) pseudosettle_event_sender:
         tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::PseudosettleEvent>,
@@ -289,43 +288,39 @@ pub(crate) struct AssemblyCtx<'a> {
         Option<tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>>,
 }
 
-/// The node-type-specific launch seam. The client flavour ([`ClientFlavour`])
-/// lives here; the storer flavour lives behind the `reserve` feature in
+/// The node-type-specific launch seam. The client assembly ([`ClientAssembly`])
+/// lives here; the storer assembly lives behind the `reserve` feature in
 /// `crate::storer`. An implementor builds the local serve store from the opened
-/// database, stashing whatever the later assembly needs, then assembles the
-/// concrete node and exposes its provider handles as [`Self::ProviderStore`].
+/// database and assembles the concrete node in one pass, exposing its provider
+/// handles as [`Self::ProviderStore`].
 #[async_trait::async_trait]
-pub(crate) trait NodeFlavour: Send {
+pub(crate) trait NodeAssembly: Send {
+    /// The runtime node type this assembly produces. The shared launch path reads
+    /// the node type from here, so the seam and the node type cannot desync.
+    const NODE_TYPE: SwarmNodeType;
+
     /// Store handles the node type's RPC providers wrap: `()` for a client, the
     /// serve view plus reserve for a storer.
     type ProviderStore: Send;
 
-    /// Build the local serve store from the opened database, stashing any
-    /// node-type-specific handles `assemble` will consume.
-    fn build_store(
-        &mut self,
-        db: Option<Arc<RedbDatabase>>,
-    ) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError>;
-
-    /// Assemble the concrete node, returning its run-task factory and the
-    /// provider store. `ctx` and `db` are the shared infrastructure context and
-    /// opened database; the client ignores both.
+    /// Build the local serve store from the opened database and assemble the
+    /// concrete node, returning its run-task factory and the provider store. Only
+    /// the storer reads `ctx` (to spawn its puller); the client ignores it.
     async fn assemble(
         self,
         ctx: &dyn InfrastructureContext,
-        db: Option<Arc<RedbDatabase>>,
-        asm: AssemblyCtx<'_>,
-    ) -> Result<(StorerCapable, Self::ProviderStore), SwarmNodeError>;
+        inputs: AssemblyInputs<'_>,
+    ) -> Result<(NodeRunParts, Self::ProviderStore), SwarmNodeError>;
 }
 
-/// The default client flavour: a bare [`ClientNode`] over an in-memory cache.
-pub(crate) struct ClientFlavour {
+/// The default client assembly: a bare [`ClientNode`] over an in-memory cache.
+pub(crate) struct ClientAssembly {
     cache: Option<CacheSeam>,
     cache_budget_bytes: u64,
     soc_cache_ttl: u64,
 }
 
-impl ClientFlavour {
+impl ClientAssembly {
     pub(crate) fn new(
         cache: Option<CacheSeam>,
         cache_budget_bytes: u64,
@@ -340,38 +335,33 @@ impl ClientFlavour {
 }
 
 #[async_trait::async_trait]
-impl NodeFlavour for ClientFlavour {
-    type ProviderStore = ();
+impl NodeAssembly for ClientAssembly {
+    const NODE_TYPE: SwarmNodeType = SwarmNodeType::Client;
 
-    fn build_store(
-        &mut self,
-        db: Option<Arc<RedbDatabase>>,
-    ) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError> {
-        resolve_cache(
-            self.cache.take(),
-            db,
-            self.cache_budget_bytes,
-            self.soc_cache_ttl,
-        )
-    }
+    type ProviderStore = ();
 
     async fn assemble(
         self,
         _ctx: &dyn InfrastructureContext,
-        _db: Option<Arc<RedbDatabase>>,
-        asm: AssemblyCtx<'_>,
-    ) -> Result<(StorerCapable, Self::ProviderStore), SwarmNodeError> {
-        let capable = assemble_client_node(
-            asm.identity,
-            asm.network,
-            asm.node_store,
-            asm.peer_store,
-            asm.pseudosettle_event_sender,
+        inputs: AssemblyInputs<'_>,
+    ) -> Result<(NodeRunParts, Self::ProviderStore), SwarmNodeError> {
+        let node_store = resolve_cache(
+            self.cache,
+            inputs.db,
+            self.cache_budget_bytes,
+            self.soc_cache_ttl,
+        )?;
+        let parts = assemble_client_node(
+            inputs.identity,
+            inputs.network,
+            node_store,
+            inputs.peer_store,
+            inputs.pseudosettle_event_sender,
             #[cfg(feature = "swap")]
-            asm.swap_event_sender,
+            inputs.swap_event_sender,
         )
         .await?;
-        Ok((capable, ()))
+        Ok((parts, ()))
     }
 }
 
@@ -380,13 +370,13 @@ impl NodeFlavour for ClientFlavour {
 /// Wires accounting (violations to the peer manager, SWAP settlement when
 /// enabled) and the selection-aware verified chunk provider, then spawns the run
 /// loop in a task owning the accounting and chain handles for the node's lifetime.
-/// The node-type-specific store and node assembly are injected through `flavour`.
-pub(crate) async fn build_client_backed_node<F: NodeFlavour>(
+/// The node-type-specific store and node assembly are injected through `assembly`.
+pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     ctx: &dyn InfrastructureContext,
     params: ClientNodeParams<'_>,
-    mut flavour: F,
+    assembly: F,
 ) -> Result<ClientNodeParts<F::ProviderStore>, SwarmNodeError> {
-    let node_type = params.node_type;
+    let node_type = F::NODE_TYPE;
     log_build_start(node_type, params.spec);
 
     // SWAP defaults on for storers (maximum support) and off for clients; an
@@ -417,8 +407,6 @@ pub(crate) async fn build_client_backed_node<F: NodeFlavour>(
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
 
-    let node_store = flavour.build_store(db.clone())?;
-
     // Pseudosettle (soft accounting) is always on for client and storer nodes:
     // prepare the provider so it embeds in the accounting, and the event sink so
     // pseudosettle wire events route at node build time.
@@ -443,25 +431,25 @@ pub(crate) async fn build_client_backed_node<F: NodeFlavour>(
     #[cfg(feature = "swap")]
     let swap_event_sender = swap_wiring.as_ref().map(|w| w.swap_event_sender());
 
-    // The flavour assembles the concrete node: a bare client behaviour, or (for a
-    // storer) the pullsync-capable `StorerBehaviour` plus the puller. Accounting,
-    // selection, and settlement wiring below is identical for both.
+    // The seam builds its local serve store and assembles the concrete node: a
+    // bare client behaviour, or (for a storer) the pullsync-capable
+    // `StorerBehaviour` plus the puller. Accounting, selection, and settlement
+    // wiring below is identical for both.
     let (
-        StorerCapable {
+        NodeRunParts {
             topology,
             client_service,
             client_handle,
             run,
         },
         provider_store,
-    ) = flavour
+    ) = assembly
         .assemble(
             ctx,
-            db,
-            AssemblyCtx {
+            AssemblyInputs {
+                db,
                 identity: params.identity,
                 network: params.network,
-                node_store,
                 peer_store,
                 pseudosettle_event_sender,
                 #[cfg(feature = "swap")]
@@ -579,8 +567,8 @@ pub(crate) type RunTaskFn = Box<
 >;
 
 /// Node-type-agnostic outputs of node assembly: the topology handle, the client
-/// service and handle, and the run-task factory. Every flavour produces these.
-pub(crate) struct StorerCapable {
+/// service and handle, and the run-task factory. Every assembly produces these.
+pub(crate) struct NodeRunParts {
     pub(crate) topology: TopologyHandle<Arc<Identity>>,
     pub(crate) client_service: vertex_swarm_node::ClientService,
     pub(crate) client_handle: vertex_swarm_node::ClientHandle,
@@ -599,7 +587,7 @@ async fn assemble_client_node(
     #[cfg(feature = "swap")] swap_event_sender: Option<
         tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
     >,
-) -> Result<StorerCapable, SwarmNodeError> {
+) -> Result<NodeRunParts, SwarmNodeError> {
     let node_builder = ClientNode::builder(identity.clone())
         .with_store(node_store)
         .with_pseudosettle_events(pseudosettle_event_sender);
@@ -629,7 +617,7 @@ async fn assemble_client_node(
         })
     });
 
-    Ok(StorerCapable {
+    Ok(NodeRunParts {
         topology,
         client_service,
         client_handle,
@@ -717,7 +705,6 @@ pub(crate) async fn build_client(
     let parts = build_client_backed_node(
         ctx,
         ClientNodeParams {
-            node_type: SwarmNodeType::Client,
             spec: config.spec(),
             identity: config.identity(),
             network: config.network(),
@@ -728,7 +715,7 @@ pub(crate) async fn build_client(
             #[cfg(feature = "swap")]
             swap: config.swap(),
         },
-        ClientFlavour::new(cache, cache_budget, soc_ttl),
+        ClientAssembly::new(cache, cache_budget, soc_ttl),
     )
     .await?;
 

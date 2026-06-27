@@ -4,7 +4,7 @@
 //! persisting reserve, the neighbourhood puller, the pullsync and redistribution
 //! wiring, the cache-then-reserve serve view, and the storer config, builder, and
 //! launch path. The shared launch and builder code stays capability-agnostic and
-//! the storer plugs into it through the [`NodeFlavour`] seam and the
+//! the storer plugs into it through the [`NodeAssembly`] seam and the
 //! [`StorerNodeBuilder`] wrapper around the client builder.
 
 mod composite;
@@ -16,7 +16,7 @@ use tracing::warn;
 
 use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol};
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
+use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
     BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StorageRadius,
     StorerComponents, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
@@ -40,30 +40,11 @@ use vertex_tasks::NodeTaskFn;
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltNode, BuiltStorer};
 use crate::launch::{
-    AssemblyCtx, CacheSeam, ClientNodeParams, NodeFlavour, RunTaskFn, StorerCapable,
-    VerifiedChunkProvider, build_client_backed_node, resolve_cache, single_task,
+    AssemblyInputs, CacheSeam, ClientLaunchTypes, ClientNodeParams, NodeAssembly, NodeRunParts,
+    RunTaskFn, VerifiedChunkProvider, build_client_backed_node, resolve_cache, single_task,
 };
 use crate::node::{ClientNodeBuilder, NodeBuilder};
 use crate::verify::ChunkVerifyConfig;
-
-/// Storer launch types: bootnode types plus the default accounting stack.
-pub struct StorerLaunchTypes;
-
-impl vertex_swarm_api::SwarmPrimitives for StorerLaunchTypes {
-    type Spec = Arc<Spec>;
-    type Identity = Arc<Identity>;
-}
-
-impl vertex_swarm_api::SwarmNetworkTypes for StorerLaunchTypes {
-    type Topology = TopologyHandle<Arc<Identity>>;
-}
-
-impl vertex_swarm_api::SwarmClientTypes for StorerLaunchTypes {
-    type Accounting = ClientAccounting<
-        Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>,
-        FixedPricer<Arc<Spec>>,
-    >;
-}
 
 /// A reserve override supplied through the builder. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.
@@ -332,7 +313,7 @@ impl From<StorerConfig> for DefaultStorerBuilder {
 }
 
 impl SwarmLaunchConfig for StorerConfig {
-    type Types = StorerLaunchTypes;
+    type Types = ClientLaunchTypes;
     type Providers = StorerProviders;
     type Error = SwarmNodeError;
 
@@ -379,7 +360,6 @@ pub(crate) async fn build_storer(
     let parts = build_client_backed_node(
         ctx,
         ClientNodeParams {
-            node_type: SwarmNodeType::Storer,
             spec: config.spec(),
             identity: config.identity(),
             network: config.network(),
@@ -390,7 +370,7 @@ pub(crate) async fn build_storer(
             #[cfg(feature = "swap")]
             swap: config.swap(),
         },
-        StorerFlavour::new(cache, reserve, identity, capacity, cache_budget, soc_ttl),
+        StorerAssembly::new(cache, reserve, identity, capacity, cache_budget, soc_ttl),
     )
     .await?;
 
@@ -398,9 +378,6 @@ pub(crate) async fn build_storer(
     let providers = construct::storer(parts.topology, parts.chunks, store, reserve);
     Ok((parts.task, providers))
 }
-
-/// Guard message: a storer with no reserve is an internal wiring bug, not config.
-const STORER_RESERVE_MISSING: &str = "storer reserve missing";
 
 /// Guard message: a storer whose reserve is not the default `DbReserve` cannot
 /// serve pullsync.
@@ -410,24 +387,18 @@ const STORER_PULLSYNC_MISSING: &str = "storer pullsync reserve view missing";
 /// stamped under it, so a reorg cannot retroactively invalidate admitted chunks.
 const RESERVE_CONFIRMATION_THRESHOLD: u64 = 10;
 
-/// The storer flavour: builds the persisting reserve, layers the serve view over
+/// The storer assembly: builds the persisting reserve, layers the serve view over
 /// it, and assembles the pullsync-capable [`StorerNode`] plus its puller.
-struct StorerFlavour {
+struct StorerAssembly {
     cache: Option<CacheSeam>,
     reserve_seam: Option<ReserveSeam>,
     identity: Arc<Identity>,
     capacity: u64,
     cache_budget_bytes: u64,
     soc_cache_ttl: u64,
-    /// Stashed by `build_store` for `assemble`: the reserve view, the optional
-    /// pullsync server snapshot, and the optional batch-store handle (both present
-    /// only for the default [`DbReserve`]).
-    reserve: Option<Arc<dyn BinCursorStore>>,
-    pullsync: Option<Arc<dyn PullStorage>>,
-    batches: Option<DbBatchStore<RedbDatabase>>,
 }
 
-impl StorerFlavour {
+impl StorerAssembly {
     fn new(
         cache: Option<CacheSeam>,
         reserve_seam: Option<ReserveSeam>,
@@ -443,82 +414,94 @@ impl StorerFlavour {
             capacity,
             cache_budget_bytes,
             soc_cache_ttl,
-            reserve: None,
-            pullsync: None,
-            batches: None,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl NodeFlavour for StorerFlavour {
-    type ProviderStore = (Arc<dyn SwarmLocalStore>, Arc<dyn BinCursorStore>);
+impl NodeAssembly for StorerAssembly {
+    const NODE_TYPE: SwarmNodeType = SwarmNodeType::Storer;
 
-    fn build_store(
-        &mut self,
-        db: Option<Arc<RedbDatabase>>,
-    ) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError> {
-        // The pullsync server snapshot is only available for the default
-        // `DbReserve`; a reserve seam erases to `BinCursorStore`, leaving pullsync
-        // inbound serving unwired for that override.
-        let (reserve, pullsync, batches) = match self.reserve_seam.take() {
-            None => {
-                let built = build_storer_reserve(db.clone(), &self.identity, self.capacity)?;
-                (built.reserve, built.pullsync, built.batches)
-            }
-            Some(ReserveSeam::Ready(reserve)) => (reserve, None, None),
-            Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None, None),
-        };
-        let cache = resolve_cache(
-            self.cache.take(),
-            db,
-            self.cache_budget_bytes,
-            self.soc_cache_ttl,
-        )?;
-        // The reserve upcasts to the local-store read side; writes land in the cache.
-        let local: Arc<dyn SwarmLocalStore> = Arc::new(composite::CacheThenReserve::new(
-            cache,
-            Arc::clone(&reserve) as Arc<dyn SwarmLocalStore>,
-        ));
-        self.reserve = Some(reserve);
-        self.pullsync = pullsync;
-        self.batches = batches;
-        Ok(local)
-    }
+    type ProviderStore = (Arc<dyn SwarmLocalStore>, Arc<dyn BinCursorStore>);
 
     async fn assemble(
         self,
         ctx: &dyn InfrastructureContext,
-        db: Option<Arc<RedbDatabase>>,
-        asm: AssemblyCtx<'_>,
-    ) -> Result<(StorerCapable, Self::ProviderStore), SwarmNodeError> {
-        let StorerFlavour {
-            reserve,
-            pullsync,
-            batches,
-            ..
-        } = self;
-        // A missing reserve is a wiring bug: `build_store` always sets one.
-        let reserve =
-            reserve.ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?;
-        let provider_store = (Arc::clone(&asm.node_store), Arc::clone(&reserve));
+        inputs: AssemblyInputs<'_>,
+    ) -> Result<(NodeRunParts, Self::ProviderStore), SwarmNodeError> {
+        let serve = build_serve_store(
+            self.reserve_seam,
+            self.cache,
+            inputs.db.clone(),
+            &self.identity,
+            self.capacity,
+            self.cache_budget_bytes,
+            self.soc_cache_ttl,
+        )?;
+        let provider_store = (Arc::clone(&serve.local), Arc::clone(&serve.reserve));
         let capable = assemble_storer_node(
             ctx,
-            asm.identity,
-            asm.network,
-            asm.node_store,
-            asm.peer_store,
-            db,
-            reserve,
-            pullsync,
-            batches,
-            asm.pseudosettle_event_sender,
+            inputs.identity,
+            inputs.network,
+            serve.local,
+            inputs.peer_store,
+            inputs.db,
+            serve.reserve,
+            serve.pullsync,
+            serve.batches,
+            inputs.pseudosettle_event_sender,
             #[cfg(feature = "swap")]
-            asm.swap_event_sender,
+            inputs.swap_event_sender,
         )
         .await?;
         Ok((capable, provider_store))
     }
+}
+
+/// The storer serve store: the `CacheThenReserve` view the node reads and writes
+/// through, plus the reserve and its optional pullsync/batch views (the latter two
+/// present only for the default [`DbReserve`]).
+struct StorerServeStore {
+    local: Arc<dyn SwarmLocalStore>,
+    reserve: Arc<dyn BinCursorStore>,
+    pullsync: Option<Arc<dyn PullStorage>>,
+    batches: Option<DbBatchStore<RedbDatabase>>,
+}
+
+/// Build the reserve (or the seam override) and layer the forwarding cache over it.
+///
+/// The pullsync server snapshot and batch handle exist only for the default
+/// `DbReserve`; a reserve seam erases to `BinCursorStore`, leaving pullsync inbound
+/// serving unwired for that override.
+fn build_serve_store(
+    reserve_seam: Option<ReserveSeam>,
+    cache: Option<CacheSeam>,
+    db: Option<Arc<RedbDatabase>>,
+    identity: &Arc<Identity>,
+    capacity: u64,
+    cache_budget_bytes: u64,
+    soc_cache_ttl: u64,
+) -> Result<StorerServeStore, SwarmNodeError> {
+    let (reserve, pullsync, batches) = match reserve_seam {
+        None => {
+            let built = build_storer_reserve(db.clone(), identity, capacity)?;
+            (built.reserve, built.pullsync, built.batches)
+        }
+        Some(ReserveSeam::Ready(reserve)) => (reserve, None, None),
+        Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None, None),
+    };
+    let cache = resolve_cache(cache, db, cache_budget_bytes, soc_cache_ttl)?;
+    // The reserve upcasts to the local-store read side; writes land in the cache.
+    let local: Arc<dyn SwarmLocalStore> = Arc::new(composite::CacheThenReserve::new(
+        cache,
+        Arc::clone(&reserve) as Arc<dyn SwarmLocalStore>,
+    ));
+    Ok(StorerServeStore {
+        local,
+        reserve,
+        pullsync,
+        batches,
+    })
 }
 
 /// Assemble a `StorerNode` with the reserve-backed pullsync syncer, spawn its
@@ -540,7 +523,7 @@ async fn assemble_storer_node(
     #[cfg(feature = "swap")] swap_event_sender: Option<
         tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
     >,
-) -> Result<StorerCapable, SwarmNodeError> {
+) -> Result<NodeRunParts, SwarmNodeError> {
     // A storer without a `PullStorage`-shaped reserve cannot serve pullsync; this
     // only happens with a reserve seam that is not the default `DbReserve`.
     let pullsync_storage =
@@ -593,7 +576,7 @@ async fn assemble_storer_node(
         })
     });
 
-    Ok(StorerCapable {
+    Ok(NodeRunParts {
         topology,
         client_service,
         client_handle,
@@ -730,7 +713,7 @@ mod tests {
     /// Test SOC cache TTL: any non-zero value works for the cache-shape tests.
     const DEFAULT_SOC_CACHE_TTL_NS_TEST: u64 = vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS;
 
-    /// `build_store` builds the admission-gated reserve, not the cache-only client
+    /// The storer reserve is the admission-gated reserve, not the cache-only client
     /// store: a put for an unknown batch is rejected, proving admission is wired.
     /// The full admissible-put path is covered by the reserve crate.
     #[test]
@@ -790,7 +773,7 @@ mod tests {
     /// A ready reserve seam reaches the node store as the ingest view, and the
     /// serve view writes land in the cache only.
     #[test]
-    fn storer_flavour_honors_a_ready_reserve_seam() {
+    fn storer_assembly_honors_a_ready_reserve_seam() {
         use nectar_primitives::{AnyChunk, ContentChunk};
         use vertex_swarm_primitives::CachedChunk;
 
@@ -799,21 +782,18 @@ mod tests {
             .expect("reserve builds")
             .reserve;
 
-        let mut flavour = StorerFlavour::new(
-            None,
+        let serve = build_serve_store(
             Some(ReserveSeam::Ready(Arc::clone(&seam_reserve))),
-            identity,
+            None,
+            None,
+            &identity,
             1 << 12,
             1 << 20,
             DEFAULT_SOC_CACHE_TTL_NS_TEST,
-        );
-        let local = flavour.build_store(None).expect("seam reserve is used");
-        let reserve = flavour
-            .reserve
-            .clone()
-            .expect("storer always has a reserve");
+        )
+        .expect("seam reserve is used");
         assert!(
-            Arc::ptr_eq(&seam_reserve, &reserve),
+            Arc::ptr_eq(&seam_reserve, &serve.reserve),
             "the supplied reserve must reach the node store as the ingest view"
         );
 
@@ -822,15 +802,16 @@ mod tests {
             .expect("valid content chunk")
             .into();
         let address = *chunk.address();
-        local
+        serve
+            .local
             .put(CachedChunk::new(chunk, None))
             .expect("the forwarding cache accepts a content chunk");
         assert!(
-            local.contains(&address),
+            serve.local.contains(&address),
             "the retrieval-serve view serves the cached chunk"
         );
         assert!(
-            !reserve.contains(&address),
+            !serve.reserve.contains(&address),
             "a put through the serve view must not reach the reserve"
         );
     }
@@ -838,41 +819,37 @@ mod tests {
     /// The default storer path (no seams) layers the default cache over the built
     /// reserve, with serve-view writes reaching the cache only.
     #[test]
-    fn storer_flavour_default_layers_cache_over_built_reserve() {
+    fn storer_assembly_default_layers_cache_over_built_reserve() {
         use nectar_primitives::{AnyChunk, ContentChunk};
         use vertex_swarm_primitives::CachedChunk;
 
         let identity = test_identity_arc();
-        let mut flavour = StorerFlavour::new(
+        let serve = build_serve_store(
             None,
             None,
-            identity,
+            None,
+            &identity,
             1 << 12,
             1 << 20,
             DEFAULT_SOC_CACHE_TTL_NS_TEST,
-        );
-        let local = flavour
-            .build_store(None)
-            .expect("default storer store builds");
-        let reserve = flavour
-            .reserve
-            .clone()
-            .expect("the default storer flavour yields a reserve view");
+        )
+        .expect("default storer store builds");
 
         // A put through the serve view lands in the default cache, never the reserve.
         let chunk: AnyChunk = ContentChunk::new(b"forwarded out-of-aor default".to_vec())
             .expect("valid content chunk")
             .into();
         let address = *chunk.address();
-        local
+        serve
+            .local
             .put(CachedChunk::new(chunk, None))
             .expect("the default forwarding cache accepts a content chunk");
         assert!(
-            local.contains(&address),
+            serve.local.contains(&address),
             "the retrieval-serve view serves the cached chunk"
         );
         assert!(
-            !reserve.contains(&address),
+            !serve.reserve.contains(&address),
             "a put through the serve view must not reach the built reserve"
         );
     }
