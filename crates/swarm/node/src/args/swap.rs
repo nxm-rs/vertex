@@ -43,8 +43,26 @@ pub struct SwapArgs {
 
     /// Per-peer cap on uncashed cheque exposure, in cumulative-payout units.
     #[arg(long = "swap.bounce-limit", default_value_t = DEFAULT_BOUNCE_LIMIT)]
-    #[serde(default = "default_bounce_limit")]
+    #[serde(default = "default_bounce_limit", with = "u128_string")]
     pub bounce_limit: u128,
+}
+
+/// Serialize a `u128` as a decimal string so figment's i64/u64 value model can
+/// round-trip it. In a TOML file the value is written quoted.
+mod u128_string {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub(super) fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<u128, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(Error::custom)
+    }
 }
 
 /// Default per-peer uncashed cheque exposure cap (ten times the default payment

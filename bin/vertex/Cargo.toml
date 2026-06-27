@@ -79,3 +79,6 @@ tracing.workspace = true
 # profiling (optional)
 tikv-jemallocator = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

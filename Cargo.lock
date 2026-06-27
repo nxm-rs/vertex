@@ -8316,6 +8316,7 @@ dependencies = [
  "console-subscriber",
  "eyre",
  "rand 0.9.4",
+ "tempfile",
  "tikv-jemallocator",
  "tokio",
  "tracing",
