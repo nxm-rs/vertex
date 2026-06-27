@@ -21,12 +21,15 @@ use vertex_swarm_accounting_pseudosettle::{
 };
 use vertex_swarm_api::{
     Au, PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting,
-    SwarmSettlementProvider,
+    SwarmNodeType, SwarmSettlementProvider,
 };
 use vertex_swarm_identity::Identity;
+use vertex_swarm_peer_manager::{DEFAULT_TICK_INTERVAL, spawn_peer_manager_task};
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::TaskExecutor;
+
+use crate::chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
 
 #[cfg(feature = "swap")]
 use alloy_chains::NamedChain;
@@ -36,7 +39,7 @@ use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 #[cfg(feature = "swap")]
 use tracing::info;
-#[cfg(feature = "swap-chequebook")]
+#[cfg(feature = "swap")]
 use vertex_chain::SharedChainProvider;
 #[cfg(feature = "swap")]
 use vertex_swarm_accounting_swap::service::SwapCommand;
@@ -473,6 +476,367 @@ pub fn spawn_client_command_bridge(
     });
 }
 
+/// The node run-loop task the launch tail hands back for the entry point to
+/// spawn.
+///
+/// Native: a `Send` [`NodeTaskFn`](vertex_tasks::NodeTaskFn) the builder returns
+/// to the binary's task manager. Wasm: a `!Send` sibling the launcher spawns on
+/// the browser event loop, since the websocket-transport run future is `!Send`.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NodeRunTaskFn = vertex_tasks::NodeTaskFn;
+#[cfg(target_arch = "wasm32")]
+pub type NodeRunTaskFn = Box<
+    dyn FnOnce(
+        vertex_tasks::GracefulShutdown,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+>;
+
+/// Wrap a future factory as a [`NodeRunTaskFn`] with graceful-shutdown support.
+/// The `Send` bound is target-conditional so the wasm node run loop, whose
+/// websocket futures are `!Send`, goes through the same helper.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn single_task<F, Fut>(f: F) -> NodeRunTaskFn
+where
+    F: FnOnce(vertex_tasks::GracefulShutdown) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    Box::new(move |shutdown| Box::pin(f(shutdown)))
+}
+#[cfg(target_arch = "wasm32")]
+pub fn single_task<F, Fut>(f: F) -> NodeRunTaskFn
+where
+    F: FnOnce(vertex_tasks::GracefulShutdown) -> Fut + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    Box::new(move |shutdown| Box::pin(f(shutdown)))
+}
+
+/// A run-task factory: applies multi-hop forwarding (and, for a storer, ingest)
+/// over the shared accounting, then returns the node's run-loop task. Keeps the
+/// concrete node type out of the shared launch tail.
+pub type RunTaskFn =
+    Box<dyn FnOnce(SharedAccounting, Arc<dyn PeerReporter>, ClientHandle) -> NodeRunTaskFn>;
+
+/// Node-type-agnostic outputs of node assembly: the topology handle, the client
+/// service and handle, and the run-task factory. Every assembly produces these.
+pub struct NodeRunParts {
+    /// The node's topology handle.
+    pub topology: TopologyHandle<Arc<Identity>>,
+    /// The client service driving the retrieval and pushsync request paths.
+    pub client_service: ClientService,
+    /// The unthrottled client handle settlement services forward commands to.
+    pub client_handle: ClientHandle,
+    /// Applies forwarding over the shared accounting and yields the run task.
+    pub run: RunTaskFn,
+}
+
+/// Network chunk provider wrapped with config-gated download verification: the
+/// RPC chunk surface both client entry points expose.
+pub type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
+
+/// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
+/// the verified chunk provider, the shared accounting and throttled client handle
+/// (for an embedder that observes them), and the node-type-specific provider store
+/// (`()` for a client, the serve view plus reserve for a storer).
+pub struct ClientNodeParts<P> {
+    /// The node run-loop task for the entry point to spawn.
+    pub task: NodeRunTaskFn,
+    /// The node's topology handle.
+    pub topology: TopologyHandle<Arc<Identity>>,
+    /// The selection-aware verified chunk provider.
+    pub chunks: VerifiedChunkProvider,
+    /// The shared client accounting (selector, throttle, forwarder, service, and
+    /// settlement all read this instance).
+    pub accounting: SharedAccounting,
+    /// The throttled client handle for chunk retrieval and upload.
+    pub client: ClientHandle,
+    /// Whatever the node type's RPC providers wrap.
+    pub provider_store: P,
+}
+
+/// The wire-event sinks the node behaviour routes settlement events into,
+/// produced by the tail's settlement wiring and threaded into the node build.
+pub struct SettlementEventSenders {
+    /// Pseudosettle wire events.
+    pub pseudosettle: mpsc::UnboundedSender<PseudosettleEvent>,
+    /// SWAP wire events, present only when SWAP settlement is wired.
+    #[cfg(feature = "swap")]
+    pub swap: Option<mpsc::UnboundedSender<SwapEvent>>,
+}
+
+/// Resolved SWAP parameters shared by both client entry points.
+#[cfg(feature = "swap")]
+#[derive(Clone)]
+pub struct ClientSwapParams {
+    /// `--swap` override; `None` defers to the node type's default.
+    pub enable: Option<bool>,
+    /// Our chequebook contract address, named in the cheques we issue.
+    pub chequebook: Option<Address>,
+    /// Payout address received cheques may name; defaults to the identity address.
+    pub beneficiary: Option<Address>,
+    /// Deploy a new chequebook on startup instead of using an existing one.
+    pub deploy: bool,
+    /// Per-peer cap on uncashed cheque exposure.
+    pub bounce_limit: u128,
+}
+
+/// Borrowed, wasm-clean inputs to [`build_client_core_tail`].
+pub struct ClientTailParams<'a> {
+    /// The runtime node type, which selects the SWAP default and chain need.
+    pub node_type: SwarmNodeType,
+    /// Network spec for the config pricer and SWAP chain resolution.
+    pub spec: &'a Arc<Spec>,
+    /// Node identity the accounting, overlay, and SWAP signer are pinned to.
+    pub identity: &'a Arc<Identity>,
+    /// Bandwidth config driving accounting, pricing, and the self-throttle.
+    pub bandwidth: &'a DefaultBandwidthConfig,
+    /// Verification checks applied to downloaded chunks.
+    pub verify: ChunkVerifyConfig,
+    /// SWAP settlement parameters.
+    #[cfg(feature = "swap")]
+    pub swap: ClientSwapParams,
+}
+
+/// Shared client launch tail for the client- and storer-backed node types.
+///
+/// Wires accounting (violations to the peer manager, SWAP settlement when
+/// enabled) and the selection-aware verified chunk provider, then spawns the
+/// client and settlement services and the peer-manager tick. `build_node` builds
+/// the concrete node over the settlement event sinks and returns its run parts
+/// plus the node-type provider store; the tail is agnostic to whether that node
+/// is a bare client or a storer. SWAP defaults on for storers and off for
+/// clients, overridable through `params.swap.enable`.
+///
+/// The returned run task is left for the caller to spawn: the native builder
+/// hands it to the binary, the embedded launcher spawns it on its executor.
+pub async fn build_client_core_tail<P, E, FBuild, Fut>(
+    executor: &TaskExecutor,
+    params: ClientTailParams<'_>,
+    #[cfg(feature = "swap")] chain_provider: Option<SharedChainProvider>,
+    build_node: FBuild,
+) -> Result<ClientNodeParts<P>, E>
+where
+    FBuild: FnOnce(SettlementEventSenders) -> Fut,
+    Fut: std::future::Future<Output = Result<(NodeRunParts, P), E>>,
+{
+    // Pseudosettle (soft accounting) is always on: prepare the provider so it
+    // embeds in the accounting, and the event sink so wire events route at the
+    // node build below.
+    let (pseudosettle_provider, pseudosettle_wiring) =
+        PseudosettleWiring::prepare(params.bandwidth);
+    let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
+
+    // SWAP settlement is prepared next: the provider embeds in the accounting and
+    // the swap event sink routes at node build time. The enable decision lives
+    // here, once, for both entry points.
+    #[cfg(feature = "swap")]
+    let (swap_provider, swap_wiring) = {
+        let swap_enabled = params
+            .swap
+            .enable
+            .unwrap_or(params.node_type.swap_default());
+        SwapWiring::prepare(
+            params.spec,
+            params.identity,
+            params.bandwidth,
+            params.swap.chequebook,
+            params.swap.beneficiary,
+            params.swap.deploy,
+            params.swap.bounce_limit,
+            swap_enabled,
+        )
+        .unzip()
+    };
+    #[cfg(feature = "swap")]
+    let swap_event_sender = swap_wiring.as_ref().map(|w| w.swap_event_sender());
+
+    // The concrete node is built over the settlement event sinks: a bare client,
+    // or (for a storer) the pullsync-capable node plus its puller. Accounting,
+    // selection, and settlement wiring below is identical for both.
+    let (
+        NodeRunParts {
+            topology,
+            client_service,
+            client_handle,
+            run,
+        },
+        provider_store,
+    ) = build_node(SettlementEventSenders {
+        pseudosettle: pseudosettle_event_sender,
+        #[cfg(feature = "swap")]
+        swap: swap_event_sender,
+    })
+    .await?;
+
+    spawn_peer_manager_task(
+        Arc::clone(topology.peer_manager()),
+        DEFAULT_TICK_INTERVAL,
+        executor,
+    );
+
+    // The peer manager is the reporting authority: accounting and the settlement
+    // services report violations through it so misbehaving peers are scored down.
+    let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+
+    // SWAP is the only extra provider; pseudosettle is registered first inside
+    // the core so soft accounting forgives total debt before SWAP settles.
+    let extra_settlement: Vec<Box<dyn SwarmSettlementProvider>> = {
+        #[cfg(feature = "swap")]
+        {
+            swap_provider
+                .map(|provider| Box::new(provider) as Box<dyn SwarmSettlementProvider>)
+                .into_iter()
+                .collect()
+        }
+        #[cfg(not(feature = "swap"))]
+        Vec::new()
+    };
+
+    let core = assemble_client_core(ClientCoreCtx {
+        spec: Arc::clone(params.spec),
+        identity: params.identity.clone(),
+        bandwidth: params.bandwidth.clone(),
+        topology: topology.clone(),
+        client_service,
+        client_handle: client_handle.clone(),
+        pseudosettle_provider,
+        extra_settlement,
+        reporter: Arc::clone(&reporter),
+    });
+
+    // Multi-hop forwarding plus storer ingest must precede the event loop. The
+    // run closure applies both to its concrete node over the shared accounting,
+    // then returns the run task. Forwarder relay legs run over the unthrottled
+    // handle: the self-throttle paces only our own origin retrieval and pushsync.
+    let task = (run)(
+        Arc::clone(&core.accounting),
+        reporter.clone(),
+        core.client_handle.clone(),
+    );
+
+    let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
+        .with_selector(Arc::clone(&core.selector));
+    let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
+
+    executor.spawn_service("swarm.client_service", core.client_service);
+
+    // Pseudosettle settlement service over the shared accounting: applies
+    // time-based refresh and forwards our outbound settlement to the node.
+    pseudosettle_wiring.spawn(
+        executor,
+        core.accounting.bandwidth().clone(),
+        client_handle.clone(),
+        Arc::clone(&reporter),
+    );
+
+    // SWAP settlement service over the shared accounting: forwards cheque
+    // commands to the node and, with a connected chain provider, cashes received
+    // cheques on chain.
+    #[cfg(feature = "swap")]
+    if let Some(wiring) = swap_wiring {
+        wiring.spawn(
+            executor,
+            core.accounting.bandwidth().clone(),
+            client_handle,
+            Arc::clone(&reporter),
+            #[cfg(feature = "swap-chequebook")]
+            chain_provider.as_ref(),
+            #[cfg(feature = "swap-chequebook")]
+            params.spec,
+        );
+    }
+
+    // The chain provider is kept alive for the node's lifetime by the run task.
+    #[cfg(feature = "swap")]
+    let task = wrap_with_chain(task, chain_provider);
+
+    Ok(ClientNodeParts {
+        task,
+        topology,
+        chunks,
+        accounting: core.accounting,
+        client: core.throttled_handle,
+        provider_store,
+    })
+}
+
+/// Resolve and validate the shared chain provider for a client- or storer-backed
+/// node.
+///
+/// SWAP is chequebook-based and so always needs the chain; pseudosettle is the
+/// chain-free settlement path. Returns `Ok(None)` only for a chain-free node type
+/// ([`SwarmNodeType::needs_chain`] is false, i.e. a pseudosettle-only client). A
+/// chain-needing node (a storer, or a SWAP-enabled client) that cannot resolve a
+/// chain hard-fails with [`NodeChainError::Required`] rather than degrading
+/// chainless, whether the cause is no RPC URL, a network with no canonical
+/// deployment, or a connection that fails to validate. The construction is
+/// target-portable: native TLS or browser fetch transport, picked by `vertex-chain`.
+#[cfg(feature = "swap")]
+pub async fn node_chain_provider(
+    spec: &Arc<Spec>,
+    identity: &Arc<Identity>,
+    node_type: SwarmNodeType,
+    swap_enabled: bool,
+    rpc_url: Option<&str>,
+) -> Result<Option<SharedChainProvider>, NodeChainError> {
+    use vertex_chain::ChainConfig as ChainAddressBook;
+
+    if !node_type.needs_chain(swap_enabled) {
+        return Ok(None);
+    }
+
+    let Some(rpc_url) = rpc_url else {
+        return Err(NodeChainError::Required { node_type });
+    };
+
+    // A network with no canonical deployment cannot settle on chain; fail fast
+    // before connecting. The address book itself is resolved at the edge by each
+    // chain consumer, not carried in the provider handle.
+    if ChainAddressBook::from_swarm(spec.swarm()).is_none() {
+        return Err(NodeChainError::Required { node_type });
+    }
+
+    let signer = (*identity.signer()).clone();
+    let provider = vertex_chain::build_chain_provider(rpc_url, signer, spec.chain)
+        .await
+        .map_err(|e| NodeChainError::Build(e.to_string()))?;
+
+    Ok(Some(provider))
+}
+
+/// Failure resolving the chain a chain-needing node requires.
+#[cfg(feature = "swap")]
+#[derive(Debug, thiserror::Error)]
+pub enum NodeChainError {
+    /// A chain-needing node type (a storer, a SWAP-enabled client) could not
+    /// resolve a chain and may not degrade chainless.
+    #[error(
+        "node type {node_type} requires an Ethereum chain connection, but none could be resolved: \
+         set the chain RPC URL and use a network with a canonical contract deployment"
+    )]
+    Required {
+        /// The node type that hard-failed for want of a chain.
+        node_type: SwarmNodeType,
+    },
+    /// The chain provider could not be constructed or validated.
+    #[error("chain provider construction failed: {0}")]
+    Build(String),
+}
+
+/// Wrap a run task so the chain provider stays alive for the node's lifetime.
+#[cfg(feature = "swap")]
+fn wrap_with_chain(
+    task: NodeRunTaskFn,
+    chain_provider: Option<SharedChainProvider>,
+) -> NodeRunTaskFn {
+    Box::new(move |shutdown| {
+        Box::pin(async move {
+            let _chain_provider = chain_provider;
+            task(shutdown).await;
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +907,124 @@ mod tests {
             accounting.bandwidth().provider_names(),
             vec!["pseudosettle", "swap"],
             "a swap-enabled client reports pseudosettle then swap"
+        );
+    }
+
+    /// A storer with no RPC URL hard-fails with [`NodeChainError::Required`]
+    /// rather than degrade chainless: a storer always needs the chain.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn storer_without_chain_config_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Storer,
+            // A storer always needs the chain, so swap_enabled is irrelevant.
+            false,
+            None,
+        )
+        .await
+        .expect_err("a storer without a chain RPC must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Storer
+                }
+            ),
+            "a chainless storer must error with Required{{Storer}}, got {err:?}"
+        );
+    }
+
+    /// A storer on a network with no canonical deployment hard-fails even with a
+    /// valid RPC URL: there is no address book to target the contracts.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn storer_on_deployment_less_network_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Storer,
+            false,
+            Some("https://rpc.example"),
+        )
+        .await
+        .expect_err("a storer on a deployment-less network must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Storer
+                }
+            ),
+            "a deployment-less storer must error with Required{{Storer}}, got {err:?}"
+        );
+    }
+
+    /// A pseudosettle-only client does not need a chain, so the provider step
+    /// degrades to `Ok(None)` even with no RPC URL configured.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn light_client_builds_chainless() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let provider = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Client,
+            // No SWAP: a pseudosettle-only client stays chain-free.
+            false,
+            None,
+        )
+        .await
+        .expect("a chain-free client must not require a chain");
+        assert!(
+            provider.is_none(),
+            "a pseudosettle-only client degrades chainless, building no provider"
+        );
+    }
+
+    /// A SWAP-enabled client needs the chain to settle cheques, so a missing RPC
+    /// URL hard-fails the same way a storer does.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn swap_client_without_chain_config_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Client,
+            // SWAP enabled: the client now needs a chain to settle.
+            true,
+            None,
+        )
+        .await
+        .expect_err("a SWAP-enabled client without a chain RPC must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Client
+                }
+            ),
+            "a chainless SWAP client must error with Required{{Client}}, got {err:?}"
         );
     }
 }

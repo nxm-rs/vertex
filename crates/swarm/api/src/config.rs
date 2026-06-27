@@ -322,13 +322,16 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 ///
 /// Consumed by value through concrete config types (never as a trait object), so
 /// `build` returns `impl Future + Send` natively; the `Send` bound keeps the
-/// future spawnable when `SwarmProtocol::launch` awaits it.
+/// future spawnable when the Swarm protocol awaits it during launch.
 pub trait SwarmLaunchConfig: Send + Sync + 'static {
     /// The Swarm types for this configuration.
     type Types: SwarmNetworkTypes;
 
     /// Providers for RPC services (node-type specific).
-    type Providers: Send + Sync + 'static;
+    ///
+    /// `Clone` so the launch path can project the container into its serve view
+    /// (a `GrpcAdapter`) without consuming the components the node handle keeps.
+    type Providers: Clone + Send + Sync + 'static;
 
     /// Error type for build failures.
     type Error: std::error::Error + Send + Sync + 'static;

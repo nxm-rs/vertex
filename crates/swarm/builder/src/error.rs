@@ -21,7 +21,7 @@ pub enum SwarmNodeError {
     NotImplemented(String),
 
     /// Chain service construction or validation failed.
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "swap")]
     #[error("chain error: {0}")]
     Chain(String),
 

@@ -13,28 +13,40 @@ workspace = true
 
 [features]
 default = []
-# Construct a shared Ethereum alloy provider for chain-needing node types
-# (storer, and a client with SWAP enabled). The provider construction seam and
-# its target-split transport (native TLS vs browser fetch) live in `vertex-chain`
-# behind its `provider` feature; this feature also pulls the on-chain chequebook
-# client. Off by default to keep the default client cone lean.
+# On-chain cashout of received cheques. SWAP is chequebook-based and so always
+# needs the chain (the provider comes with `swap`); this feature adds the cashout
+# path on top, so it implies `swap`. The provider construction seam and its
+# target-split transport (native TLS vs browser fetch) live in `vertex-chain`
+# behind its `provider` feature. Off by default to keep the default client cone lean.
 chain = [
+    "swap",
     "vertex-chain/provider",
-    # The on-chain cashout of received cheques and its chequebook client live in
-    # the node crate's swap wiring; the chain build unlocks them there. With `swap`
-    # off this is inert.
     "vertex-swarm-node/swap-chequebook",
 ]
 # SWAP cheque-based settlement. The swap settlement service and its accounting
-# wiring live in `vertex-swarm-node`; this feature turns them on there. Chain-free
-# on its own: cheque exchange (sign, send, validate, credit) needs no chain.
-# Combine with `chain` to enable on-chain cashout of received cheques. Off by
-# default so the chain-free client node stays the default cone.
+# wiring live in `vertex-swarm-node`; this feature turns them on there. SWAP is
+# chequebook-based, so it pulls the chain provider; a swap-enabled client hard-fails
+# without a resolvable chain. Pseudosettle is the chain-free settlement path.
+# Combine with `chain` to also cash received cheques on chain. Off by default so the
+# default client node stays the chain-free cone.
 swap = ["vertex-swarm-node/swap"]
-# Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
-# stack, the on-chain chequebook client, and the swap settlement service.
-# Client nodes leave this off.
-storer = ["chain", "swap"]
+# The storer code cone: the persisting reserve, the neighbourhood puller, the
+# batch store, and the redistribution config, plus the storer node module in
+# `vertex-swarm-node`. Pulling this keeps the storer builders, configs and launch
+# path out of the default client build. It carries no chain or settlement on its
+# own; the role feature below adds those. Named for the storer's defining
+# commitment: holding a reserve.
+reserve = [
+    "dep:vertex-swarm-storer",
+    "dep:vertex-swarm-puller",
+    "dep:vertex-swarm-postage",
+    "dep:vertex-swarm-redistribution",
+    "vertex-swarm-node/storer",
+]
+# Node role: the storer settles bandwidth over SWAP, so it pulls in the reserve
+# cone plus the chain stack, the on-chain chequebook client, and the swap
+# settlement service. Client nodes leave this off.
+storer = ["reserve", "chain", "swap"]
 
 [dependencies]
 # vertex - node infrastructure
@@ -52,16 +64,20 @@ vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-storage-redb.workspace = true
-vertex-swarm-redistribution.workspace = true
-# The persisting reserve the storer launch path wires as the node's local store.
-vertex-swarm-storer.workspace = true
-# The neighbourhood pull-sync service the storer launch path spawns over the
-# reserve, with the node providing the concrete seam impls.
-vertex-swarm-puller.workspace = true
-# The batch store and admission validator the reserve requires for stamped admission.
-vertex-swarm-postage.workspace = true
+# The storer cone (behind `reserve`): the redistribution config, the
+# persisting reserve, the neighbourhood pull-sync service, and the batch store and
+# admission validator the reserve requires for stamped admission. Optional so the
+# default client build never compiles them.
+vertex-swarm-redistribution = { workspace = true, optional = true }
+vertex-swarm-storer = { workspace = true, optional = true }
+vertex-swarm-puller = { workspace = true, optional = true }
+vertex-swarm-postage = { workspace = true, optional = true }
 vertex-swarm-topology.workspace = true
 vertex-swarm-api.workspace = true
+# The gRPC serve view (`GrpcAdapter`) the Swarm protocol projects its components
+# into for transport registration. Lives below the builder so the orphan-rule
+# `RegistersGrpcServices` impls stay with the local newtype.
+vertex-swarm-rpc.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 # The verified custody `Receipt` the origin upload path consumes from the client
 # handle (depth check) and projects onto the public `PushReceipt`.
@@ -99,10 +115,14 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
+# The examples launch through the node-builder shell; metrics-free is fine since
+# they use `launch_without_grpc`.
+vertex-node-builder.workspace = true
+vertex-node-core.workspace = true
 
-# Client upload/download examples. They build a client through the public builder
-# and drive the chunk sender/provider directly, the way an FFI or gRPC embedder
-# would.
+# Client upload/download examples. They launch a client through the node-builder
+# shell and drive the chunk sender/provider directly, the way an FFI or gRPC
+# embedder would.
 [[example]]
 name = "upload_chunk"
 path = "examples/upload_chunk.rs"

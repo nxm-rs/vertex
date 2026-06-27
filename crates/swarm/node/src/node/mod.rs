@@ -25,7 +25,7 @@ mod launch;
 #[cfg_attr(target_arch = "wasm32", path = "nat_wasm.rs")]
 mod nat;
 pub(crate) mod stats;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 #[allow(unreachable_pub)]
 mod storer;
 pub(crate) mod task;
@@ -35,15 +35,16 @@ pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
-#[cfg(feature = "swap")]
-pub use core::SwapWiring;
 pub use core::{
-    ClientCore, ClientCoreCtx, PseudosettleWiring, SharedAccounting, assemble_client_core,
-    spawn_client_command_bridge,
+    ClientCore, ClientCoreCtx, ClientNodeParts, ClientTailParams, NodeRunParts, NodeRunTaskFn,
+    PseudosettleWiring, RunTaskFn, SettlementEventSenders, SharedAccounting, VerifiedChunkProvider,
+    assemble_client_core, build_client_core_tail, single_task, spawn_client_command_bridge,
 };
+#[cfg(feature = "swap")]
+pub use core::{ClientSwapParams, NodeChainError, SwapWiring, node_chain_provider};
 pub use error::NodeBuildError;
 #[cfg(feature = "swap")]
 pub use launch::LauncherSwapConfig;
 pub use launch::{ClientLauncher, LaunchedClient};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};

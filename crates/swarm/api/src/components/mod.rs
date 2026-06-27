@@ -80,7 +80,7 @@ pub trait HasReserve: HasStore {
 /// Bootnode components (topology only). Identity via `topology().identity()`.
 ///
 /// Construction is builder-exclusive; see [`construct`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BootnodeComponents<T> {
     topology: T,
 }
@@ -141,7 +141,7 @@ impl<T: Send + Sync, C: Send + Sync> HasChunkClient for ClientComponents<T, C> {
 /// `S` is the retrieval-serve view ([`HasStore`]); `R` is the proximity-ordered
 /// reserve ([`HasReserve`]). Both stay generic so this crate names no concrete
 /// backend. Construction is builder-exclusive; see [`construct`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StorerComponents<T, C, S, R> {
     client: ClientComponents<T, C>,
     store: S,

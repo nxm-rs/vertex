@@ -1,8 +1,9 @@
 //! Build a Swarm client, wait until it can route, and upload a stamped chunk.
 //!
-//! The flow mirrors what an FFI or gRPC embedder does: build a client through
-//! `DefaultClientBuilder`, spawn its event loop, dial bootnodes, await a
-//! deterministic readiness gate, then push a pre-stamped chunk.
+//! The flow mirrors what an FFI or gRPC embedder does: launch a client through
+//! the node-builder shell (`launch_without_grpc`), which spawns its event loop,
+//! then dial bootnodes, await a deterministic readiness gate, and push a
+//! pre-stamped chunk.
 //!
 //! Readiness is `TopologyHandle::wait_until_ready`, the composite warm gate:
 //! for a client it resolves the moment a storer is connected, the state from
@@ -12,41 +13,23 @@
 //!
 //! Run with: `cargo run -p vertex-swarm-builder --example upload_chunk`
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::{Stamp, StampDigest, StampIndex};
-use vertex_node_api::InfrastructureContext;
+use vertex_node_builder::NodeBuilder;
+use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_api::{
     AnyChunk, Chunk, ChunkAddress, ContentChunk, HasChunkClient, HasTopology, StampedChunk,
     SwarmChunkSender, SwarmNodeType, SwarmTopologyCommands,
 };
-use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, DefaultClientBuilder};
+use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
-use vertex_tasks::TaskExecutor;
-
-/// Minimal [`InfrastructureContext`]: a task executor for the client's
-/// services and a data directory. No database path is configured, so the
-/// client runs fully in-memory.
-struct ExampleContext {
-    executor: TaskExecutor,
-    data_dir: PathBuf,
-}
-
-impl InfrastructureContext for ExampleContext {
-    fn executor(&self) -> &TaskExecutor {
-        &self.executor
-    }
-
-    fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-}
+use vertex_tasks::{TaskExecutor, TaskManager};
 
 /// Sign a stamp that recovers to a deterministic key, so the example needs no
 /// wallet or chain access. A real uploader signs with the key owning an on-chain
@@ -63,6 +46,7 @@ fn sign_stamp(address: &ChunkAddress) -> Result<Stamp, Box<dyn std::error::Error
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _manager = TaskManager::current();
     let executor = TaskExecutor::current();
     let spec = init_dev();
     let identity = Arc::new(Identity::random(spec.clone(), SwarmNodeType::Client));
@@ -77,30 +61,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ChainConfig::default(),
         SwapConfig::default(),
     );
-    let ctx = ExampleContext {
-        executor: executor.clone(),
-        data_dir: std::env::temp_dir().join("vertex-example-upload"),
-    };
 
-    let (task_fn, providers) = DefaultClientBuilder::from_config(config)
-        .build(&ctx)
-        .await?
-        .into_parts();
+    // Launch through the node-builder shell; the node task is spawned internally.
+    let handle = NodeBuilder::new()
+        .with_launch_context(
+            (),
+            executor,
+            DataDirs::ephemeral(std::env::temp_dir().join("vertex-example-upload")),
+        )
+        .with_protocol(config)
+        .launch_without_grpc()
+        .await?;
+    let topology = handle.components().topology();
 
-    // Spawn the event loop and dial bootnodes so peers can be discovered.
-    executor.spawn_critical_with_graceful_shutdown_signal("swarm.node", task_fn);
-    providers.topology().connect_bootnodes().await?;
+    // Dial bootnodes so peers can be discovered.
+    topology.connect_bootnodes().await?;
 
     // Deterministic readiness: the warm gate for a client resolves once a
     // storer is connected.
-    providers.topology().wait_until_ready().await?;
+    topology.wait_until_ready().await?;
 
     let chunk = ContentChunk::new(&b"hello swarm"[..])?;
     let address = *chunk.address();
     let stamped = StampedChunk::new(AnyChunk::Content(chunk), sign_stamp(&address)?);
 
     println!("Uploading chunk {address}");
-    let receipt = providers.chunk_client().send_chunk(stamped).await?;
+    let receipt = handle
+        .components()
+        .chunk_client()
+        .send_chunk(stamped)
+        .await?;
     println!("Accepted by storer {}", receipt.storer);
     println!("Signature {}", receipt.signature);
     println!("Storage radius {}", receipt.storage_radius);

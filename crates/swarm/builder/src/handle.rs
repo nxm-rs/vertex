@@ -10,8 +10,7 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
-use crate::providers::NetworkChunkProvider;
-use crate::verify::VerifyingChunkProvider;
+use vertex_swarm_node::{NetworkChunkProvider, VerifyingChunkProvider};
 
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 

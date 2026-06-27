@@ -9,6 +9,7 @@ use vertex_swarm_accounting::BandwidthArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
+#[cfg(feature = "storer")]
 use vertex_swarm_redistribution::RedistributionArgs;
 
 use super::{ChainArgs, NetworkArgs, RetrievalArgs, SwapArgs, SwarmSpecArgs};
@@ -86,6 +87,7 @@ pub struct ProtocolArgs {
     #[command(flatten)]
     pub localstore: LocalStoreArgs,
 
+    #[cfg(feature = "storer")]
     #[command(flatten)]
     pub redistribution: RedistributionArgs,
 

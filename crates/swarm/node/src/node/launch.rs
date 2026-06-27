@@ -1,45 +1,45 @@
 //! Fluent launcher for an embedded Swarm client node.
 //!
-//! [`ClientLauncher`] is the lightweight entry point shared by native
-//! embedders and the browser client: no database, no chain provider, no RPC
-//! server. It composes a [`ClientNode`] from an identity and a handful of
-//! network knobs, wires the shared client core (pseudosettle accounting,
-//! candidate selector, outbound throttle, relay forwarder), spawns the node
-//! run loop, the client service, the pseudosettle settlement service, and the
-//! peer-manager tick on the current [`TaskExecutor`], and hands back a
-//! [`LaunchedClient`] with the handles a caller needs to observe the topology
-//! and issue chunk reads and writes. Settlement is pseudosettle by default, with
-//! SWAP cheque exchange (and, behind `swap-chequebook`, on-chain cashout) added
-//! through `with_swap`. The full native stack (persistent storage, RPC, the
-//! storer reserve) still goes through `vertex-swarm-builder`.
+//! [`ClientLauncher`] is the lightweight entry point shared by native embedders
+//! and the browser client: no database, no RPC server. It assembles a dial-only
+//! [`ClientNode`] over a handful of network knobs and delegates the shared
+//! client wiring (accounting, settlement, the verified chunk provider, service
+//! spawning) to [`build_client_core_tail`], the same tail the native builder
+//! uses, then spawns the returned run task. It hands back a [`LaunchedClient`]
+//! with the handles a caller needs to observe the topology and issue chunk reads
+//! and writes. Settlement is pseudosettle (the chain-free path) by default; SWAP
+//! is chequebook-based and so always resolves a chain, with on-chain cashout
+//! added behind `swap-chequebook`. The full native stack (persistent storage,
+//! RPC, the storer reserve) still goes through `vertex-swarm-builder`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use eyre::{Result, WrapErr};
+use eyre::Result;
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    DefaultPeerConfig, PeerReporter, SwarmClientAccounting, SwarmLocalStore, SwarmNetworkConfig,
-    SwarmPeerConfig, SwarmRoutingConfig,
+    DefaultPeerConfig, SwarmLocalStore, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig,
+    SwarmRoutingConfig,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::{ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS};
-use vertex_swarm_peer_manager::{DEFAULT_TICK_INTERVAL, spawn_peer_manager_task};
 use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
 #[cfg(feature = "swap")]
 use alloy_primitives::Address;
-#[cfg(feature = "swap-chequebook")]
-use vertex_swarm_api::SwarmIdentity;
 
 use super::client::ClientNode;
+use super::core::{
+    ClientNodeParts, ClientTailParams, NodeRunParts, NodeRunTaskFn, RunTaskFn, SharedAccounting,
+    VerifiedChunkProvider, build_client_core_tail, single_task,
+};
 #[cfg(feature = "swap")]
-use super::core::SwapWiring;
-use super::core::{ClientCoreCtx, PseudosettleWiring, SharedAccounting, assemble_client_core};
+use super::core::{ClientSwapParams, node_chain_provider};
+use crate::ChunkVerifyConfig;
 use crate::ClientHandle;
 
 /// Default connection idle timeout for a launched client.
@@ -122,9 +122,9 @@ impl SwarmRoutingConfig for LaunchNetworkConfig {
 ///
 /// The signer and the settlement chain are not carried here: the swap service
 /// signs with the launcher identity and resolves the chain from the identity's
-/// spec. Cheque exchange is chain-free; with the `swap-chequebook` feature an
-/// `rpc_url` turns on on-chain cashout of received cheques, paying out to
-/// `beneficiary`.
+/// spec. SWAP is chequebook-based, so enabling it requires a resolvable chain;
+/// with the `swap-chequebook` feature an `rpc_url` supplies it and turns on
+/// on-chain cashout of received cheques, paying out to `beneficiary`.
 #[cfg(feature = "swap")]
 #[derive(Clone)]
 pub struct LauncherSwapConfig {
@@ -144,8 +144,9 @@ pub struct LauncherSwapConfig {
 
 #[cfg(feature = "swap")]
 impl LauncherSwapConfig {
-    /// A chain-free swap config for the given chequebook: cheque exchange only,
-    /// beneficiary defaulted to the identity address, no on-chain cashout.
+    /// A swap config for the given chequebook, beneficiary defaulted to the
+    /// identity address. Add an `rpc_url` (under `swap-chequebook`) to supply the
+    /// chain SWAP requires and turn on on-chain cashout.
     #[must_use]
     pub fn new(chequebook: Address) -> Self {
         Self {
@@ -160,8 +161,9 @@ impl LauncherSwapConfig {
 
 /// Fluent launcher for an embedded Swarm client node.
 ///
-/// This is the lightweight entry point: no database, no chain provider, no RPC
-/// server. The full native stack goes through `vertex-swarm-builder`.
+/// This is the lightweight entry point: no database, no RPC server (a chain is
+/// resolved only when SWAP is enabled). The full native stack goes through
+/// `vertex-swarm-builder`.
 ///
 /// The launched node is dial-only on both targets: it opens no listeners and
 /// runs no NAT traversal or LAN discovery. On native that suits embedders that
@@ -186,6 +188,12 @@ pub struct ClientLauncher {
     bandwidth: DefaultBandwidthConfig,
     max_peers: usize,
     idle_timeout: Duration,
+    /// Verification checks applied to downloaded chunks.
+    verify: ChunkVerifyConfig,
+    /// Byte budget for the default in-memory cache (ignored when a store is set).
+    cache_budget_bytes: u64,
+    /// TTL (ns) governing single-owner-chunk freshness in the default cache.
+    soc_cache_ttl_ns: u64,
     /// Caller-supplied client cache. `None` builds the default in-memory cache.
     store: Option<Arc<dyn SwarmLocalStore>>,
     /// SWAP settlement parameters. `None` keeps settlement pseudosettle-only.
@@ -204,10 +212,28 @@ impl ClientLauncher {
             bandwidth: DefaultBandwidthConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            verify: ChunkVerifyConfig::default(),
+            cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
+            soc_cache_ttl_ns: DEFAULT_SOC_CACHE_TTL_NS,
             store: None,
             #[cfg(feature = "swap")]
             swap: None,
         }
+    }
+
+    /// Set the verification checks applied to downloaded chunks.
+    #[must_use]
+    pub fn with_verify(mut self, verify: ChunkVerifyConfig) -> Self {
+        self.verify = verify;
+        self
+    }
+
+    /// Set the byte budget for the default in-memory cache. Ignored when a store
+    /// is supplied through [`Self::with_store`].
+    #[must_use]
+    pub fn with_cache_budget(mut self, budget_bytes: u64) -> Self {
+        self.cache_budget_bytes = budget_bytes;
+        self
     }
 
     /// Set the bootnode multiaddrs to dial at startup.
@@ -314,175 +340,134 @@ impl ClientLauncher {
         // browser) replaces the default in-memory one.
         let store: Arc<dyn SwarmLocalStore> = self.store.unwrap_or_else(|| {
             Arc::new(ChunkStore::with_budget(
-                DEFAULT_CACHE_BUDGET_BYTES as usize,
-                DEFAULT_SOC_CACHE_TTL_NS,
+                self.cache_budget_bytes as usize,
+                self.soc_cache_ttl_ns,
             ))
         });
 
-        // Pseudosettle wiring is prepared before the node so the event sink
-        // routes wire events at build time and the provider embeds in the
-        // accounting the core assembles.
-        let (pseudosettle_provider, pseudosettle_wiring) =
-            PseudosettleWiring::prepare(&self.bandwidth);
-
-        // SWAP wiring is prepared next when configured: the provider embeds in
-        // the accounting and the swap event sink routes at node build time. The
-        // signer is the launcher identity, the settlement chain comes from its
-        // spec; chequebook deploy is not a launcher concern.
+        // SWAP is chequebook-based and so always requires the chain: resolve the
+        // provider up front and hard-fail a swap-enabled client that has none.
+        // Pseudosettle, wired unconditionally inside the tail, is the chain-free
+        // settlement path.
         #[cfg(feature = "swap")]
-        let (swap_provider, swap_wiring) = match &self.swap {
-            Some(cfg) => SwapWiring::prepare(
+        let chain_provider = {
+            let swap_enabled = self.swap.is_some();
+            #[cfg(feature = "swap-chequebook")]
+            let rpc_url = self.swap.as_ref().and_then(|cfg| cfg.rpc_url.as_deref());
+            #[cfg(not(feature = "swap-chequebook"))]
+            let rpc_url: Option<&str> = None;
+            node_chain_provider(
                 &spec,
                 &self.identity,
-                &self.bandwidth,
-                Some(cfg.chequebook),
-                cfg.beneficiary,
-                false,
-                cfg.bounce_limit,
-                true,
+                SwarmNodeType::Client,
+                swap_enabled,
+                rpc_url,
             )
-            .unzip(),
-            None => (None, None),
-        };
-
-        // On-chain cashout consumes a connected chain provider built from the
-        // identity signer; without an `rpc_url` settlement stays chain-free and
-        // received cheques are exchanged but not cashed.
-        #[cfg(feature = "swap-chequebook")]
-        let chain_provider = match self.swap.as_ref().and_then(|cfg| cfg.rpc_url.as_deref()) {
-            Some(rpc_url) => Some(
-                vertex_chain::build_chain_provider(
-                    rpc_url,
-                    (*self.identity.signer()).clone(),
-                    spec.chain,
-                )
-                .await
-                .wrap_err("failed to build chain provider for SWAP cashout")?,
-            ),
-            None => None,
-        };
-
-        let node_builder = ClientNode::builder(Arc::clone(&self.identity))
-            .with_kademlia_config(self.kademlia)
-            .with_store(store.clone())
-            .with_pseudosettle_events(pseudosettle_wiring.event_sender());
-        #[cfg(feature = "swap")]
-        let node_builder = match swap_wiring.as_ref() {
-            Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),
-            None => node_builder,
-        };
-        let (mut node, client_service, client_handle) = node_builder
-            .build(&config, None)
             .await
-            .wrap_err("failed to build client node")?;
-
-        let topology = node.topology_handle().clone();
-        let overlay = node.overlay_address();
-        let peer_id = *node.local_peer_id();
-
-        // The peer manager is the reporting authority: accounting and the
-        // settlement services report violations through it.
-        let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
-
-        // SWAP is the only extra provider here; pseudosettle is registered first
-        // inside the core so soft accounting forgives total debt before SWAP
-        // settles originated debt.
-        let extra_settlement: Vec<Box<dyn vertex_swarm_api::SwarmSettlementProvider>> = {
-            #[cfg(feature = "swap")]
-            {
-                swap_provider
-                    .map(|provider| {
-                        Box::new(provider) as Box<dyn vertex_swarm_api::SwarmSettlementProvider>
-                    })
-                    .into_iter()
-                    .collect()
-            }
-            #[cfg(not(feature = "swap"))]
-            Vec::new()
+            .map_err(|e| eyre::eyre!("{e}"))?
         };
 
-        // Assemble the shared client middle (accounting, selector, throttle,
-        // service) the native builder also goes through, threading the swap
-        // provider through the same `extra_settlement` seam.
-        let core = assemble_client_core(ClientCoreCtx {
-            spec: Arc::clone(&spec),
-            identity: Arc::clone(&self.identity),
-            bandwidth: self.bandwidth,
-            topology: topology.clone(),
-            client_service,
-            client_handle: client_handle.clone(),
-            pseudosettle_provider,
-            extra_settlement,
-            reporter: Arc::clone(&reporter),
-        });
-
-        // Multi-hop forwarding must precede the event loop: a handler created
-        // earlier captures the stub forwarder. The node is borrowed mutably
-        // here and then moved into the run loop below, so the borrow and the
-        // move stay in this scope.
-        node.enable_forwarding(
-            Arc::new(topology.clone()),
-            Arc::clone(&core.accounting),
-            core.client_handle.clone(),
-        );
+        let tail_params = ClientTailParams {
+            node_type: SwarmNodeType::Client,
+            spec: &spec,
+            identity: &self.identity,
+            bandwidth: &self.bandwidth,
+            verify: self.verify,
+            #[cfg(feature = "swap")]
+            swap: ClientSwapParams {
+                // An embedded client defaults SWAP off; `with_swap` turns it on.
+                enable: self.swap.as_ref().map(|_| true),
+                chequebook: self.swap.as_ref().map(|cfg| cfg.chequebook),
+                beneficiary: self.swap.as_ref().and_then(|cfg| cfg.beneficiary),
+                // The browser cannot deploy a chequebook.
+                deploy: false,
+                bounce_limit: self.swap.as_ref().map_or(0, |cfg| cfg.bounce_limit),
+            },
+        };
 
         let executor = TaskExecutor::current();
 
-        // The peer manager tick is pure data and `Send`, so it goes through
-        // the ordinary spawner.
-        spawn_peer_manager_task(
-            topology.peer_manager().clone(),
-            DEFAULT_TICK_INTERVAL,
+        // The dial-only client node is built inside the tail over the prepared
+        // settlement event sinks; the launcher carries no provider store, so it
+        // returns its overlay and peer id for the handles below.
+        let identity = Arc::clone(&self.identity);
+        let kademlia = self.kademlia;
+        let store_for_node = store.clone();
+
+        let parts: ClientNodeParts<(SwarmAddress, PeerId)> = build_client_core_tail(
             &executor,
-        );
+            tail_params,
+            #[cfg(feature = "swap")]
+            chain_provider,
+            move |events| async move {
+                let node_builder = ClientNode::builder(identity)
+                    .with_kademlia_config(kademlia)
+                    .with_store(store_for_node)
+                    .with_pseudosettle_events(events.pseudosettle);
+                #[cfg(feature = "swap")]
+                let node_builder = match events.swap {
+                    Some(tx) => node_builder.with_swap_events(tx),
+                    None => node_builder,
+                };
+                let (mut node, client_service, client_handle) = node_builder
+                    .build(&config, None)
+                    .await
+                    .map_err(|e| eyre::eyre!("failed to build client node: {e}"))?;
 
-        // The client service drives the retrieval and pushsync request paths.
-        // It must run even for callers that never issue downloads, so the node
-        // can answer the protocols its peers speak during topology building.
-        // Its task is `Send`, so it goes through the ordinary service spawner.
-        executor.spawn_service("swarm.client_service", core.client_service);
+                let topology = node.topology_handle().clone();
+                let overlay = node.overlay_address();
+                let peer_id = *node.local_peer_id();
+                let forward_topology = topology.clone();
 
-        // The pseudosettle settlement service applies time-based refresh over
-        // the same shared accounting and forwards our outbound settlement to
-        // the node through the unthrottled handle.
-        pseudosettle_wiring.spawn(
-            &executor,
-            core.accounting.bandwidth().clone(),
-            core.client_handle.clone(),
-            Arc::clone(&reporter),
-        );
+                // Forwarding is enabled inside the run task over the shared
+                // accounting the tail builds; the node then moves into the run
+                // loop. The relay legs run over the unthrottled handle.
+                let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
+                    node.enable_forwarding(
+                        Arc::new(forward_topology),
+                        Arc::clone(&accounting),
+                        client_handle,
+                    );
+                    single_task(move |shutdown| async move {
+                        let _accounting = accounting;
+                        if let Err(e) = node.start_and_run(shutdown).await {
+                            tracing::error!(error = %e, "client node exited with error");
+                        }
+                    })
+                });
 
-        // The SWAP settlement service runs over the same shared accounting:
-        // it forwards cheque commands to the node and, under `swap-chequebook`
-        // with a connected chain provider, cashes received cheques on chain.
-        #[cfg(feature = "swap")]
-        if let Some(wiring) = swap_wiring {
-            wiring.spawn(
-                &executor,
-                core.accounting.bandwidth().clone(),
-                core.client_handle.clone(),
-                Arc::clone(&reporter),
-                #[cfg(feature = "swap-chequebook")]
-                chain_provider.as_ref(),
-                #[cfg(feature = "swap-chequebook")]
-                &spec,
-            );
-        }
+                Ok::<_, eyre::Report>((
+                    NodeRunParts {
+                        topology,
+                        client_service,
+                        client_handle,
+                        run,
+                    },
+                    (overlay, peer_id),
+                ))
+            },
+        )
+        .await?;
 
-        // The swap service's cashout client holds its own provider clone, so the
-        // local handle has done its job here.
-        #[cfg(feature = "swap-chequebook")]
-        let _ = chain_provider;
+        let ClientNodeParts {
+            task,
+            topology,
+            chunks,
+            accounting,
+            client,
+            provider_store: (overlay, peer_id),
+        } = parts;
 
-        // The node run loop owns the libp2p swarm. It starts listening (a
-        // no-op for a dial-only client) and then dials bootnodes and services
-        // the event loop for the session.
-        spawn_node_run_loop(&executor, node);
+        // The node run loop owns the libp2p swarm. It starts listening (a no-op
+        // for a dial-only client), then dials bootnodes and services the event
+        // loop for the session.
+        spawn_node_run_loop(&executor, task);
 
         Ok(LaunchedClient {
             topology,
-            client: core.throttled_handle,
-            accounting: core.accounting,
+            client,
+            accounting,
+            chunks,
             store,
             overlay,
             peer_id,
@@ -490,37 +475,20 @@ impl ClientLauncher {
     }
 }
 
-/// Spawn the node run loop on the executor.
+/// Spawn the node run-loop task returned by the launch tail.
 ///
-/// The native swarm and its futures are `Send`, so the run loop spawns as a
-/// critical task on the tokio runtime and participates in graceful shutdown.
+/// The native task future is `Send`, so it spawns as a critical task on the
+/// tokio runtime and participates in graceful shutdown.
 #[cfg(not(target_arch = "wasm32"))]
-fn spawn_node_run_loop(executor: &TaskExecutor, node: ClientNode<Arc<Identity>>) {
-    executor.spawn_critical_with_graceful_shutdown_signal(
-        "swarm.client_node",
-        move |shutdown| async move {
-            if let Err(e) = node.start_and_run(shutdown).await {
-                tracing::error!(error = %e, "client node exited with error");
-            }
-        },
-    );
+fn spawn_node_run_loop(executor: &TaskExecutor, task: NodeRunTaskFn) {
+    executor.spawn_critical_with_graceful_shutdown_signal("swarm.client_node", task);
 }
 
-/// Spawn the node run loop on the browser event loop.
-///
-/// The browser swarm's websocket transport futures are `!Send`, so the run
-/// loop goes through the executor's local spawner instead of the Send-bounded
-/// critical one.
+/// Browser variant: the websocket-transport run future is `!Send`, so the task
+/// goes through the executor's local spawner instead of the Send-bounded one.
 #[cfg(target_arch = "wasm32")]
-fn spawn_node_run_loop(executor: &TaskExecutor, node: ClientNode<Arc<Identity>>) {
-    executor.spawn_local_with_graceful_shutdown_signal(
-        "swarm.client_node",
-        move |shutdown| async move {
-            if let Err(e) = node.start_and_run(shutdown).await {
-                tracing::error!(error = %e, "client node exited with error");
-            }
-        },
-    );
+fn spawn_node_run_loop(executor: &TaskExecutor, task: NodeRunTaskFn) {
+    executor.spawn_local_with_graceful_shutdown_signal("swarm.client_node", task);
 }
 
 /// Handles to a running embedded client node.
@@ -532,6 +500,7 @@ pub struct LaunchedClient {
     topology: TopologyHandle<Arc<Identity>>,
     client: ClientHandle,
     accounting: SharedAccounting,
+    chunks: VerifiedChunkProvider,
     store: Arc<dyn SwarmLocalStore>,
     overlay: SwarmAddress,
     peer_id: PeerId,
@@ -547,6 +516,12 @@ impl LaunchedClient {
     /// Throttled client handle for chunk retrieval and upload.
     pub fn client(&self) -> &ClientHandle {
         &self.client
+    }
+
+    /// The selection-aware verified chunk provider: the retrieval and upload
+    /// surface an embedder drives, with download verification applied.
+    pub fn chunks(&self) -> &VerifiedChunkProvider {
+        &self.chunks
     }
 
     /// The shared client accounting (selector, throttle, forwarder, service,

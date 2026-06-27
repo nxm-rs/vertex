@@ -14,6 +14,7 @@ mod config;
 pub use config::ProtocolConfig;
 
 mod bootnodes;
+mod chunks;
 mod client_service;
 mod node;
 mod protocol;
@@ -23,13 +24,24 @@ mod throttle;
 
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
-    ClientNodeBuilder, LaunchedClient, NodeBuildError, PseudosettleWiring, SharedAccounting,
-    assemble_client_core, spawn_client_command_bridge,
+    ClientNodeBuilder, ClientNodeParts, ClientTailParams, LaunchedClient, NodeBuildError,
+    NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn, SettlementEventSenders,
+    SharedAccounting, VerifiedChunkProvider, assemble_client_core, build_client_core_tail,
+    single_task, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
-pub use node::{LauncherSwapConfig, SwapWiring};
+pub use node::{
+    ClientSwapParams, LauncherSwapConfig, NodeChainError, SwapWiring, node_chain_provider,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
+pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+/// The shared chain provider handle, re-exported so client entry points and the
+/// builder consume one path. Available whenever SWAP (which requires the chain)
+/// is enabled.
+#[cfg(feature = "swap")]
+pub use vertex_chain::SharedChainProvider;
 
 pub use vertex_swarm_api::SwarmNodeType;
 
@@ -45,5 +57,6 @@ pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 pub use throttle::SelfThrottle;
 
 pub use bootnodes::BootnodeProvider;
+pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
 pub use node::stats::StatsConfig;
 pub use node::task::spawn_stats_task;

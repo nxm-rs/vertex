@@ -6134,9 +6134,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -8316,6 +8316,7 @@ dependencies = [
  "console-subscriber",
  "eyre",
  "rand 0.9.4",
+ "tempfile",
  "tikv-jemallocator",
  "tokio",
  "tracing",
@@ -8324,7 +8325,6 @@ dependencies = [
  "vertex-node-commands",
  "vertex-node-core",
  "vertex-observability",
- "vertex-rpc-server",
  "vertex-storage-redb",
  "vertex-swarm-accounting",
  "vertex-swarm-api",
@@ -8337,7 +8337,6 @@ dependencies = [
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
  "vertex-swarm-primitives",
- "vertex-swarm-rpc",
  "vertex-swarm-spec",
  "vertex-swarm-topology",
  "vertex-tasks",
@@ -8401,7 +8400,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vertex-node-api",
+ "vertex-node-builder",
+ "vertex-node-core",
  "vertex-swarm-api",
  "vertex-swarm-builder",
  "vertex-swarm-identity",
@@ -8555,7 +8555,6 @@ dependencies = [
 name = "vertex-node-builder"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "eyre",
  "strum 0.28.0",
  "thiserror 2.0.18",
@@ -8882,6 +8881,8 @@ dependencies = [
  "vertex-chain",
  "vertex-net-peer-store",
  "vertex-node-api",
+ "vertex-node-builder",
+ "vertex-node-core",
  "vertex-storage-redb",
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
@@ -8897,6 +8898,7 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarm-puller",
  "vertex-swarm-redistribution",
+ "vertex-swarm-rpc",
  "vertex-swarm-spec",
  "vertex-swarm-storer",
  "vertex-swarm-test-utils",

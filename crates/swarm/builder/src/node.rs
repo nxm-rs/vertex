@@ -9,22 +9,20 @@ use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    BinCursorStore, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
-    SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig,
-    SwarmRoutingConfig, SwarmStorageConfig,
+    SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore, SwarmNetworkConfig,
+    SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
-use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
-use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
+use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
-use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
-use crate::launch::{CacheSeam, ReserveSeam};
-use crate::verify::ChunkVerifyConfig;
+use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode};
+use crate::launch::CacheSeam;
+use vertex_swarm_node::ChunkVerifyConfig;
 
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>
@@ -32,9 +30,9 @@ where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
 {
-    spec: Arc<Spec>,
-    identity: I,
-    network: N,
+    pub(crate) spec: Arc<Spec>,
+    pub(crate) identity: I,
+    pub(crate) network: N,
 }
 
 impl<I, N> NodeBuilder<I, N>
@@ -75,7 +73,6 @@ where
             chain: ChainConfig::default(),
             swap: SwapConfig::default(),
             cache: None,
-            reserve: None,
         }
     }
 }
@@ -87,17 +84,14 @@ where
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
     A: SwarmAccountingConfig + SwarmPricingConfig,
 {
-    base: NodeBuilder<I, N>,
-    accounting: A,
-    local_store: LocalStoreConfig,
-    verify: ChunkVerifyConfig,
-    chain: ChainConfig,
-    swap: SwapConfig,
+    pub(crate) base: NodeBuilder<I, N>,
+    pub(crate) accounting: A,
+    pub(crate) local_store: LocalStoreConfig,
+    pub(crate) verify: ChunkVerifyConfig,
+    pub(crate) chain: ChainConfig,
+    pub(crate) swap: SwapConfig,
     /// `None` builds the default in-memory cache sized from `local_store`.
-    cache: Option<CacheSeam>,
-    /// Carried here so a wrapping storer builder keeps it across the storage
-    /// transition; consumed only by the storer build path.
-    reserve: Option<ReserveSeam>,
+    pub(crate) cache: Option<CacheSeam>,
 }
 
 impl<I, N, A> ClientNodeBuilder<I, N, A>
@@ -164,114 +158,6 @@ where
         self.cache = Some(CacheSeam::Factory(Box::new(factory)));
         self
     }
-
-    /// Override the storer reserve with a pre-built store.
-    ///
-    /// Carried on the client builder so it survives the storage transition;
-    /// consumed only by the storer build path. A client never wires a reserve.
-    /// The reserve must implement [`BinCursorStore`] so the served reserve
-    /// capabilities can query per-bin counts and insertion cursors.
-    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
-        self.reserve = Some(ReserveSeam::Ready(reserve));
-        self
-    }
-
-    /// Override the storer reserve with a factory invoked at build time.
-    ///
-    /// The factory receives the opened shared database (`None` in-memory). The
-    /// reserve must implement [`BinCursorStore`] so the served reserve
-    /// capabilities can query per-bin counts and insertion cursors.
-    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
-    where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
-            + Send
-            + 'static,
-    {
-        self.reserve = Some(ReserveSeam::Factory(Box::new(factory)));
-        self
-    }
-
-    /// Transition to storer builder by adding storage.
-    pub fn with_storage<S, St>(
-        self,
-        local_store: S,
-        storage: St,
-    ) -> StorerNodeBuilder<I, N, A, S, St>
-    where
-        S: SwarmLocalStoreConfig,
-        St: SwarmStorageConfig,
-    {
-        StorerNodeBuilder {
-            client: self,
-            local_store,
-            storage,
-        }
-    }
-}
-
-/// Builder for storer nodes.
-pub struct StorerNodeBuilder<I, N, A, S, St>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
-    client: ClientNodeBuilder<I, N, A>,
-    local_store: S,
-    storage: St,
-}
-
-impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
-    pub fn spec(&self) -> &Arc<Spec> {
-        self.client.spec()
-    }
-
-    /// Override the cache with a pre-built local store. See
-    /// [`ClientNodeBuilder::with_cache`].
-    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
-        self.client = self.client.with_cache(cache);
-        self
-    }
-
-    /// Override the cache with a factory. See
-    /// [`ClientNodeBuilder::with_cache_factory`].
-    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
-    where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
-            + Send
-            + 'static,
-    {
-        self.client = self.client.with_cache_factory(factory);
-        self
-    }
-
-    /// Override the reserve with a pre-built store. See
-    /// [`ClientNodeBuilder::with_reserve`].
-    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
-        self.client = self.client.with_reserve(reserve);
-        self
-    }
-
-    /// Override the reserve with a factory. See
-    /// [`ClientNodeBuilder::with_reserve_factory`].
-    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
-    where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
-            + Send
-            + 'static,
-    {
-        self.client = self.client.with_reserve_factory(factory);
-        self
-    }
 }
 
 /// Default bootnode builder.
@@ -280,15 +166,6 @@ pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig<KademliaC
 /// Default client builder.
 pub type DefaultClientBuilder =
     ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
-
-/// Default storer builder.
-pub type DefaultStorerBuilder = StorerNodeBuilder<
-    Arc<Identity>,
-    NetworkConfig<KademliaConfig>,
-    DefaultBandwidthConfig,
-    LocalStoreConfig,
-    StorageConfig,
->;
 
 impl DefaultNodeBuilder {
     pub fn from_config(config: BootnodeConfig) -> Self {
@@ -368,67 +245,6 @@ impl DefaultClientBuilder {
     }
 }
 
-impl DefaultStorerBuilder {
-    pub fn from_parts(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
-        local_store: LocalStoreConfig,
-        storage: StorageConfig,
-        verify: ChunkVerifyConfig,
-    ) -> Self {
-        NodeBuilder::new(spec, identity, network)
-            .with_accounting(bandwidth)
-            .with_verify(verify)
-            .with_storage(local_store, storage)
-    }
-
-    pub fn from_config(config: StorerConfig) -> Self {
-        let chain = config.chain().clone();
-        let swap = config.swap().clone();
-        let mut builder = Self::from_parts(
-            config.spec().clone(),
-            config.identity().clone(),
-            config.network().clone(),
-            config.bandwidth().clone(),
-            config.local_store().clone(),
-            config.storage().clone(),
-            config.verify(),
-        );
-        builder.client = builder.client.with_chain(chain).with_swap(swap);
-        builder
-    }
-
-    /// Convert to config for building.
-    pub fn into_config(self) -> StorerConfig {
-        StorerConfig::new(
-            self.client.base.spec,
-            self.client.base.identity,
-            self.client.base.network,
-            self.client.accounting,
-            self.local_store,
-            self.storage,
-            self.client.verify,
-            self.client.chain,
-            self.client.swap,
-        )
-    }
-
-    /// Build the storer node, honoring any cache or reserve seam set on the
-    /// builder.
-    pub async fn build(
-        mut self,
-        ctx: &dyn InfrastructureContext,
-    ) -> Result<BuiltStorer, SwarmNodeError> {
-        let cache = self.client.cache.take();
-        let reserve = self.client.reserve.take();
-        let config = self.into_config();
-        let (task, providers) = crate::launch::build_storer(config, ctx, cache, reserve).await?;
-        Ok(BuiltNode::new(task, providers))
-    }
-}
-
 impl From<BootnodeConfig> for DefaultNodeBuilder {
     fn from(config: BootnodeConfig) -> Self {
         Self::from_config(config)
@@ -437,12 +253,6 @@ impl From<BootnodeConfig> for DefaultNodeBuilder {
 
 impl From<ClientConfig> for DefaultClientBuilder {
     fn from(config: ClientConfig) -> Self {
-        Self::from_config(config)
-    }
-}
-
-impl From<StorerConfig> for DefaultStorerBuilder {
-    fn from(config: StorerConfig) -> Self {
         Self::from_config(config)
     }
 }

@@ -36,7 +36,6 @@
 //! server.start().await?;
 //! ```
 
-mod grpc_protocol;
 mod health;
 mod registry;
 mod transport;
@@ -54,7 +53,6 @@ pub use vertex_rpc_core::RpcServer;
 // Re-export the config trait for users
 pub use vertex_node_api::NodeRpcConfig;
 
-pub use grpc_protocol::GrpcProtocol;
 pub use health::HealthService;
 pub use registry::{GrpcRegistry, GrpcServerHandle};
 pub use transport::{GrpcTransport, ServeWith, Transport, TransportServer};
