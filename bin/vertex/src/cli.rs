@@ -1,23 +1,17 @@
 //! Swarm CLI entry point.
 
-use std::net::{IpAddr, SocketAddr};
-
 use clap::{Parser, Subcommand};
 use eyre::Result;
-use vertex_node_builder::LaunchContextExt;
+use vertex_node_builder::NodeBuilder;
 use vertex_node_commands::{HasLogs, HasTracing, InfraArgs, LogArgs, TracingArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
-use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_builder::{
-    BootnodeConfig, ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder,
-};
 #[cfg(feature = "storer")]
-use vertex_swarm_builder::{DefaultStorerBuilder, StorerConfig};
+use vertex_swarm_builder::StorerConfig;
+use vertex_swarm_builder::{BootnodeConfig, ChunkVerifyConfig, ClientConfig};
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_primitives::SwarmNodeType;
-use vertex_swarm_rpc::GrpcAdapter;
 use vertex_swarm_spec::SwarmSpec;
 use vertex_tasks::TaskExecutor;
 
@@ -112,11 +106,13 @@ pub async fn run() -> Result<()> {
             .register_all(vertex_storage_redb::metrics::HISTOGRAM_BUCKETS)
             .build();
 
-        // Initialize metrics via launch context
+        // Build the launch context once and install metrics before any subsystem
+        // records, then flow the same context through the protocol shell.
         let executor = TaskExecutor::current();
-        let launch_ctx = (executor.clone(), dirs.clone())
-            .with_metrics(metrics_config, &histogram_buckets)?
+        let builder = NodeBuilder::new()
+            .with_launch_context(config.infra.api.clone(), executor, dirs.clone())
             .with_database_config(database_config)
+            .with_metrics(metrics_config, &histogram_buckets)?
             .start_metrics_server()
             .await?;
 
@@ -126,7 +122,6 @@ pub async fn run() -> Result<()> {
             .network_config()
             .map_err(|e| eyre::eyre!("network config error: {}", e))?;
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
-        let grpc_addr = socket_addr(&config.infra.api.grpc_addr, config.infra.api.grpc_port);
 
         let retrieval = config.protocol.retrieval();
         let verify = ChunkVerifyConfig {
@@ -134,7 +129,8 @@ pub async fn run() -> Result<()> {
             verify_stamp: retrieval.verify_stamp,
         };
 
-        // Dispatch based on node type
+        // Dispatch based on node type. Every node type flows through the same
+        // shell: build the validated config, then `with_protocol().launch()`.
         match node_type {
             SwarmNodeType::Client => {
                 let bandwidth = config
@@ -156,20 +152,24 @@ pub async fn run() -> Result<()> {
                     swap,
                 );
 
-                let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
-                    .build(&launch_ctx)
+                builder
+                    .with_protocol(node_config)
+                    .launch()
                     .await?
-                    .into_parts();
-                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
+                    .wait_for_shutdown()
+                    .await;
+                Ok(())
             }
             SwarmNodeType::Bootnode => {
                 let node_config = BootnodeConfig::new(spec, identity, network);
 
-                let (task_fn, rpc_providers) = DefaultNodeBuilder::from_config(node_config)
-                    .build(&launch_ctx)
+                builder
+                    .with_protocol(node_config)
+                    .launch()
                     .await?
-                    .into_parts();
-                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
+                    .wait_for_shutdown()
+                    .await;
+                Ok(())
             }
             #[cfg(feature = "storer")]
             SwarmNodeType::Storer => {
@@ -194,11 +194,13 @@ pub async fn run() -> Result<()> {
                     swap,
                 );
 
-                let (task_fn, rpc_providers) = DefaultStorerBuilder::from_config(node_config)
-                    .build(&launch_ctx)
+                builder
+                    .with_protocol(node_config)
+                    .launch()
                     .await?
-                    .into_parts();
-                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
+                    .wait_for_shutdown()
+                    .await;
+                Ok(())
             }
             // The default binary compiles without the storer cone; refuse the
             // role at runtime rather than panicking.
@@ -209,47 +211,4 @@ pub async fn run() -> Result<()> {
         }
     })
     .await
-}
-
-/// Run node task with gRPC server.
-///
-/// Uses the executor's shutdown signal for graceful shutdown coordination.
-/// The caller (run_cli) handles Ctrl+C and fires the shutdown signal.
-async fn run_with_grpc<P: RegistersGrpcServices + Send + Sync + 'static>(
-    task_fn: vertex_tasks::NodeTaskFn,
-    providers: P,
-    grpc_addr: SocketAddr,
-) -> Result<()> {
-    // Build gRPC server
-    let mut registry = GrpcRegistry::new();
-    providers.register_grpc_services(&mut registry);
-    let server = registry.into_server(grpc_addr)?;
-    tracing::info!(%grpc_addr, "Starting gRPC server");
-
-    // Get the executor's shutdown signal for the gRPC server.
-    // This signal is fired by run_cli when Ctrl+C is received.
-    let executor = TaskExecutor::current();
-    let grpc_shutdown = executor.on_shutdown_signal().clone();
-
-    // Spawn the node task with graceful shutdown support.
-    // This passes a GracefulShutdown signal to the task function.
-    let node_handle = executor.spawn_critical_with_graceful_shutdown_signal("swarm.node", task_fn);
-
-    // Run until shutdown signal fires or node task completes
-    tokio::select! {
-        result = server.serve_with_shutdown(grpc_shutdown) => {
-            result?;
-        }
-        result = node_handle => {
-            match result {
-                Ok(()) => tracing::info!("Node task completed"),
-                Err(e) => tracing::error!(error = %e, "Node task panicked"),
-            }
-        }
-    }
-    Ok(())
-}
-
-fn socket_addr(addr: &str, port: u16) -> SocketAddr {
-    SocketAddr::new(addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1])), port)
 }

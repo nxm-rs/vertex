@@ -41,10 +41,11 @@ tokio-console = ["console-subscriber", "vertex-observability/tokio-console", "to
 # native stack via the `host` umbrella.
 vertex-observability = { workspace = true, features = ["host"] }
 vertex-node-api.workspace = true
-vertex-node-builder.workspace = true
+# The binary serves metrics, so it opts the shell back into the metrics stage
+# (the workspace pins the dependency metrics-free for the embedded FFI client).
+vertex-node-builder = { workspace = true, features = ["metrics"] }
 vertex-node-commands.workspace = true
 vertex-node-core.workspace = true
-vertex-rpc-server.workspace = true
 vertex-tasks.workspace = true
 
 # vertex - storage
@@ -62,7 +63,6 @@ vertex-swarm-net-hive.workspace = true
 vertex-swarm-net-identify.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-primitives.workspace = true
-vertex-swarm-rpc.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-topology.workspace = true
 
