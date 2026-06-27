@@ -15,13 +15,14 @@ use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
-use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::ChunkVerifyConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
+
+use crate::protocol::SwarmProtocol;
 
 /// Implement shared config getters: `spec()`, `identity()`, `network()`.
 macro_rules! impl_common_config_getters {

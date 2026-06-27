@@ -78,7 +78,7 @@ Vertex ships three artefacts: a bare client (the default), a storer (`--features
 
 - `default = []` IS the bare client and is load-bearing: no storer cone, no chain, no swap. Never write `default = ["..."]` on a shipped crate.
 - Features are for CAPABILITIES (`chain`, `swap`, the `storer` composite, observability slices), never for node TYPES. A node type is the runtime `SwarmNodeType`, dispatched at launch, never a per-type feature.
-- `#[cfg(feature = ...)]` lives only at composition roots: `bin/vertex` (cli), `vertex-swarm-builder` (launch), `crates/ffi` (lib). Domain crates (`client-behaviour`, `client-protocol`, `api`, `topology`, the node protocol) carry no feature cfg; they take their capabilities through traits and optional providers.
+- `#[cfg(feature = ...)]` lives only at composition roots: `bin/vertex` (cli), `vertex-swarm-builder` (launch), `crates/ffi` (lib), and `vertex-node-builder` (the protocol-agnostic launch shell, where the optional `metrics` slice gates the Prometheus recorder and axum server). Domain crates (`client-behaviour`, `client-protocol`, `api`, `topology`, the node protocol) carry no feature cfg; they take their capabilities through traits and optional providers.
 - Platform boundaries are `target_arch` cfg, never a feature. Never combine a feature and a target in one dependency table entry.
 - FFI is a crate (the cdylib artefact), not a feature. There is no `ffi` feature anywhere; the crate boundary is what scopes it.
 - A workspace member must not unconditionally enable `chain`, `swap`, or `storer` on a shared crate. Cargo unifies features across the build graph, so one such edge pulls the cone into the default client. This is the unification footgun the cone guards exist to catch.

@@ -53,6 +53,18 @@ impl DataDirs {
         })
     }
 
+    /// Directories for an in-memory node: `root` and `network` both point at
+    /// `path`, no directory is created, and no database is opened. The path is
+    /// used only for the launch log line. Embedders (the FFI client, examples)
+    /// that run fully in-memory use this instead of [`Self::new`], which requires
+    /// CLI args and creates directories on disk.
+    pub fn ephemeral(path: PathBuf) -> Self {
+        Self {
+            root: path.clone(),
+            network: path,
+        }
+    }
+
     /// Returns the path to the config file.
     pub fn config_file(&self) -> PathBuf {
         self.network.join("config.toml")

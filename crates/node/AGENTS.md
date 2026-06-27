@@ -6,9 +6,9 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 
 ## Crates
 
-- `vertex-node-api`: `NodeProtocol`, `NodeBuildsProtocol`, `InfrastructureContext`, `NodeProtocolConfig`, `NodeRpcConfig`. The contract a protocol implements.
+- `vertex-node-api`: `NodeProtocol`, `NodeBuildsProtocol`, `InfrastructureContext`, `NodeProtocolConfig`, `NodeRpcConfig`. The contract a protocol implements. `NodeProtocol::ServeView` plus `serve_view` is the transport seam: a protocol projects its components into a transport-specific view (the Swarm protocol wraps them in a gRPC adapter) that the builder registers. `ServeView` is left unbounded here because node-api sits below `vertex-rpc-server` and cannot name `ServeWith`.
 - `vertex-node-core`: CLI args, config loading, data directories, version info. The generic infrastructure layer.
-- `vertex-node-builder`: type-state builder, launch wiring, `BuiltNode`/`LaunchContext`.
+- `vertex-node-builder`: type-state builder and launch wiring. `LaunchContext<A>` is the one launch-stage type: it carries the executor, data dirs, database config, the `NodeRpcConfig` `A`, and the optional metrics attachment. `WithProtocol::launch_with<Tr>` builds the protocol, registers `P::serve_view(&components)` through the transport, and returns a `NodeHandle` holding the bare components. The metrics stage (`with_metrics`/`start_metrics_server`, which install the Prometheus recorder and the axum server) is gated behind the `metrics` feature, off by default (`default = []`), so the embedded FFI client and node-commands launch through the shell without pulling the exporter stack into their cone; the binary opts into `metrics` explicitly.
 - `vertex-node-commands`: `run_cli` plus the `HasLogs`/`HasTracing` glue for any vertex binary.
 
 ## Dos

@@ -11,7 +11,8 @@
 //! Accounting is not a component: it is wired into the network chunk client and
 //! shared through an `Arc` at launch; bootnodes run a listen-only pricing handler.
 //!
-//! [`SwarmProtocol`] implements [`vertex_node_api::NodeProtocol`].
+//! The `SwarmProtocol` that implements [`vertex_node_api::NodeProtocol`] lives in
+//! `vertex-swarm-builder`, where it can name the gRPC serve view.
 //!
 //! [`PeerReporter`] is the only path for subsystems to affect a peer's score
 //! ([`SwarmScoringEvent`] is the event vocabulary). [`PeerAffordability`] asks
@@ -28,7 +29,6 @@ mod components;
 mod config;
 mod error;
 mod identity;
-mod protocol;
 mod providers;
 mod reporting;
 mod spec;
@@ -59,7 +59,6 @@ pub use self::error::{
     SwarmResult,
 };
 pub use self::identity::SwarmIdentity;
-pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };

@@ -11,13 +11,25 @@ use vertex_tasks::TaskExecutor;
 
 use crate::{InfrastructureError, LaunchError, NodeHandle};
 
-/// Executor, directories, and API config needed to launch a node.
+#[cfg(feature = "metrics")]
+use crate::containers::WithMetrics;
+
+/// Executor, directories, database, API config, and the optional metrics
+/// attachment needed to launch a node.
+///
+/// One stage type carries every launch input: the binary attaches its metrics
+/// recorder here so it installs before any subsystem records, then flows the
+/// same context into `with_protocol`.
 #[derive(Clone)]
 pub struct LaunchContext<A = ()> {
     pub executor: TaskExecutor,
     pub dirs: DataDirs,
     pub api: A,
     pub database: DatabaseConfig,
+    /// Metrics recorder and server config, threaded from `with_metrics` to
+    /// `start_metrics_server`.
+    #[cfg(feature = "metrics")]
+    metrics: Option<WithMetrics>,
 }
 
 impl<A> LaunchContext<A> {
@@ -28,6 +40,8 @@ impl<A> LaunchContext<A> {
             dirs,
             api,
             database: DatabaseConfig::default(),
+            #[cfg(feature = "metrics")]
+            metrics: None,
         }
     }
 
@@ -83,9 +97,9 @@ impl NodeBuilder {
     #[must_use]
     pub fn with_launch_context<A>(
         self,
+        api: A,
         executor: TaskExecutor,
         dirs: DataDirs,
-        api: A,
     ) -> WithLaunchContext<A> {
         WithLaunchContext {
             ctx: LaunchContext::new(executor, dirs, api),
@@ -134,6 +148,58 @@ impl<A> WithLaunchContext<A> {
     }
 }
 
+#[cfg(feature = "metrics")]
+impl<A> WithLaunchContext<A> {
+    /// Install the process-global Prometheus recorder for the configured metrics
+    /// server.
+    ///
+    /// Runs before `with_protocol` so the recorder is in place before any
+    /// subsystem records. Each protocol crate exports its histogram bucket
+    /// requirements as `HISTOGRAM_BUCKETS`; collect them all and pass here.
+    pub fn with_metrics(
+        mut self,
+        config: Option<vertex_observability::MetricsServerConfig>,
+        histogram_buckets: &[vertex_observability::HistogramBucketConfig],
+    ) -> eyre::Result<Self> {
+        let recorder = if let Some(ref cfg) = config {
+            let recorder = vertex_observability::install_prometheus_recorder_with_buckets(
+                cfg.prefix(),
+                histogram_buckets,
+            )?;
+            recorder.spawn_upkeep(&self.ctx.executor, cfg.upkeep_interval_secs());
+            Some(std::sync::Arc::new(recorder))
+        } else {
+            None
+        };
+        self.ctx.metrics = Some(WithMetrics::new(config, recorder));
+        Ok(self)
+    }
+
+    /// Start the metrics HTTP server when both a server config and a recorder are
+    /// present; otherwise a no-op that returns the context unchanged.
+    pub async fn start_metrics_server(self) -> eyre::Result<Self> {
+        let Some(metrics) = self.ctx.metrics.as_ref() else {
+            return Ok(self);
+        };
+        if let (Some(config), Some(recorder)) = (metrics.config(), metrics.recorder()) {
+            let hooks_builder = vertex_observability::Hooks::builder()
+                .with_hook(vertex_observability::process_metrics_hook());
+            #[cfg(feature = "jemalloc")]
+            let hooks_builder =
+                hooks_builder.with_hook(vertex_observability::jemalloc_metrics_hook());
+            let hooks = hooks_builder.build();
+            let server = vertex_observability::MetricsServer::from_config(
+                config,
+                recorder.handle().clone(),
+                hooks,
+            );
+            server.start(&self.ctx.executor).await?;
+            tracing::info!(addr = %config.addr(), "Metrics server started");
+        }
+        Ok(self)
+    }
+}
+
 /// Builder with protocol configuration, ready to launch.
 pub struct WithProtocol<P: NodeProtocol, A> {
     ctx: LaunchContext<A>,
@@ -149,11 +215,14 @@ where
     }
 
     /// Launch the node, serving its components with the caller-selected transport.
+    ///
+    /// The components register through the protocol's serve view (`P::serve_view`),
+    /// a transport-specific projection; the node handle keeps the bare components.
     pub async fn launch_with<Tr: Transport>(
         self,
     ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
-        P::Components: ServeWith<Tr>,
+        P::ServeView: ServeWith<Tr>,
     {
         use tracing::info;
 
@@ -167,11 +236,12 @@ where
             .map_err(LaunchError::Protocol)?;
 
         let mut registry = Tr::Registry::default();
-        components.register(&mut registry);
+        P::serve_view(&components).register(&mut registry);
 
         let server = Tr::into_server(registry, addr)
             .map_err(|e| InfrastructureError::Transport(e.into()))?;
 
+        let shutdown_executor = self.ctx.executor.clone();
         self.ctx
             .executor
             .spawn_critical_with_graceful_shutdown_signal(
@@ -180,6 +250,11 @@ where
                     if let Err(e) = server.serve_with_shutdown(shutdown.ignore_guard()).await {
                         tracing::error!(error = %e, "RPC server error");
                     }
+                    // The server resolves on the shutdown signal in the normal
+                    // path; an exit for any other reason (a post-bind serve
+                    // failure) requests graceful shutdown so the node does not
+                    // linger without its RPC endpoint.
+                    let _ = shutdown_executor.initiate_graceful_shutdown();
                 },
             );
 
@@ -192,7 +267,7 @@ where
     /// Launch with the gRPC transport.
     pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
-        P::Components: ServeWith<GrpcTransport>,
+        P::ServeView: ServeWith<GrpcTransport>,
     {
         self.launch_with::<GrpcTransport>().await
     }

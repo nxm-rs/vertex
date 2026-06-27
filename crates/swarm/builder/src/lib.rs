@@ -41,11 +41,16 @@ mod error;
 mod handle;
 mod launch;
 mod node;
+mod protocol;
 #[cfg(feature = "reserve")]
 mod storer;
 
 // Builders
 pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
+
+// The Swarm `NodeProtocol` the node builder launches. Lives here so its serve
+// view can name the gRPC adapter.
+pub use protocol::SwarmProtocol;
 
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};

@@ -13,7 +13,7 @@ use crate::InfrastructureContext;
 ///
 /// ```ignore
 /// use vertex_node_api::NodeBuildsProtocol;
-/// use vertex_swarm_api::SwarmProtocol;
+/// use vertex_swarm_builder::SwarmProtocol;
 ///
 /// impl NodeBuildsProtocol for MyLightBuildConfig {
 ///     type Protocol = SwarmProtocol<Self>;
@@ -59,6 +59,7 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 /// impl NodeProtocol for MyProtocol {
 ///     type Config = MyConfig;
 ///     type Components = MyComponents;
+///     type ServeView = MyServeView;
 ///     type BuildError = MyError;
 ///
 ///     async fn launch(
@@ -74,6 +75,10 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 ///
 ///         Ok(components)
 ///     }
+///
+///     fn serve_view(components: &Self::Components) -> Self::ServeView {
+///         MyServeView::new(components.clone())
+///     }
 /// }
 /// ```
 pub trait NodeProtocol: Sized + Send + Sync + 'static {
@@ -84,6 +89,14 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
     ///
     /// Remains available after `launch()` returns.
     type Components: Send + Sync + 'static;
+
+    /// View of the components the serving transport registers.
+    ///
+    /// Left unbounded here: node-api sits below the transport seam and cannot
+    /// name `ServeWith`. The builder applies the `ServeWith<Tr>` bound at launch,
+    /// so a protocol can wrap its components in a transport-specific newtype (for
+    /// the Swarm protocol, a gRPC adapter) without node-api naming that crate.
+    type ServeView;
 
     /// Error type for launch failures.
     type BuildError: std::error::Error + Send + Sync + 'static;
@@ -100,4 +113,9 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
         config: Self::Config,
         ctx: &dyn InfrastructureContext,
     ) -> impl Future<Output = Result<Self::Components, Self::BuildError>> + Send;
+
+    /// Project the components into the view the serving transport registers.
+    ///
+    /// Borrows so the node handle keeps the bare components after registration.
+    fn serve_view(components: &Self::Components) -> Self::ServeView;
 }

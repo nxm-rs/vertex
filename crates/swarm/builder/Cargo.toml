@@ -74,6 +74,10 @@ vertex-swarm-puller = { workspace = true, optional = true }
 vertex-swarm-postage = { workspace = true, optional = true }
 vertex-swarm-topology.workspace = true
 vertex-swarm-api.workspace = true
+# The gRPC serve view (`GrpcAdapter`) the Swarm protocol projects its components
+# into for transport registration. Lives below the builder so the orphan-rule
+# `RegistersGrpcServices` impls stay with the local newtype.
+vertex-swarm-rpc.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 # The verified custody `Receipt` the origin upload path consumes from the client
 # handle (depth check) and projects onto the public `PushReceipt`.
@@ -111,10 +115,14 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
+# The examples launch through the node-builder shell; metrics-free is fine since
+# they use `launch_without_grpc`.
+vertex-node-builder.workspace = true
+vertex-node-core.workspace = true
 
-# Client upload/download examples. They build a client through the public builder
-# and drive the chunk sender/provider directly, the way an FFI or gRPC embedder
-# would.
+# Client upload/download examples. They launch a client through the node-builder
+# shell and drive the chunk sender/provider directly, the way an FFI or gRPC
+# embedder would.
 [[example]]
 name = "upload_chunk"
 path = "examples/upload_chunk.rs"

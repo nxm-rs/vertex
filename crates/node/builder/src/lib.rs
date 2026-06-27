@@ -1,13 +1,13 @@
 //! Type-state node builder for Vertex.
 
 mod builder;
+#[cfg(feature = "metrics")]
 mod containers;
 mod error;
 mod handle;
-mod launch;
 
 pub use builder::*;
+#[cfg(feature = "metrics")]
 pub use containers::*;
 pub use error::*;
 pub use handle::*;
-pub use launch::*;

@@ -12,21 +12,28 @@ description = "Type-state node builder for Vertex"
 workspace = true
 
 [dependencies]
-# The builder installs the Prometheus recorder and the axum metrics server.
-# `http-server` pulls `prometheus` transitively.
-vertex-observability = { workspace = true, features = ["http-server"] }
+# The metrics stage installs the Prometheus recorder and the axum metrics
+# server. `http-server` pulls `prometheus` transitively. Optional and gated
+# behind the default-on `metrics` feature so the embedded FFI client, which
+# launches without a metrics server, opts out and keeps the exporter stack out
+# of its cone.
+vertex-observability = { workspace = true, features = ["http-server"], optional = true }
 vertex-node-api.workspace = true
 vertex-node-core.workspace = true
 vertex-rpc-server.workspace = true
 vertex-tasks.workspace = true
 
-async-trait.workspace = true
-eyre.workspace = true
+# `eyre` is the error type of the metrics stage only.
+eyre = { workspace = true, optional = true }
 strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "signal"] }
 
 [features]
+# `default = []` keeps the builder metrics-free (the load-bearing bare surface):
+# the embedded FFI client and node-commands resolve it without the Prometheus
+# exporter and axum server. The binary opts into `metrics` explicitly.
 default = []
-jemalloc = ["vertex-observability/jemalloc"]
+metrics = ["dep:vertex-observability", "dep:eyre"]
+jemalloc = ["metrics", "vertex-observability/jemalloc"]

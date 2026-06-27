@@ -21,7 +21,7 @@ use vertex_swarm_api::{
     BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StorageRadius,
     StorerComponents, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
     SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig, SwarmPricingConfig,
-    SwarmProtocol, SwarmRoutingConfig, SwarmStorageConfig, construct,
+    SwarmRoutingConfig, SwarmStorageConfig, construct,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
@@ -44,6 +44,7 @@ use crate::launch::{
     build_client_backed_node, resolve_cache,
 };
 use crate::node::{ClientNodeBuilder, NodeBuilder};
+use crate::protocol::SwarmProtocol;
 use vertex_swarm_node::ChunkVerifyConfig;
 use vertex_swarm_node::{NodeRunParts, RunTaskFn, VerifiedChunkProvider, single_task};
 
