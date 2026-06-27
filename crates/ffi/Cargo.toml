@@ -32,7 +32,11 @@ vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-node.workspace = true
 vertex-swarm-stream.workspace = true
-vertex-node-api.workspace = true
+# The node-builder shell. Its `default = []` keeps the metrics stage (and the
+# Prometheus exporter stack) out of the FFI cone; the embedded client launches
+# without a gRPC or metrics server, and the cone guard asserts this.
+vertex-node-builder.workspace = true
+vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
 # nectar primitives (chunk and stamp types reconstructed at the boundary)

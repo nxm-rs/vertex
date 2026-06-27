@@ -13,14 +13,14 @@ use flutter_rust_bridge::frb;
 use futures::StreamExt;
 use nectar_postage::Stamp;
 use tokio::runtime::Runtime;
-use vertex_node_api::InfrastructureContext;
+use vertex_node_builder::NodeBuilder;
+use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_api::{
     ChunkAddress, HasChunkClient, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider,
     SwarmError,
 };
 use vertex_swarm_builder::{
-    ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, NetworkChunkProvider,
-    VerifyingChunkProvider,
+    ChunkVerifyConfig, ClientConfig, NetworkChunkProvider, VerifyingChunkProvider,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
@@ -30,7 +30,7 @@ use vertex_swarm_stream::{
     ChunkClientExt, GetStream, ParseAddressError, PutStream, StreamConfig,
     parse_address as core_parse_address, try_put_stream,
 };
-use vertex_tasks::{TaskExecutor, TaskManager};
+use vertex_tasks::TaskManager;
 
 use crate::api::types::{
     VertexChunkData, VertexChunkDownload, VertexChunkUpload, VertexClientConfig, VertexNetwork,
@@ -84,17 +84,22 @@ impl VertexClient {
             SwapConfig::default(),
         );
 
-        let launch = LaunchContext::new(executor.clone());
-
-        let (task_fn, providers) = runtime
-            .block_on(DefaultClientBuilder::from_config(node_config).build(&launch))
+        // Launch through the node-builder shell without a gRPC server: the node
+        // task is spawned internally on `executor`, and the bare client
+        // components come back in the handle.
+        let handle = runtime
+            .block_on(
+                NodeBuilder::new()
+                    .with_launch_context((), executor, client_data_dirs())
+                    .with_protocol(node_config)
+                    .launch_without_grpc(),
+            )
             .map_err(|e| FfiError::Build {
                 reason: e.to_string(),
-            })?
-            .into_parts();
+            })?;
 
-        let chunks = chunks_from(providers);
-        executor.spawn_critical_with_graceful_shutdown_signal("vertex.ffi.node", task_fn);
+        // The verifying, selector-aware chunk provider the client components hold.
+        let chunks: ClientChunks = handle.components().chunk_client().clone();
 
         Ok(VertexClient {
             chunks,
@@ -312,32 +317,10 @@ impl Drop for VertexClient {
     }
 }
 
-/// Minimal infrastructure context for building the client outside the CLI.
-///
-/// The FFI client runs fully in-memory: no database is opened and no peer
-/// snapshots are persisted, so `data_dir` is an unused temp path.
-struct LaunchContext {
-    executor: TaskExecutor,
-    data_dir: std::path::PathBuf,
-}
-
-impl LaunchContext {
-    fn new(executor: TaskExecutor) -> Self {
-        Self {
-            executor,
-            data_dir: std::env::temp_dir().join("vertex-ffi-client"),
-        }
-    }
-}
-
-impl InfrastructureContext for LaunchContext {
-    fn executor(&self) -> &TaskExecutor {
-        &self.executor
-    }
-
-    fn data_dir(&self) -> &std::path::Path {
-        &self.data_dir
-    }
+/// Data directories for the embedded client: a temp path the in-memory node uses
+/// only for its launch log line (no database is opened, `db_path` stays `None`).
+fn client_data_dirs() -> DataDirs {
+    DataDirs::ephemeral(std::env::temp_dir().join("vertex-ffi-client"))
 }
 
 /// Map the boundary stream config to the core [`StreamConfig`].
@@ -438,10 +421,6 @@ fn receipt_into_ffi(receipt: PushReceipt) -> VertexPushReceipt {
         nonce: nonce.as_slice().to_vec(),
         storage_radius: u32::from(storage_radius.get()),
     }
-}
-
-fn chunks_from(components: impl HasChunkClient<ChunkClient = ClientChunks>) -> ClientChunks {
-    components.chunk_client().clone()
 }
 
 #[cfg(test)]
