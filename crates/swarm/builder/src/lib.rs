@@ -36,22 +36,20 @@
 
 #[cfg(feature = "chain")]
 mod chain;
-#[cfg(feature = "storer-core")]
-mod composite;
 pub mod config;
 mod error;
 mod handle;
 mod launch;
 mod node;
 mod providers;
-#[cfg(feature = "storer-core")]
-mod pullsync;
+#[cfg(feature = "reserve")]
+mod storer;
 pub mod verify;
 
 // Builders
 pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
-#[cfg(feature = "storer-core")]
-pub use node::{DefaultStorerBuilder, StorerNodeBuilder};
+#[cfg(feature = "reserve")]
+pub use storer::{DefaultStorerBuilder, StorerNodeBuilder};
 
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
@@ -61,14 +59,14 @@ pub use providers::NetworkChunkProvider;
 pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs
-#[cfg(feature = "storer-core")]
-pub use config::StorerConfig;
 pub use config::{BootnodeConfig, ClientConfig};
+#[cfg(feature = "reserve")]
+pub use storer::StorerConfig;
 
 // Launch types (for SwarmLaunchConfig associated types)
-#[cfg(feature = "storer-core")]
-pub use launch::StorerLaunchTypes;
 pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes};
+#[cfg(feature = "reserve")]
+pub use storer::StorerLaunchTypes;
 
 // Errors
 pub use error::SwarmNodeError;

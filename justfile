@@ -48,7 +48,7 @@ check-cone:
     fi
     echo "cone guard: vertex-ffi is free of the observability server stack"
     # The embedded FFI client is a client, not a storer: it must never resolve
-    # the storer code cone (it does not enable the builder's `storer-core`).
+    # the storer code cone (it does not enable the builder's `reserve`).
     ffi_storer_leaked=""
     for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
         if grep -q "$crate" <<<"$tree"; then

@@ -35,18 +35,19 @@ swap = ["vertex-swarm-node/swap"]
 # batch store, and the redistribution config, plus the storer node module in
 # `vertex-swarm-node`. Pulling this keeps the storer builders, configs and launch
 # path out of the default client build. It carries no chain or settlement on its
-# own; the role feature below adds those.
-storer-core = [
+# own; the role feature below adds those. Named for the storer's defining
+# commitment: holding a reserve.
+reserve = [
     "dep:vertex-swarm-storer",
     "dep:vertex-swarm-puller",
     "dep:vertex-swarm-postage",
     "dep:vertex-swarm-redistribution",
     "vertex-swarm-node/storer",
 ]
-# Node role: the storer settles bandwidth over SWAP, so it pulls in the storer
+# Node role: the storer settles bandwidth over SWAP, so it pulls in the reserve
 # cone plus the chain stack, the on-chain chequebook client, and the swap
 # settlement service. Client nodes leave this off.
-storer = ["storer-core", "chain", "swap"]
+storer = ["reserve", "chain", "swap"]
 
 [dependencies]
 # vertex - node infrastructure
@@ -64,7 +65,7 @@ vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-storage-redb.workspace = true
-# The storer cone (behind `storer-core`): the redistribution config, the
+# The storer cone (behind `reserve`): the redistribution config, the
 # persisting reserve, the neighbourhood pull-sync service, and the batch store and
 # admission validator the reserve requires for stamped admission. Optional so the
 # default client build never compiles them.

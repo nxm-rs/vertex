@@ -19,8 +19,6 @@ use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
-#[cfg(feature = "storer-core")]
-use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
@@ -149,80 +147,3 @@ impl ClientConfig {
 
 impl_common_config_getters!(ClientConfig);
 impl_builds_protocol!(ClientConfig, "Swarm Client");
-
-/// Validated configuration for storer (full) node with storage and redistribution.
-#[cfg(feature = "storer-core")]
-#[derive(Clone)]
-pub struct StorerConfig {
-    spec: Arc<Spec>,
-    identity: Arc<Identity>,
-    network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultBandwidthConfig,
-    local_store: LocalStoreConfig,
-    storage: StorageConfig,
-    verify: ChunkVerifyConfig,
-    chain: ChainConfig,
-    swap: SwapConfig,
-}
-
-#[cfg(feature = "storer-core")]
-impl StorerConfig {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a storer aggregates every validated config section"
-    )]
-    pub fn new(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
-        local_store: LocalStoreConfig,
-        storage: StorageConfig,
-        verify: ChunkVerifyConfig,
-        chain: ChainConfig,
-        swap: SwapConfig,
-    ) -> Self {
-        Self {
-            spec,
-            identity,
-            network,
-            bandwidth,
-            local_store,
-            storage,
-            verify,
-            chain,
-            swap,
-        }
-    }
-
-    pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
-        &self.bandwidth
-    }
-
-    /// Verification checks applied to downloaded chunks.
-    pub fn verify(&self) -> ChunkVerifyConfig {
-        self.verify
-    }
-
-    pub fn local_store(&self) -> &LocalStoreConfig {
-        &self.local_store
-    }
-
-    pub fn storage(&self) -> &StorageConfig {
-        &self.storage
-    }
-
-    pub fn chain(&self) -> &ChainConfig {
-        &self.chain
-    }
-
-    /// SWAP settlement configuration (chequebook, beneficiary, deploy).
-    pub fn swap(&self) -> &SwapConfig {
-        &self.swap
-    }
-}
-
-#[cfg(feature = "storer-core")]
-impl_common_config_getters!(StorerConfig);
-#[cfg(feature = "storer-core")]
-impl_builds_protocol!(StorerConfig, "Swarm Storer");

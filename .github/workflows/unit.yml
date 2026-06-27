@@ -119,7 +119,7 @@ jobs:
           fi
           echo "cone guard: default vertex is free of the storer cone"
       # The embedded FFI client must not resolve the storer code cone either: it
-      # is a client, and never enables the builder's `storer-core`.
+      # is a client, and never enables the builder's `reserve`.
       - name: Storer cone guard (vertex-ffi)
         run: |
           tree="$(cargo tree -p vertex-ffi -e normal)"
