@@ -1,8 +1,9 @@
 //! Build a Swarm client, wait until it can route, and download a chunk.
 //!
-//! The flow mirrors what an FFI or gRPC embedder does: build a client through
-//! `DefaultClientBuilder`, spawn its event loop, dial bootnodes, await a
-//! deterministic readiness gate, then retrieve a chunk by address.
+//! The flow mirrors what an FFI or gRPC embedder does: launch a client through
+//! the node-builder shell (`launch_without_grpc`), which spawns its event loop,
+//! then dial bootnodes, await a deterministic readiness gate, and retrieve a
+//! chunk by address.
 //!
 //! Readiness is `TopologyHandle::wait_until_ready`, the composite warm gate:
 //! for a client it resolves the moment a storer is connected, the state from
@@ -12,40 +13,23 @@
 //!
 //! Run with: `cargo run -p vertex-swarm-builder --example download_chunk`
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use vertex_node_api::InfrastructureContext;
+use vertex_node_builder::NodeBuilder;
+use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_api::{
     ChunkAddress, HasChunkClient, HasTopology, SwarmChunkProvider, SwarmNodeType,
     SwarmTopologyCommands,
 };
-use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, DefaultClientBuilder};
+use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
-use vertex_tasks::TaskExecutor;
-
-/// Minimal [`InfrastructureContext`]: a task executor for the client's
-/// services and a data directory. No database path is configured, so the
-/// client runs fully in-memory.
-struct ExampleContext {
-    executor: TaskExecutor,
-    data_dir: PathBuf,
-}
-
-impl InfrastructureContext for ExampleContext {
-    fn executor(&self) -> &TaskExecutor {
-        &self.executor
-    }
-
-    fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-}
+use vertex_tasks::{TaskExecutor, TaskManager};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _manager = TaskManager::current();
     let executor = TaskExecutor::current();
     let spec = init_dev();
     let identity = Arc::new(Identity::random(spec.clone(), SwarmNodeType::Client));
@@ -64,27 +48,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ChainConfig::default(),
         SwapConfig::default(),
     );
-    let ctx = ExampleContext {
-        executor: executor.clone(),
-        data_dir: std::env::temp_dir().join("vertex-example-download"),
-    };
 
-    let (task_fn, providers) = DefaultClientBuilder::from_config(config)
-        .build(&ctx)
-        .await?
-        .into_parts();
+    // Launch through the node-builder shell; the node task is spawned internally.
+    let handle = NodeBuilder::new()
+        .with_launch_context(
+            (),
+            executor,
+            DataDirs::ephemeral(std::env::temp_dir().join("vertex-example-download")),
+        )
+        .with_protocol(config)
+        .launch_without_grpc()
+        .await?;
+    let topology = handle.components().topology();
 
-    // Spawn the event loop and dial bootnodes so peers can be discovered.
-    executor.spawn_critical_with_graceful_shutdown_signal("swarm.node", task_fn);
-    providers.topology().connect_bootnodes().await?;
+    // Dial bootnodes so peers can be discovered.
+    topology.connect_bootnodes().await?;
 
     // Deterministic readiness: the warm gate for a client resolves once a
     // storer is connected.
-    providers.topology().wait_until_ready().await?;
+    topology.wait_until_ready().await?;
 
     let address = ChunkAddress::new([0u8; 32]);
     println!("Retrieving chunk {address}");
-    match providers.chunk_client().retrieve_chunk(&address).await {
+    match handle
+        .components()
+        .chunk_client()
+        .retrieve_chunk(&address)
+        .await
+    {
         Ok(result) => {
             println!("Served by {}", result.served_by);
             println!("Chunk address {}", result.chunk.address());
