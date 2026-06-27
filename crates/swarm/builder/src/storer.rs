@@ -44,7 +44,7 @@ use crate::launch::{
     RunTaskFn, VerifiedChunkProvider, build_client_backed_node, resolve_cache, single_task,
 };
 use crate::node::{ClientNodeBuilder, NodeBuilder};
-use crate::verify::ChunkVerifyConfig;
+use vertex_swarm_node::ChunkVerifyConfig;
 
 /// A reserve override supplied through the builder. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.

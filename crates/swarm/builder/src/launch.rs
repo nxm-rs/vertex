@@ -30,8 +30,7 @@ use vertex_tasks::{GracefulShutdown, NodeTaskFn};
 
 use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
-use crate::providers::NetworkChunkProvider;
-use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
+use vertex_swarm_node::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
 
 /// Network chunk provider wrapped with config-gated download verification.
 pub(crate) type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;

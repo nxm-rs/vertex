@@ -14,6 +14,7 @@ mod config;
 pub use config::ProtocolConfig;
 
 mod bootnodes;
+mod chunks;
 mod client_service;
 mod node;
 mod protocol;
@@ -47,5 +48,6 @@ pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 pub use throttle::SelfThrottle;
 
 pub use bootnodes::BootnodeProvider;
+pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
 pub use node::stats::StatsConfig;
 pub use node::task::spawn_stats_task;

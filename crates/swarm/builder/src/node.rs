@@ -22,7 +22,7 @@ use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode};
 use crate::launch::CacheSeam;
-use crate::verify::ChunkVerifyConfig;
+use vertex_swarm_node::ChunkVerifyConfig;
 
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>

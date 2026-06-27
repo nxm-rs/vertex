@@ -41,10 +41,8 @@ mod error;
 mod handle;
 mod launch;
 mod node;
-mod providers;
 #[cfg(feature = "reserve")]
 mod storer;
-pub mod verify;
 
 // Builders
 pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
@@ -52,9 +50,11 @@ pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, Node
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
-// Providers
-pub use providers::NetworkChunkProvider;
-pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
+// Chunk providers: the network retrieval/push provider and its config-gated
+// download-verification wrapper live in `vertex-swarm-node` (the wasm-clean cone
+// both client entry points share); re-exported here so the existing builder
+// import paths stay stable.
+pub use vertex_swarm_node::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
 
 // Configs
 pub use config::{BootnodeConfig, ClientConfig};

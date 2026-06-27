@@ -11,10 +11,9 @@ use vertex_swarm_api::{
     SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_node::{
-    ClientHandle, PeerSelector, RETRIEVAL_STAGGER, RaceFailure, race_candidates,
-};
 use vertex_swarm_topology::TopologyHandle;
+
+use crate::{ClientHandle, PeerSelector, RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -445,9 +444,9 @@ mod tests {
     mod staggered_race {
         use std::time::{Duration, Instant};
 
+        use crate::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
         use nectar_primitives::ContentChunk;
         use tokio::sync::mpsc;
-        use vertex_swarm_node::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
 
         use super::super::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
         use super::*;
