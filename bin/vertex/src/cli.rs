@@ -1,13 +1,12 @@
 //! Swarm CLI entry point.
 
-use std::sync::LazyLock;
-
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use vertex_node_builder::NodeBuilder;
 use vertex_node_commands::{HasLogs, HasTracing, InfraArgs, LogArgs, TracingArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
+use vertex_node_core::version;
 #[cfg(feature = "storer")]
 use vertex_swarm_builder::StorerConfig;
 use vertex_swarm_builder::{BootnodeConfig, ChunkVerifyConfig, ClientConfig};
@@ -17,19 +16,9 @@ use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_spec::SwarmSpec;
 use vertex_tasks::TaskExecutor;
 
-/// Short git commit sha captured at build time, or `unknown` outside a checkout.
-const GIT_SHA: &str = match option_env!("VERGEN_GIT_SHA") {
-    Some(sha) => sha,
-    None => "unknown",
-};
-
-/// `--version` output: package version plus the short commit sha, e.g. `0.1.0 (abc1234)`.
-static VERSION: LazyLock<String> =
-    LazyLock::new(|| format!("{} ({GIT_SHA})", env!("CARGO_PKG_VERSION")));
-
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Parser)]
-#[command(author, version = VERSION.as_str(), about, long_about = None)]
+#[command(author, version = version::LONG_VERSION.as_str(), about, long_about = None)]
 pub struct SwarmCli {
     /// Logging configuration (applies to all subcommands).
     #[command(flatten)]
@@ -128,11 +117,15 @@ pub async fn run() -> Result<()> {
             .start_metrics_server()
             .await?;
 
-        // Build validated configs
+        // Build validated configs. Announce the build-stamped agent string
+        // (`vertex/<version>-<sha>`) over libp2p identify; the binary is the
+        // injection point because the lower node and builder crates stay free of
+        // the version crate.
         let network = config
             .protocol
             .network_config()
-            .map_err(|e| eyre::eyre!("network config error: {}", e))?;
+            .map_err(|e| eyre::eyre!("network config error: {}", e))?
+            .with_agent_version(version::AGENT_VERSION.clone());
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
 
         let retrieval = config.protocol.retrieval();

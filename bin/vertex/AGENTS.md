@@ -32,7 +32,7 @@ The cone guard (`just check-cone`, mirrored in the `features` CI job) enforces t
 
 ## Versioning
 
-`--version` prints the package version plus the short commit sha, for example `0.1.0 (abc1234)`. `build.rs` stamps the sha via `vergen-gitcl` into `VERGEN_GIT_SHA`; outside a git checkout (the Docker build context excludes `.git`) it degrades to `unknown`. The version string lives in `cli.rs`, not `main.rs`.
+`--version` prints the package version plus the short commit sha, for example `0.1.0 (abc1234)`. The version lives in one place, `vertex-node-core::version`: its `build.rs` stamps the sha via `vergen-gitcl` into `VERGEN_GIT_SHA`, and `cli.rs` reads `version::LONG_VERSION` for the clap `--version` string. Outside a git checkout (the Docker build context excludes `.git`) it degrades to `unknown`. The binary carries no `build.rs` of its own. The same source also drives the libp2p identify agent string (`version::AGENT_VERSION`, `vertex/<version>-<sha>`).
 
 ## Releasing
 
