@@ -1,3 +1,5 @@
+# NOTE: after `dist generate`, re-pin the action `uses:` in .github/workflows/release.yml to
+# commit SHAs (repo convention; dist regenerates them as version tags).
 [workspace]
 members = ["cargo:."]
 
