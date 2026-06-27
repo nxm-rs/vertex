@@ -39,7 +39,7 @@ use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 #[cfg(feature = "swap")]
 use tracing::info;
-#[cfg(feature = "swap-chequebook")]
+#[cfg(feature = "swap")]
 use vertex_chain::SharedChainProvider;
 #[cfg(feature = "swap")]
 use vertex_swarm_accounting_swap::service::SwapCommand;
@@ -606,7 +606,7 @@ pub struct ClientTailParams<'a> {
 pub async fn build_client_core_tail<P, E, FBuild, Fut>(
     executor: &TaskExecutor,
     params: ClientTailParams<'_>,
-    #[cfg(feature = "swap-chequebook")] chain_provider: Option<SharedChainProvider>,
+    #[cfg(feature = "swap")] chain_provider: Option<SharedChainProvider>,
     build_node: FBuild,
 ) -> Result<ClientNodeParts<P>, E>
 where
@@ -741,7 +741,7 @@ where
     }
 
     // The chain provider is kept alive for the node's lifetime by the run task.
-    #[cfg(feature = "swap-chequebook")]
+    #[cfg(feature = "swap")]
     let task = wrap_with_chain(task, chain_provider);
 
     Ok(ClientNodeParts {
@@ -752,8 +752,71 @@ where
     })
 }
 
+/// Resolve and validate the shared chain provider for a client- or storer-backed
+/// node.
+///
+/// SWAP is chequebook-based and so always needs the chain; pseudosettle is the
+/// chain-free settlement path. Returns `Ok(None)` only for a chain-free node type
+/// ([`SwarmNodeType::needs_chain`] is false, i.e. a pseudosettle-only client). A
+/// chain-needing node (a storer, or a SWAP-enabled client) that cannot resolve a
+/// chain hard-fails with [`NodeChainError::Required`] rather than degrading
+/// chainless, whether the cause is no RPC URL, a network with no canonical
+/// deployment, or a connection that fails to validate. The construction is
+/// target-portable: native TLS or browser fetch transport, picked by `vertex-chain`.
+#[cfg(feature = "swap")]
+pub async fn node_chain_provider(
+    spec: &Arc<Spec>,
+    identity: &Arc<Identity>,
+    node_type: SwarmNodeType,
+    swap_enabled: bool,
+    rpc_url: Option<&str>,
+) -> Result<Option<SharedChainProvider>, NodeChainError> {
+    use vertex_chain::ChainConfig as ChainAddressBook;
+
+    if !node_type.needs_chain(swap_enabled) {
+        return Ok(None);
+    }
+
+    let Some(rpc_url) = rpc_url else {
+        return Err(NodeChainError::Required { node_type });
+    };
+
+    // A network with no canonical deployment cannot settle on chain; fail fast
+    // before connecting. The address book itself is resolved at the edge by each
+    // chain consumer, not carried in the provider handle.
+    if ChainAddressBook::from_swarm(spec.swarm()).is_none() {
+        return Err(NodeChainError::Required { node_type });
+    }
+
+    let signer = (*identity.signer()).clone();
+    let provider = vertex_chain::build_chain_provider(rpc_url, signer, spec.chain)
+        .await
+        .map_err(|e| NodeChainError::Build(e.to_string()))?;
+
+    Ok(Some(provider))
+}
+
+/// Failure resolving the chain a chain-needing node requires.
+#[cfg(feature = "swap")]
+#[derive(Debug, thiserror::Error)]
+pub enum NodeChainError {
+    /// A chain-needing node type (a storer, a SWAP-enabled client) could not
+    /// resolve a chain and may not degrade chainless.
+    #[error(
+        "node type {node_type} requires an Ethereum chain connection, but none could be resolved: \
+         set the chain RPC URL and use a network with a canonical contract deployment"
+    )]
+    Required {
+        /// The node type that hard-failed for want of a chain.
+        node_type: SwarmNodeType,
+    },
+    /// The chain provider could not be constructed or validated.
+    #[error("chain provider construction failed: {0}")]
+    Build(String),
+}
+
 /// Wrap a run task so the chain provider stays alive for the node's lifetime.
-#[cfg(feature = "swap-chequebook")]
+#[cfg(feature = "swap")]
 fn wrap_with_chain(
     task: NodeRunTaskFn,
     chain_provider: Option<SharedChainProvider>,
@@ -836,6 +899,124 @@ mod tests {
             accounting.bandwidth().provider_names(),
             vec!["pseudosettle", "swap"],
             "a swap-enabled client reports pseudosettle then swap"
+        );
+    }
+
+    /// A storer with no RPC URL hard-fails with [`NodeChainError::Required`]
+    /// rather than degrade chainless: a storer always needs the chain.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn storer_without_chain_config_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Storer,
+            // A storer always needs the chain, so swap_enabled is irrelevant.
+            false,
+            None,
+        )
+        .await
+        .expect_err("a storer without a chain RPC must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Storer
+                }
+            ),
+            "a chainless storer must error with Required{{Storer}}, got {err:?}"
+        );
+    }
+
+    /// A storer on a network with no canonical deployment hard-fails even with a
+    /// valid RPC URL: there is no address book to target the contracts.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn storer_on_deployment_less_network_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Storer,
+            false,
+            Some("https://rpc.example"),
+        )
+        .await
+        .expect_err("a storer on a deployment-less network must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Storer
+                }
+            ),
+            "a deployment-less storer must error with Required{{Storer}}, got {err:?}"
+        );
+    }
+
+    /// A pseudosettle-only client does not need a chain, so the provider step
+    /// degrades to `Ok(None)` even with no RPC URL configured.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn light_client_builds_chainless() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let provider = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Client,
+            // No SWAP: a pseudosettle-only client stays chain-free.
+            false,
+            None,
+        )
+        .await
+        .expect("a chain-free client must not require a chain");
+        assert!(
+            provider.is_none(),
+            "a pseudosettle-only client degrades chainless, building no provider"
+        );
+    }
+
+    /// A SWAP-enabled client needs the chain to settle cheques, so a missing RPC
+    /// URL hard-fails the same way a storer does.
+    #[cfg(feature = "swap")]
+    #[tokio::test]
+    async fn swap_client_without_chain_config_errors_chain_required() {
+        use vertex_swarm_spec::init_dev;
+
+        let spec = init_dev();
+        let identity = test_identity_arc();
+
+        let err = node_chain_provider(
+            &spec,
+            &identity,
+            SwarmNodeType::Client,
+            // SWAP enabled: the client now needs a chain to settle.
+            true,
+            None,
+        )
+        .await
+        .expect_err("a SWAP-enabled client without a chain RPC must hard-fail");
+        assert!(
+            matches!(
+                err,
+                NodeChainError::Required {
+                    node_type: SwarmNodeType::Client
+                }
+            ),
+            "a chainless SWAP client must error with Required{{Client}}, got {err:?}"
         );
     }
 }

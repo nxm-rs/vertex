@@ -366,7 +366,7 @@ pub(crate) async fn build_storer(
             network: config.network(),
             bandwidth: config.bandwidth(),
             verify: config.verify(),
-            #[cfg(feature = "chain")]
+            #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]
             swap: config.swap(),

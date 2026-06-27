@@ -35,15 +35,13 @@ pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
-#[cfg(feature = "swap")]
-pub use core::ClientSwapParams;
-#[cfg(feature = "swap")]
-pub use core::SwapWiring;
 pub use core::{
     ClientCore, ClientCoreCtx, ClientNodeParts, ClientTailParams, NodeRunParts, NodeRunTaskFn,
     PseudosettleWiring, RunTaskFn, SettlementEventSenders, SharedAccounting, VerifiedChunkProvider,
     assemble_client_core, build_client_core_tail, single_task, spawn_client_command_bridge,
 };
+#[cfg(feature = "swap")]
+pub use core::{ClientSwapParams, NodeChainError, SwapWiring, node_chain_provider};
 pub use error::NodeBuildError;
 #[cfg(feature = "swap")]
 pub use launch::LauncherSwapConfig;

@@ -9,8 +9,6 @@ use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
-#[cfg(feature = "chain")]
-use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, SwarmLaunchConfig, SwarmNodeType, construct,
 };
@@ -31,14 +29,11 @@ use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
 
 #[cfg(feature = "swap")]
-use vertex_swarm_node::ClientSwapParams;
-#[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
 use vertex_swarm_node::args::SwapConfig;
-
-#[cfg(feature = "chain")]
-use crate::chain::SharedChainProvider;
+#[cfg(feature = "swap")]
+use vertex_swarm_node::{ClientSwapParams, NodeChainError, node_chain_provider};
 
 pub(crate) type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
@@ -99,54 +94,13 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
         });
 }
 
-/// Build and validate the shared chain provider for a node.
-///
-/// Returns `Ok(None)` only for a chain-free node type ([`SwarmNodeType::needs_chain`]
-/// is false). A chain-needing node that cannot resolve a chain hard-fails with
-/// [`SwarmNodeError::ChainRequired`] rather than degrading chainless, whether the
-/// cause is no `--chain.rpc-url`, a network with no canonical deployment, or a
-/// connection that fails to validate. The returned [`SharedChainProvider`] is a
-/// cloneable handle, not a spawned service.
-#[cfg(feature = "chain")]
-async fn build_node_chain_provider(
-    spec: &Arc<Spec>,
-    identity: &Arc<Identity>,
-    node_type: SwarmNodeType,
-    swap_enabled: bool,
-    chain: &ChainConfig,
-) -> Result<Option<SharedChainProvider>, SwarmNodeError> {
-    use vertex_chain::ChainConfig as ChainAddressBook;
-    use vertex_swarm_api::SwarmIdentity;
-
-    if !node_type.needs_chain(swap_enabled) {
-        return Ok(None);
+/// Map a chain-resolution failure onto the builder error.
+#[cfg(feature = "swap")]
+fn map_chain_error(err: NodeChainError) -> SwarmNodeError {
+    match err {
+        NodeChainError::Required { node_type } => SwarmNodeError::ChainRequired { node_type },
+        NodeChainError::Build(message) => SwarmNodeError::Chain(message),
     }
-
-    let Some(rpc_url) = chain.rpc_url.as_deref() else {
-        tracing::debug!(
-            %node_type,
-            "chain required but no --chain.rpc-url configured"
-        );
-        return Err(SwarmNodeError::ChainRequired { node_type });
-    };
-
-    // A network with no canonical deployment cannot settle on chain; fail fast
-    // before connecting. The address book itself is resolved at the edge by each
-    // chain consumer, not carried in the provider handle.
-    if ChainAddressBook::from_swarm(spec.swarm()).is_none() {
-        tracing::debug!(
-            %node_type,
-            "chain required but the network has no canonical contract deployment"
-        );
-        return Err(SwarmNodeError::ChainRequired { node_type });
-    }
-
-    let signer = (*identity.signer()).clone();
-    let provider = crate::chain::build_chain_provider(rpc_url, signer, spec.chain)
-        .await
-        .map_err(|e| SwarmNodeError::Chain(e.to_string()))?;
-
-    Ok(Some(provider))
 }
 
 fn create_peer_store(db: &Option<Arc<RedbDatabase>>) -> Option<PeerStore> {
@@ -242,7 +196,7 @@ pub(crate) struct ClientNodeParams<'a> {
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
     pub(crate) bandwidth: &'a DefaultBandwidthConfig,
     pub(crate) verify: ChunkVerifyConfig,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "swap")]
     pub(crate) chain: &'a ChainConfig,
     #[cfg(feature = "swap")]
     pub(crate) swap: &'a SwapConfig,
@@ -365,17 +319,19 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     // A storer always needs a chain (staking, oracle, settlement); a client needs
     // one only with SWAP. Resolve this precondition before any runtime work so a
     // chain-required node fails before allocating tasks, the database, or the node.
-    #[cfg(feature = "chain")]
-    let chain_provider = build_node_chain_provider(
+    #[cfg(feature = "swap")]
+    let chain_provider = node_chain_provider(
         params.spec,
         params.identity,
         node_type,
         swap_enabled,
-        params.chain,
+        params.chain.rpc_url.as_deref(),
     )
-    .await?;
-    // Without the `chain` feature a chain-required node cannot resolve one.
-    #[cfg(not(feature = "chain"))]
+    .await
+    .map_err(map_chain_error)?;
+    // Without the `swap` feature (which carries the chain provider) a chain-required
+    // node cannot resolve one.
+    #[cfg(not(feature = "swap"))]
     if node_type.needs_chain(swap_enabled) {
         return Err(SwarmNodeError::ChainRequired { node_type });
     }
@@ -402,9 +358,9 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     let parts = build_client_core_tail(
         ctx.executor(),
         tail_params,
-        // The builder's `chain` feature turns on the node crate's `swap-chequebook`
-        // gate, so the tail accepts the resolved provider here.
-        #[cfg(feature = "chain")]
+        // SWAP carries the chain provider, so the tail accepts the resolved
+        // handle whenever swap is built.
+        #[cfg(feature = "swap")]
         chain_provider,
         |events| {
             assembly.assemble(
@@ -551,7 +507,7 @@ pub(crate) async fn build_client(
             network: config.network(),
             bandwidth: config.bandwidth(),
             verify: config.verify(),
-            #[cfg(feature = "chain")]
+            #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]
             swap: config.swap(),
@@ -865,119 +821,6 @@ mod tests {
     /// Test SOC cache TTL: any non-zero value works for the cache-shape tests.
     const DEFAULT_SOC_CACHE_TTL_NS_TEST: u64 = vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS;
 
-    /// A storer with no `--chain.rpc-url` hard-fails with [`SwarmNodeError::ChainRequired`]
-    /// rather than degrade chainless.
-    #[cfg(feature = "chain")]
-    #[tokio::test]
-    async fn storer_without_chain_config_errors_chain_required() {
-        let spec = init_dev();
-        let identity = test_identity_arc();
-        let chain = ChainConfig::default();
-        assert!(
-            chain.rpc_url.is_none(),
-            "default chain config has no RPC URL"
-        );
-
-        let err = build_node_chain_provider(
-            &spec,
-            &identity,
-            SwarmNodeType::Storer,
-            // A storer always needs the chain, so swap_enabled is irrelevant.
-            false,
-            &chain,
-        )
-        .await
-        .expect_err("a storer without chain config must hard-fail");
-        assert!(
-            matches!(
-                err,
-                SwarmNodeError::ChainRequired {
-                    node_type: SwarmNodeType::Storer
-                }
-            ),
-            "a chainless storer must error with ChainRequired{{Storer}}, got {err:?}"
-        );
-    }
-
-    /// A storer on a network with no canonical deployment hard-fails even with a
-    /// valid `--chain.rpc-url`: there is no address book to target the contracts.
-    #[cfg(feature = "chain")]
-    #[tokio::test]
-    async fn storer_on_deployment_less_network_errors_chain_required() {
-        let spec = init_dev();
-        let identity = test_identity_arc();
-        // A valid RPC URL passes the rpc_url check and reaches the deployment lookup.
-        let chain = ChainConfig {
-            rpc_url: Some("https://rpc.example".to_string()),
-            ..ChainConfig::default()
-        };
-
-        let err = build_node_chain_provider(&spec, &identity, SwarmNodeType::Storer, false, &chain)
-            .await
-            .expect_err("a storer on a deployment-less network must hard-fail");
-        assert!(
-            matches!(
-                err,
-                SwarmNodeError::ChainRequired {
-                    node_type: SwarmNodeType::Storer
-                }
-            ),
-            "a deployment-less storer must error with ChainRequired{{Storer}}, got {err:?}"
-        );
-    }
-
-    /// A pure light client (no SWAP) does not need a chain, so the provider step
-    /// degrades to `Ok(None)` even with no RPC URL configured.
-    #[cfg(feature = "chain")]
-    #[tokio::test]
-    async fn light_client_builds_chainless() {
-        let spec = init_dev();
-        let identity = test_identity_arc();
-        let chain = ChainConfig::default();
-
-        let provider = build_node_chain_provider(
-            &spec,
-            &identity,
-            SwarmNodeType::Client,
-            // No SWAP: a pure light client stays chain-free.
-            false,
-            &chain,
-        )
-        .await
-        .expect("a chain-free client must not require a chain");
-        assert!(
-            provider.is_none(),
-            "a light client degrades chainless, building no provider"
-        );
-    }
-
-    /// A SWAP-enabled client needs the chain to settle on-chain, so a missing
-    /// RPC URL hard-fails the same way a storer does.
-    #[cfg(feature = "chain")]
-    #[tokio::test]
-    async fn swap_client_without_chain_config_errors_chain_required() {
-        let spec = init_dev();
-        let identity = test_identity_arc();
-        let chain = ChainConfig::default();
-
-        let err = build_node_chain_provider(
-            &spec,
-            &identity,
-            SwarmNodeType::Client,
-            // SWAP enabled: the client now needs a chain to settle.
-            true,
-            &chain,
-        )
-        .await
-        .expect_err("a SWAP-enabled client without chain config must hard-fail");
-        assert!(
-            matches!(
-                err,
-                SwarmNodeError::ChainRequired {
-                    node_type: SwarmNodeType::Client
-                }
-            ),
-            "a chainless SWAP client must error with ChainRequired{{Client}}, got {err:?}"
-        );
-    }
+    // The chain-precondition policy now lives with `node_chain_provider` in
+    // `vertex-swarm-node`; its tests moved there.
 }

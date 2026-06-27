@@ -13,23 +13,22 @@ workspace = true
 
 [features]
 default = []
-# Construct a shared Ethereum alloy provider for chain-needing node types
-# (storer, and a client with SWAP enabled). The provider construction seam and
-# its target-split transport (native TLS vs browser fetch) live in `vertex-chain`
-# behind its `provider` feature; this feature also pulls the on-chain chequebook
-# client. Off by default to keep the default client cone lean.
+# On-chain cashout of received cheques. SWAP is chequebook-based and so always
+# needs the chain (the provider comes with `swap`); this feature adds the cashout
+# path on top, so it implies `swap`. The provider construction seam and its
+# target-split transport (native TLS vs browser fetch) live in `vertex-chain`
+# behind its `provider` feature. Off by default to keep the default client cone lean.
 chain = [
+    "swap",
     "vertex-chain/provider",
-    # The on-chain cashout of received cheques and its chequebook client live in
-    # the node crate's swap wiring; the chain build unlocks them there. With `swap`
-    # off this is inert.
     "vertex-swarm-node/swap-chequebook",
 ]
 # SWAP cheque-based settlement. The swap settlement service and its accounting
-# wiring live in `vertex-swarm-node`; this feature turns them on there. Chain-free
-# on its own: cheque exchange (sign, send, validate, credit) needs no chain.
-# Combine with `chain` to enable on-chain cashout of received cheques. Off by
-# default so the chain-free client node stays the default cone.
+# wiring live in `vertex-swarm-node`; this feature turns them on there. SWAP is
+# chequebook-based, so it pulls the chain provider; a swap-enabled client hard-fails
+# without a resolvable chain. Pseudosettle is the chain-free settlement path.
+# Combine with `chain` to also cash received cheques on chain. Off by default so the
+# default client node stays the chain-free cone.
 swap = ["vertex-swarm-node/swap"]
 # The storer code cone: the persisting reserve, the neighbourhood puller, the
 # batch store, and the redistribution config, plus the storer node module in

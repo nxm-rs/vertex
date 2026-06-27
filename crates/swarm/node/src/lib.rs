@@ -32,9 +32,16 @@ pub use node::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
-pub use node::{ClientSwapParams, LauncherSwapConfig, SwapWiring};
+pub use node::{
+    ClientSwapParams, LauncherSwapConfig, NodeChainError, SwapWiring, node_chain_provider,
+};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+/// The shared chain provider handle, re-exported so client entry points and the
+/// builder consume one path. Available whenever SWAP (which requires the chain)
+/// is enabled.
+#[cfg(feature = "swap")]
+pub use vertex_chain::SharedChainProvider;
 
 pub use vertex_swarm_api::SwarmNodeType;
 

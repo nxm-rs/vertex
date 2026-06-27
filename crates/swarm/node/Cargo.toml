@@ -156,21 +156,26 @@ std = []
 # SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
 # `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
 # service to consume, and wires the swap settlement service into the client core.
-# Chain-free on its own: cheque exchange needs no chain. Combine with
-# `swap-chequebook` for on-chain cashout of received cheques.
+# SWAP is chequebook-based, so it always needs the chain: a swap-enabled client
+# resolves a chain provider through `node_chain_provider` and hard-fails without
+# one. Pseudosettle, not swap, is the chain-free settlement path. Combine with
+# `swap-chequebook` for on-chain cashout of received cheques. The chain provider
+# construction (`vertex-chain`) is target-portable, so this stays wasm-friendly.
 swap = [
     "dep:vertex-swarm-net-swap",
     "dep:vertex-swarm-accounting-swap",
     "dep:alloy-chains",
     "dep:alloy-signer-local",
+    "dep:vertex-chain",
+    "vertex-chain/provider",
     "vertex-swarm-client-behaviour/swap",
     "vertex-swarm-client-protocol/swap",
 ]
-# On-chain cashout of received cheques over a shared alloy provider. Off by
-# default so the cheque-exchange path stays chain-free and wasm-friendly.
+# On-chain cashout of received cheques over the swap chain provider. Off by
+# default so the default client cone stays chain-free; the provider itself comes
+# from `swap`.
 swap-chequebook = [
     "swap",
-    "vertex-chain/provider",
     "vertex-swarm-accounting-swap/swap-chequebook",
 ]
 cli = [
