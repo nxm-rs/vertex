@@ -31,8 +31,11 @@ swap = ["vertex-swarm-builder/swap"]
 # intent for the storer build; the default binary leaves it off and refuses to
 # launch a storer at runtime.
 storer = ["vertex-swarm-builder/storer", "vertex-swarm-node/storer"]
-jemalloc = ["tikv-jemallocator", "vertex-observability/jemalloc", "vertex-node-builder/jemalloc"]
-heap-profiling = ["jemalloc", "tikv-jemallocator/profiling", "vertex-observability/heap-profiling"]
+# Heap-profile sampling on top of jemalloc. jemalloc is the default allocator on
+# the supported platforms (Linux and macOS) via the target-gated dependency
+# block below, so this only adds the profiling instrumentation. Unix-only: there
+# is no jemalloc to profile on Windows or wasm.
+heap-profiling = ["tikv-jemallocator/profiling", "vertex-observability/heap-profiling"]
 profiling = ["vertex-observability/profiling"]
 tokio-console = ["console-subscriber", "vertex-observability/tokio-console", "tokio/tracing"]
 
@@ -78,8 +81,19 @@ tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 
 # profiling (optional)
-tikv-jemallocator = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
+
+# jemalloc is the default global allocator on every platform that supports it: a
+# long-running node sees lower RSS and better fragmentation handling than the
+# system allocator. Excluded on Windows (tikv-jemallocator has no msvc support)
+# and wasm, which fall back to the system allocator. This is a platform default,
+# not a cargo feature, so it needs no opt-in and the cross-platform release still
+# builds. The observability and node-builder jemalloc slices ride along to add
+# the allocator metrics; cargo unions these features with the base deps above.
+[target.'cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))'.dependencies]
+tikv-jemallocator = { workspace = true }
+vertex-observability = { workspace = true, features = ["jemalloc"] }
+vertex-node-builder = { workspace = true, features = ["jemalloc"] }
 
 [dev-dependencies]
 tempfile = "3"

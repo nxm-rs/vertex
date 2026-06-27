@@ -13,7 +13,7 @@ The cone guard (`just check-cone`, mirrored in the `features` CI job) enforces t
 ## Dos
 
 - Keep `main.rs` small. New CLI behaviour goes into `vertex-node-commands` or the relevant protocol args crate, not here.
-- Gate optional allocator and profiling integrations behind cargo features (`jemalloc`, `heap-profiling`). The defaults are the safe path.
+- jemalloc is the default global allocator on every platform that supports it (Linux and macOS), pulled by a target-gated dependency, not a cargo feature. Windows (no msvc support) and wasm fall back to the system allocator. Gate further profiling integrations (`heap-profiling`) behind cargo features; the defaults are the safe path.
 - When you add a feature flag, add it to the workspace CI matrix so the default and full-features builds are both exercised.
 - Use `eyre::Result` only at the binary edge. Internal calls return their domain error.
 
@@ -22,13 +22,12 @@ The cone guard (`just check-cone`, mirrored in the `features` CI job) enforces t
 - Do not embed Swarm protocol logic in this crate. The protocol lives in `vertex-swarm-*`.
 - Do not add startup logging here. Tracing comes from `VertexTracer` inside `run_cli` so spans are configured before any subsystem logs.
 - Do not couple the binary to a specific node type. Bootnode, client, and storer flows all go through the builder.
-- Do not add a second `#[global_allocator]` without removing the existing cfg. Two allocator candidates is a link error nobody wants to debug.
+- Do not add a second `#[global_allocator]` without removing the existing target-gated jemalloc one. Two allocator candidates is a link error nobody wants to debug.
 
 ## Building and running
 
-- `cargo build --release -p vertex` builds the binary.
-- `cargo build --release -p vertex --features jemalloc` enables jemalloc.
-- `cargo build --release -p vertex --features heap-profiling` turns on jemalloc heap profiling sampling via `MALLOC_CONF`.
+- `cargo build --release -p vertex` builds the binary; jemalloc is the default allocator on Linux and macOS.
+- `cargo build --release -p vertex --features heap-profiling` turns on jemalloc heap profiling sampling via `MALLOC_CONF` (unix-only).
 - `just run -- <args>` runs the release binary against your local config.
 
 ## Versioning

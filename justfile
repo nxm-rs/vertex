@@ -91,9 +91,10 @@ build-tokio-console:
 build-profiling:
     RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --features profiling
 
-# Build every profiling feature at once; needs both opt-in rustflags.
+# Build every profiling feature at once; needs both opt-in rustflags. jemalloc is
+# the default allocator on this platform, so heap-profiling adds its sampling.
 build-profiling-all:
-    RUSTFLAGS="--cfg tokio_unstable -C force-frame-pointers=yes" cargo build --release --features "profiling,jemalloc,tokio-console"
+    RUSTFLAGS="--cfg tokio_unstable -C force-frame-pointers=yes" cargo build --release --features "profiling,heap-profiling,tokio-console"
 
 doc:
     cargo doc --all-features --no-deps
