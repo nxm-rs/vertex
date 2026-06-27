@@ -42,6 +42,62 @@ fn client_core_accounting_wires_pseudosettle_on_wasm() {
     );
 }
 
+/// The browser entry point brings up a hermetic (no-bootnode) client and hands
+/// back a populated settlement provider list, a working cache, and a reachable
+/// verified chunk provider. This is the wasm counterpart to the native launcher
+/// smoke test: it gates that the lifted launch tail composes on `wasm32`.
+#[wasm_bindgen_test]
+async fn launched_client_has_providers_and_working_cache_on_wasm() {
+    use std::sync::Arc;
+
+    use vertex_swarm_api::{SwarmChunkProvider, SwarmNodeType};
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_node::ClientLauncher;
+    use vertex_swarm_spec::SpecBuilder;
+    use vertex_swarm_test_utils::TEST_NETWORK_ID;
+    use vertex_tasks::{TaskExecutor, TaskManager};
+
+    // The launch path spawns onto the global executor; install one if needed.
+    let _task_manager = match TaskExecutor::try_current() {
+        Ok(_) => None,
+        Err(_) => Some(TaskManager::current()),
+    };
+
+    // No bootnodes: the node never dials off-host, so the test stays hermetic.
+    let spec = Arc::new(
+        SpecBuilder::testnet()
+            .network_id(TEST_NETWORK_ID)
+            .bootnodes(Vec::new())
+            .build(),
+    );
+    let identity = Identity::random(spec, SwarmNodeType::Client);
+
+    let launched = ClientLauncher::new(identity)
+        .with_max_peers(16)
+        .launch()
+        .await
+        .expect("launch");
+
+    // The lifted tail wires pseudosettle into the accounting.
+    let providers = launched.accounting().bandwidth().provider_names();
+    assert!(
+        providers.contains(&"pseudosettle"),
+        "expected pseudosettle in the launched provider list, got {providers:?}"
+    );
+
+    // The in-memory cache round-trips a content chunk.
+    let chunk: AnyChunk = ContentChunk::new(&b"wasm launched client cache"[..])
+        .expect("valid content chunk")
+        .into();
+    let cached = CachedChunk::new(chunk, None);
+    let address = *cached.address();
+    launched.store().put(cached).expect("put");
+    assert!(launched.store().contains(&address));
+
+    // The verified chunk provider is reachable; with no peers it serves nothing.
+    assert!(!launched.chunks().has_chunk(&address));
+}
+
 #[wasm_bindgen_test]
 fn client_cache_round_trips_on_wasm() {
     let store = ChunkStore::with_budget(

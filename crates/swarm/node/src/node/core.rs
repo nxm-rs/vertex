@@ -535,8 +535,9 @@ pub struct NodeRunParts {
 pub type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
 /// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
-/// the verified chunk provider, and the node-type-specific provider store (`()`
-/// for a client, the serve view plus reserve for a storer).
+/// the verified chunk provider, the shared accounting and throttled client handle
+/// (for an embedder that observes them), and the node-type-specific provider store
+/// (`()` for a client, the serve view plus reserve for a storer).
 pub struct ClientNodeParts<P> {
     /// The node run-loop task for the entry point to spawn.
     pub task: NodeRunTaskFn,
@@ -544,6 +545,11 @@ pub struct ClientNodeParts<P> {
     pub topology: TopologyHandle<Arc<Identity>>,
     /// The selection-aware verified chunk provider.
     pub chunks: VerifiedChunkProvider,
+    /// The shared client accounting (selector, throttle, forwarder, service, and
+    /// settlement all read this instance).
+    pub accounting: SharedAccounting,
+    /// The throttled client handle for chunk retrieval and upload.
+    pub client: ClientHandle,
     /// Whatever the node type's RPC providers wrap.
     pub provider_store: P,
 }
@@ -748,6 +754,8 @@ where
         task,
         topology,
         chunks,
+        accounting: core.accounting,
+        client: core.throttled_handle,
         provider_store,
     })
 }

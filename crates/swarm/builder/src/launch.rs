@@ -521,6 +521,7 @@ pub(crate) async fn build_client(
         topology,
         chunks,
         provider_store: (),
+        ..
     } = parts;
     let providers = construct::client(topology, chunks);
     Ok((task, providers))
