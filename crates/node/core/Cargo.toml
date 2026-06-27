@@ -56,7 +56,7 @@ hex.workspace = true
 tempfile = "3"
 
 [build-dependencies]
-vergen-gitcl = { workspace = true, features = ["build", "cargo", "emit_and_set"] }
+vergen-gitcl = { workspace = true }
 
 [lib]
 name = "vertex_node_core"

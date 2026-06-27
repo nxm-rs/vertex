@@ -1,18 +1,22 @@
 use std::error::Error;
-use vergen_gitcl::{BuildBuilder, CargoBuilder, Emitter, GitclBuilder};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // Generate build information
+use vergen_gitcl::{Emitter, GitclBuilder};
+
+fn main() {
+    // Stamp the short commit sha into `VERGEN_GIT_SHA` for the version string and
+    // the libp2p agent version. The Docker build context excludes `.git`, so a
+    // missing repository must not fail the build: fall back to a stable
+    // placeholder instead.
+    if emit_git_sha().is_err() {
+        println!("cargo::rustc-env=VERGEN_GIT_SHA=unknown");
+    }
+}
+
+fn emit_git_sha() -> Result<(), Box<dyn Error>> {
+    let gitcl = GitclBuilder::default().sha(true).build()?;
     Emitter::default()
-        .add_instructions(&BuildBuilder::default().build_timestamp(true).build()?)?
-        .add_instructions(&CargoBuilder::default().features(true).build()?)?
-        .add_instructions(
-            &GitclBuilder::default()
-                .sha(true)
-                .describe(true, true, None)
-                .build()?,
-        )?
+        .fail_on_error()
+        .add_instructions(&gitcl)?
         .emit()?;
-
     Ok(())
 }
