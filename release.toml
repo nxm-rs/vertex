@@ -35,21 +35,30 @@ tag-prefix = ""
 tag-name = "v{{version}}"
 tag-message = "chore(release): {{version}}"
 
-# Regenerate the changelog from conventional commits via git-cliff before the
-# release commit is created. The hook runs once per crate; the `WORKSPACE_ROOT`
-# env var (set by cargo-release) lets us always target the single workspace
-# CHANGELOG, and `DRY_RUN` lets a dry run skip the write. `--tag` makes git-cliff
-# treat the in-progress version as released so the new section is materialised.
+# Prepend the changes since the previous tag to the changelog before the release
+# commit is created. `--unreleased` bounds the new section to commits after the
+# last tag and `--prepend` inserts it above the curated history, so the file
+# never re-dumps the full project log. The hook runs once per crate; the
+# `WORKSPACE_ROOT` env var (set by cargo-release) lets us always target the
+# single workspace CHANGELOG, and `DRY_RUN` lets a dry run skip the write.
+# `--tag` makes git-cliff treat the in-progress version as released so the new
+# section is materialised. The very first release has no previous tag (so
+# `--unreleased` would be unbounded): in that case the curated initial summary
+# already IS the release notes, so the hook leaves the changelog untouched.
 pre-release-hook = [
     "bash",
     "-c",
     '''
     set -euo pipefail
-    cmd=(git-cliff --config "$WORKSPACE_ROOT/cliff.toml" --repository "$WORKSPACE_ROOT" --tag "{{version}}" --output "$WORKSPACE_ROOT/CHANGELOG.md")
     if [ "${DRY_RUN:-false}" = "true" ]; then
-        echo "dry run: skipping changelog regeneration: ${cmd[*]}" >&2
+        echo "dry run: skipping changelog update" >&2
+        exit 0
+    fi
+    if git -C "$WORKSPACE_ROOT" describe --tags --abbrev=0 >/dev/null 2>&1; then
+        git-cliff --config "$WORKSPACE_ROOT/cliff.toml" --repository "$WORKSPACE_ROOT" \
+            --unreleased --tag "{{version}}" --prepend "$WORKSPACE_ROOT/CHANGELOG.md"
     else
-        "${cmd[@]}"
+        echo "no previous tag: keeping the curated initial changelog" >&2
     fi
     ''',
 ]

@@ -42,12 +42,18 @@ cargo release minor --execute
 `cargo release minor --execute` will, in order:
 
 1. Bump `[workspace.package].version` to the next minor.
-2. Run the pre-release hook (`git-cliff`) to regenerate `CHANGELOG.md`.
+2. Run the pre-release hook (`git-cliff`) to update `CHANGELOG.md`.
 3. Create the signed release commit `chore(release): X.Y.Z`.
 4. Create the signed tag `vX.Y.Z`.
 5. Push the release commit and tag to the remote.
 
 Use `patch` instead of `minor` for a patch release, or `cargo release X.Y.Z --execute` to set an exact version.
+
+## The changelog
+
+`CHANGELOG.md` opens with a hand-curated summary of the initial release under `## [Unreleased]`: a short, capability-level overview rather than a per-commit log. The pre-release hook does not regenerate the whole file. It runs `git-cliff --unreleased --prepend`, which collects only the commits since the previous tag and inserts that one section above the existing history, so the changelog stays tidy and the curated summary is preserved.
+
+First release: there is no previous tag yet, so `--unreleased` would be unbounded. The hook detects this and leaves the curated changelog untouched, since that summary already is the v0.1.0 release notes. Before cutting the first release, promote the `## [Unreleased]` heading to `## [X.Y.Z] - <date>` by hand. The first tag then establishes the baseline that bounds `--unreleased` for every release after it, which the hook prepends automatically.
 
 ## What the tag triggers
 
