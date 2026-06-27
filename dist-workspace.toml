@@ -9,6 +9,9 @@ members = ["cargo:."]
 # ships the bare client and nothing else.
 [dist]
 cargo-dist-version = "0.32.0"
+# The generated release.yml has its action uses hand-pinned to commit SHAs (repo
+# convention), so it deviates from what `dist generate` produces; allow that.
+allow-dirty = ["ci"]
 # The installers fetch the matching prebuilt archive for the host.
 installers = ["shell", "powershell"]
 targets = [
