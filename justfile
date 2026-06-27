@@ -74,6 +74,21 @@ check-cone:
         exit 1
     fi
     echo "cone guard: default vertex is free of the storer cone"
+    # The default `vertex` binary is also swap-free and chain-free: turning the
+    # `swap` feature off strips the cheque settlement cone and the chain stack,
+    # which is what makes the lean client build lean. Pseudosettle is always on
+    # and needs neither.
+    swap_leaked=""
+    for crate in vertex-swarm-net-swap vertex-swarm-accounting-swap vertex-swarm-accounting-chequebook vertex-chain; do
+        if grep -q "$crate" <<<"$default_tree"; then
+            swap_leaked="$swap_leaked $crate"
+        fi
+    done
+    if [ -n "$swap_leaked" ]; then
+        echo "cone guard: default vertex pulls the swap or chain cone:$swap_leaked" >&2
+        exit 1
+    fi
+    echo "cone guard: default vertex is free of the swap and chain cone"
 
 build:
     cargo build --all-features
