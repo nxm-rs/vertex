@@ -19,11 +19,10 @@
 //!
 //! # Arithmetic
 //!
-//! `Add`, `Sub`, `Neg`, and `Sum` are derived. The two multiplications that
-//! historically overflowed silently (the proximity price formula and the
-//! pseudosettle `rate * elapsed` allowance) go through [`Au::checked_scale`],
-//! which returns `None` on overflow so the caller picks an explicit saturation
-//! policy. There is deliberately no `Mul` by a raw integer.
+//! `Add`, `Sub`, `Neg`, `Sum`, and the assigning variants saturate at the
+//! [`i64`] bounds: a wrapping `+`/`-` would flip a balance's sign and invert
+//! owed/owes. Multiplication goes through [`Au::checked_scale`] and percentage
+//! scaling through [`Au::scale_percent`]; there is deliberately no `Mul`.
 //!
 //! # Wire format
 //!
@@ -32,31 +31,17 @@
 //! representation only; it never changes the bytes on the wire.
 
 use core::fmt;
+use core::iter::Sum;
+use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use alloy_primitives::U256;
-use derive_more::{Add, AddAssign, Neg, Sub, SubAssign, Sum};
 
 /// An amount in accounting units (AU).
 ///
 /// Signed: positive means the peer owes us, negative means we owe the peer.
 /// See the [module documentation](self) for sign semantics and the boundary
 /// conversions.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Add,
-    Sub,
-    Neg,
-    Sum,
-    AddAssign,
-    SubAssign,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Au(i64);
@@ -127,8 +112,7 @@ impl Au {
 
     /// The absolute value as a non-negative amount.
     ///
-    /// Saturates at [`i64::MAX`]: `|i64::MIN|` does not fit a positive `i64`, so
-    /// the raw cast would wrap it back to a negative value (M8).
+    /// Saturates at [`i64::MAX`]: `|i64::MIN|` does not fit a positive `i64`.
     #[inline]
     #[must_use]
     pub const fn unsigned_abs(self) -> Au {
@@ -167,6 +151,31 @@ impl Au {
     #[must_use]
     pub const fn saturating_sub(self, rhs: Au) -> Au {
         Self(self.0.saturating_sub(rhs.0))
+    }
+
+    /// Saturating negation: `-i64::MIN` saturates to [`i64::MAX`].
+    #[inline]
+    #[must_use]
+    pub const fn saturating_neg(self) -> Au {
+        Self(self.0.saturating_neg())
+    }
+
+    /// Scale by a `percent` (e.g. `125` is +25%), saturating at the bounds.
+    ///
+    /// The one AU percentage operation, for the threshold and early-payment
+    /// markups. A negative receiver returns zero.
+    #[inline]
+    #[must_use]
+    pub const fn scale_percent(self, percent: u64) -> Au {
+        if self.0 < 0 {
+            return Au::ZERO;
+        }
+        match self.checked_scale(percent) {
+            Some(Au(v)) => Au(v / 100),
+            // A non-negative receiver only reaches `None` on overflow, which
+            // saturates rather than wrapping into a tiny value.
+            None => Au(i64::MAX / 100),
+        }
     }
 
     /// The smaller of two amounts.
@@ -209,6 +218,66 @@ impl Au {
             None => None,
         }
     }
+
+    /// Convert an inbound pseudosettle wire amount (`U256`) into AU.
+    ///
+    /// In-spec amounts fit a `u64` of AU; an out-of-spec larger value saturates
+    /// to the maximum AU so the deciding service still sees an over-acceptance
+    /// rather than a truncated small amount. The saturating counterpart to the
+    /// fallible [`TryFrom<U256>`], for the wire where rejecting is not an option.
+    #[inline]
+    #[must_use]
+    pub fn saturating_from_u256(value: U256) -> Au {
+        match u64::try_from(value) {
+            Ok(raw) => Au::from_amount(raw),
+            Err(_) => Au::from_amount(u64::MAX),
+        }
+    }
+}
+
+impl Add for Au {
+    type Output = Au;
+    #[inline]
+    fn add(self, rhs: Au) -> Au {
+        self.saturating_add(rhs)
+    }
+}
+
+impl Sub for Au {
+    type Output = Au;
+    #[inline]
+    fn sub(self, rhs: Au) -> Au {
+        self.saturating_sub(rhs)
+    }
+}
+
+impl Neg for Au {
+    type Output = Au;
+    #[inline]
+    fn neg(self) -> Au {
+        self.saturating_neg()
+    }
+}
+
+impl AddAssign for Au {
+    #[inline]
+    fn add_assign(&mut self, rhs: Au) {
+        *self = self.saturating_add(rhs);
+    }
+}
+
+impl SubAssign for Au {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Au) {
+        *self = self.saturating_sub(rhs);
+    }
+}
+
+impl Sum for Au {
+    #[inline]
+    fn sum<I: Iterator<Item = Au>>(iter: I) -> Au {
+        iter.fold(Au::ZERO, Au::saturating_add)
+    }
 }
 
 impl fmt::Display for Au {
@@ -224,31 +293,15 @@ impl fmt::Display for Au {
 /// value here rather than wrapping or clamping it. The offending value is kept
 /// so callers can report it (the swap path maps it onto its own overflow
 /// error).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
 pub enum AuConversionError {
     /// A `U256` exceeded [`i64::MAX`] and cannot be held in an [`Au`].
+    #[error("value {0} overflows accounting unit")]
     U256TooLarge(U256),
     /// A negative [`Au`] has no `U256` representation.
+    #[error("negative accounting unit {0} has no U256 representation")]
     Negative(Au),
 }
-
-impl fmt::Display for AuConversionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::U256TooLarge(value) => {
-                write!(f, "value {value} overflows accounting unit")
-            }
-            Self::Negative(value) => {
-                write!(
-                    f,
-                    "negative accounting unit {value} has no U256 representation"
-                )
-            }
-        }
-    }
-}
-
-impl core::error::Error for AuConversionError {}
 
 /// Convert a `U256` (the swap/pseudosettle wire amount) into an [`Au`].
 ///
@@ -307,7 +360,7 @@ mod tests {
     #[test]
     fn unsigned_abs_saturates_at_i64_min() {
         // |i64::MIN| has no positive i64 representation; it must saturate to
-        // i64::MAX rather than wrap back to a negative value (M8).
+        // i64::MAX rather than wrap back to a negative value.
         assert_eq!(Au::new(i64::MIN).unsigned_abs(), Au::new(i64::MAX));
         assert_eq!(Au::new(-5).unsigned_abs(), Au::new(5));
         assert_eq!(Au::new(5).unsigned_abs(), Au::new(5));
@@ -319,6 +372,47 @@ mod tests {
         assert_eq!(Au::new(10) + Au::new(5), Au::new(15));
         assert_eq!(Au::new(10) - Au::new(5), Au::new(5));
         assert_eq!(-Au::new(10), Au::new(-10));
+    }
+
+    #[test]
+    fn operators_saturate_instead_of_wrapping() {
+        // `+`/`-`/unary `-` saturate at the bounds rather than wrapping, so an
+        // adversarial overflow cannot flip a balance's sign.
+        assert_eq!(Au::new(i64::MAX) + Au::new(1), Au::new(i64::MAX));
+        assert_eq!(Au::new(i64::MIN) - Au::new(1), Au::new(i64::MIN));
+        assert_eq!(-Au::new(i64::MIN), Au::new(i64::MAX));
+
+        let mut a = Au::new(i64::MAX);
+        a += Au::new(10);
+        assert_eq!(a, Au::new(i64::MAX));
+        let mut b = Au::new(i64::MIN);
+        b -= Au::new(10);
+        assert_eq!(b, Au::new(i64::MIN));
+
+        // Sum saturates rather than wrapping.
+        let total: Au = [Au::new(i64::MAX), Au::new(i64::MAX)].into_iter().sum();
+        assert_eq!(total, Au::new(i64::MAX));
+    }
+
+    #[test]
+    fn scale_percent_matches_threshold_markup() {
+        // 125% of 1000 is 1250, the disconnect-threshold markup shape.
+        assert_eq!(
+            Au::from_amount(1000).scale_percent(125),
+            Au::from_amount(1250)
+        );
+        // 50% of 13_500_000 is the early-payment-trigger shape.
+        assert_eq!(
+            Au::from_amount(13_500_000).scale_percent(50),
+            Au::from_amount(6_750_000)
+        );
+        // Overflow saturates rather than wrapping into a tiny threshold.
+        assert_eq!(
+            Au::from_amount(u64::MAX).scale_percent(125),
+            Au::new(i64::MAX / 100)
+        );
+        // Negative receiver saturates to zero (scaling is non-negative only).
+        assert_eq!(Au::new(-1).scale_percent(125), Au::ZERO);
     }
 
     #[test]
@@ -365,6 +459,24 @@ mod tests {
             Au::try_from(way_too_big),
             Err(AuConversionError::U256TooLarge(way_too_big))
         );
+    }
+
+    #[test]
+    fn saturating_from_u256_saturates_out_of_range() {
+        // In-range amounts convert exactly.
+        assert_eq!(Au::saturating_from_u256(U256::from(0u64)), Au::ZERO);
+        assert_eq!(
+            Au::saturating_from_u256(U256::from(13_500_000u64)),
+            Au::from_amount(13_500_000)
+        );
+        // A value above i64::MAX (but within u64) saturates rather than landing
+        // as a negative balance.
+        let above_i64 = U256::from(i64::MAX as u64) + U256::from(1u64);
+        assert_eq!(Au::saturating_from_u256(above_i64), Au::new(i64::MAX));
+        // A value above u64::MAX saturates rather than truncating to its low
+        // limb (which would credit a tiny amount).
+        let above_u64 = U256::from(u64::MAX) + U256::from(6u64);
+        assert_eq!(Au::saturating_from_u256(above_u64), Au::new(i64::MAX));
     }
 
     #[test]

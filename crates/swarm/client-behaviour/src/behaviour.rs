@@ -582,13 +582,8 @@ fn wire_ack(ack: PseudosettleAck) -> PaymentAck {
 /// the over-acceptance in AU space rather than wrapping to a small amount. The
 /// responder's sampled timestamp passes through unchanged.
 fn domain_ack(ack: PaymentAck) -> PseudosettleAck {
-    let accepted = if ack.amount > U256::from(u64::MAX) {
-        Au::from_amount(u64::MAX)
-    } else {
-        Au::from_amount(ack.amount.as_limbs()[0])
-    };
     PseudosettleAck {
-        accepted,
+        accepted: Au::saturating_from_u256(ack.amount),
         timestamp: ack.timestamp,
     }
 }

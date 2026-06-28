@@ -86,6 +86,14 @@ Bee does not penalize a peer for disconnecting: its kademlia `Disconnected` hand
 
 The signal is deliberately narrow. Every locally-initiated close records its reason at the close site (`vertex_swarm_api::DisconnectReason`), so a close the node chose (bin trim, ban, low-score disconnect, bootnode rotation, shutdown) or an idle keep-alive teardown is never attributed to the peer. The penalty is reserved for a fast remote or transport close of a peer that did no useful work; a peer that served or accepted a chunk during the connection is exempt regardless of how it closed. This keeps honest serving peers, including mobile and browser clients whose transports reset under load, out of the penalty path while still scoring down a peer that handshakes and vanishes.
 
+## Bandwidth Accounting and Pseudosettle
+
+Vertex prices chunks and tracks per-peer balances with the same arithmetic as Bee: the proximity price is `(max_po - proximity + 1) * base_price` with `base_price` 10000 and `max_po` 31, balances are signed (positive means the peer owes us), and the pseudosettle allowance is `min(requested, owed, refresh_rate * elapsed)`. Two behaviours on the pseudosettle path are deliberately not identical to Bee.
+
+**First-contact allowance.** Bee seeds a peer's last-settlement time at the Unix epoch, so on the first pseudosettle the elapsed interval is effectively the whole epoch and the allowance is bounded only by the peer's debt: Bee accepts the full owed amount immediately. Vertex anchors the allowance clock at the moment it first accounts for a peer, so the first grant is bounded by the genuine wall-clock elapsed since first contact and ramps up over a few seconds at the configured refresh rate. This removes an unbounded first-contact grant (the only anti-free-ride brake on first contact and after a reconnect that cleared in-memory state) at the cost of a brief ramp before a fresh peer is granted its full allowance.
+
+**Peer-advertised payment threshold.** Bee lets a peer advertise its own payment threshold and the debtor settles before crossing the advertised value. Vertex currently decides when to settle against its locally configured threshold and does not yet apply a peer-advertised one. With homogeneous default thresholds the two coincide; a peer configured with a lower threshold than the local default is the gap. Honouring the advertised threshold is tracked with the open-loop client accounting work.
+
 ## Summary of Key Differences
 
 | Area | Vertex | Bee |
@@ -96,6 +104,8 @@ The signal is deliberately narrow. Every locally-initiated close records its rea
 | Modularity | Composable traits, pluggable backends | Monolithic implementation |
 | no_std Support | Core types work without std | Requires std |
 | Disconnect Scoring | Activity-gated early-disconnect penalty, intent-attributed closes | No disconnect penalty |
+| Pseudosettle First Contact | Allowance ramps from first-contact clock | Full debt accepted immediately |
+| Payment Threshold | Local threshold only (peer-advertised not yet applied) | Honours peer-advertised threshold |
 
 ## See Also
 
