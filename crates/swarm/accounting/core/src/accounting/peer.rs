@@ -20,6 +20,24 @@ fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) {
     }
 }
 
+/// Subtract `delta` from an unsigned atomic reserve, saturating at zero.
+///
+/// Plain `fetch_sub` wraps to near `u64::MAX` on underflow, which the reserve
+/// readers then clamp to `i64::MAX` and subtract from every allowance, jamming
+/// the peer into permanent denial. The reserve/release discipline keeps these
+/// balanced, but a saturating compare-exchange loop fences off a mismatched
+/// release rather than wrapping.
+fn saturating_fetch_sub(atomic: &AtomicU64, delta: u64) {
+    let mut current = atomic.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(delta);
+        match atomic.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 /// Atomic per-peer balance state (serializable for persistence).
 ///
 /// - Positive balance: peer owes us (we provided service)
@@ -93,10 +111,9 @@ impl PeerState {
             .fetch_add(amount.as_amount(), Ordering::Relaxed);
     }
 
-    /// Subtract from reserved balance.
+    /// Subtract from reserved balance, saturating at zero.
     pub fn sub_reserved(&self, amount: Au) {
-        self.reserved_balance
-            .fetch_sub(amount.as_amount(), Ordering::Relaxed);
+        saturating_fetch_sub(&self.reserved_balance, amount.as_amount());
     }
 
     /// Get the shadow reserved balance in AU.
@@ -110,10 +127,9 @@ impl PeerState {
             .fetch_add(amount.as_amount(), Ordering::Relaxed);
     }
 
-    /// Subtract from shadow reserved balance.
+    /// Subtract from shadow reserved balance, saturating at zero.
     pub fn sub_shadow_reserved(&self, amount: Au) {
-        self.shadow_reserved_balance
-            .fetch_sub(amount.as_amount(), Ordering::Relaxed);
+        saturating_fetch_sub(&self.shadow_reserved_balance, amount.as_amount());
     }
 
     /// Get the surplus balance in AU.
@@ -277,6 +293,22 @@ mod tests {
 
         state.sub_reserved(au(50));
         assert_eq!(state.reserved_balance(), au(50));
+    }
+
+    #[test]
+    fn test_sub_reserved_saturates_at_zero() {
+        let state = PeerState::new(au(1000), au(10000));
+
+        // Releasing more than is reserved must saturate at zero, never wrap to
+        // a near-u64::MAX reserve that would read back as i64::MAX and jam the
+        // peer into permanent denial.
+        state.add_reserved(au(100));
+        state.sub_reserved(au(250));
+        assert_eq!(state.reserved_balance(), Au::ZERO);
+
+        state.add_shadow_reserved(au(100));
+        state.sub_shadow_reserved(au(250));
+        assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
     }
 
     #[test]
