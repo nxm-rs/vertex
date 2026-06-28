@@ -324,27 +324,43 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accountin
         let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
         headroom.max(Au::ZERO)
     }
+
+    fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+        // Settle once our projected debt (the negated balance plus the pending
+        // reservation) reaches the early-payment trigger, so the peer's view of
+        // our debt is reduced before it climbs to the disconnect threshold.
+        let (balance, reserved) = match self.peers.read().get(overlay) {
+            Some(state) => (state.balance(), state.reserved_balance()),
+            None => return false,
+        };
+
+        let debt = Au::ZERO
+            .saturating_sub(balance)
+            .saturating_add(reserved)
+            .max(Au::ZERO);
+        if debt <= Au::ZERO {
+            return false;
+        }
+
+        // Floored at one refresh-rate unit so a settle always offers at least the
+        // minimum the peer acts on.
+        let trigger = self
+            .config
+            .early_payment_trigger()
+            .max(self.config.refresh_rate());
+
+        debt >= trigger
+    }
 }
 
 /// Handle to a peer's accounting state. Cheap to clone.
+#[derive(Clone)]
 pub struct AccountingPeerHandle {
     peer: OverlayAddress,
     state: Arc<PeerState>,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
     disconnect_threshold: Au,
     payment_threshold: Au,
-}
-
-impl Clone for AccountingPeerHandle {
-    fn clone(&self) -> Self {
-        Self {
-            peer: self.peer,
-            state: Arc::clone(&self.state),
-            providers: Arc::clone(&self.providers),
-            disconnect_threshold: self.disconnect_threshold,
-            payment_threshold: self.payment_threshold,
-        }
-    }
 }
 
 impl AccountingPeerHandle {
@@ -378,9 +394,11 @@ impl AccountingPeerHandle {
         for provider in self.providers.iter() {
             total = total.saturating_add(provider.settle(self.peer, self.state.as_ref()).await?);
 
-            // Check if still over threshold
+            // Stop once the remaining debt is below the payment threshold. Balance is
+            // negative while we owe, so compare against the negated threshold; the next
+            // provider only needs to run while debt still exceeds it.
             let balance = self.state.balance();
-            if balance <= self.payment_threshold {
+            if balance >= Au::ZERO.saturating_sub(self.payment_threshold) {
                 break;
             }
         }
@@ -835,5 +853,117 @@ mod tests {
         assert_eq!(handle.balance(), au(-400));
         assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(600));
         assert_eq!(accounting.allowance_remaining(&peer), au(850));
+    }
+
+    /// Credits a fixed amount, modelling a provider that pays only part of a
+    /// large debt.
+    struct PartialSettleProvider(Au);
+
+    #[async_trait::async_trait]
+    impl SwarmSettlementProvider for PartialSettleProvider {
+        fn pre_allow(
+            &self,
+            _peer: OverlayAddress,
+            _state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> Au {
+            Au::ZERO
+        }
+
+        async fn settle(
+            &self,
+            _peer: OverlayAddress,
+            state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> SwarmResult<Au> {
+            state.add_balance(self.0);
+            Ok(self.0)
+        }
+
+        fn name(&self) -> &'static str {
+            "partial-settle"
+        }
+    }
+
+    /// Records whether its `settle` ran.
+    struct RecordingProvider(Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl SwarmSettlementProvider for RecordingProvider {
+        fn pre_allow(
+            &self,
+            _peer: OverlayAddress,
+            _state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> Au {
+            Au::ZERO
+        }
+
+        async fn settle(
+            &self,
+            _peer: OverlayAddress,
+            _state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> SwarmResult<Au> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Au::ZERO)
+        }
+
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[tokio::test]
+    async fn settle_all_reaches_every_provider_while_debt_remains() {
+        // Payment threshold 1000. A 5000 debt, of which the first provider settles
+        // only 1000 (leaving -4000, still past the threshold), so the fan-out must
+        // run the second provider.
+        let ran_second = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accounting = Accounting::with_providers(
+            small_config(),
+            test_identity(),
+            vec![
+                Box::new(PartialSettleProvider(au(1000))),
+                Box::new(RecordingProvider(Arc::clone(&ran_second))),
+            ],
+        );
+
+        let handle = accounting.for_peer(test_peer());
+        handle.record(au(5000), Direction::Download);
+        assert_eq!(handle.balance(), au(-5000));
+
+        handle.settle().await.expect("settle succeeds");
+
+        assert!(
+            ran_second.load(std::sync::atomic::Ordering::SeqCst),
+            "the second provider must run while debt remains past the threshold"
+        );
+        // The first provider credited 1000, leaving -4000.
+        assert_eq!(handle.balance(), au(-4000));
+    }
+
+    #[test]
+    fn should_settle_fires_once_debt_reaches_the_early_trigger() {
+        // Default config: 13_500_000 payment threshold at 50% early percent gives
+        // a 6_750_000 trigger (above the 4_500_000 refresh-rate floor). An unknown
+        // peer never settles; a debt below the trigger does not; a debt at or past
+        // it does.
+        let accounting = test_accounting();
+        let peer = test_peer();
+        assert!(
+            !accounting.should_settle(&peer),
+            "unknown peer never settles"
+        );
+
+        let handle = accounting.for_peer(peer);
+        handle.record(au(1_000_000), Direction::Download);
+        assert!(
+            !accounting.should_settle(&peer),
+            "a debt below the trigger does not settle"
+        );
+
+        handle.record(au(6_000_000), Direction::Download);
+        assert_eq!(handle.balance(), au(-7_000_000));
+        assert!(
+            accounting.should_settle(&peer),
+            "a debt past the trigger settles"
+        );
     }
 }

@@ -97,6 +97,17 @@ pub trait SwarmAccountingConfig: Send + Sync {
         let percent = 100u64.saturating_add(self.payment_tolerance_percent());
         self.payment_threshold().scale_percent(percent)
     }
+
+    /// The debt at which a debtor should settle early: the payment threshold less
+    /// the early-payment headroom. The refresh-rate floor is applied by callers
+    /// that need a minimum the peer will act on.
+    fn early_payment_trigger(&self) -> Au {
+        let early = self.early_payment_percent().min(100);
+        self.payment_threshold()
+            .checked_scale(100 - early)
+            .map(|scaled| Au::from_amount(scaled.as_amount() / 100))
+            .unwrap_or(Au::from_amount(u64::MAX))
+    }
 }
 
 /// A reserved accounting action awaiting commit or release.

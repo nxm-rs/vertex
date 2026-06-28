@@ -20,9 +20,11 @@
 //! per-peer chunk price the accounting layer debits when the request is
 //! served.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nectar_primitives::ChunkAddress;
+use parking_lot::Mutex;
 use tracing::debug;
 use vertex_swarm_api::{
     DEFAULT_PEER_WARN_THRESHOLD, PeerAffordability, SwarmBandwidthAccounting, SwarmIdentity,
@@ -63,14 +65,36 @@ pub trait SettlementTrigger: Send + Sync {
 /// Settlement runs as a spawned task on the current task executor so
 /// selection never blocks on settlement I/O. Failures are logged at debug
 /// level; the next request retries naturally.
+///
+/// A shared in-flight set keeps at most one settle per peer running at a time:
+/// the second trigger for a peer with a settle still outstanding is dropped, so
+/// the set is both the dedup and the per-peer rate limit (the next settle cannot
+/// start until the prior one is acked).
 pub struct AccountingSettlement<B> {
     bandwidth: B,
+    in_flight: Arc<Mutex<HashSet<OverlayAddress>>>,
 }
 
 impl<B> AccountingSettlement<B> {
     /// Trigger settlement through `bandwidth`.
     pub fn new(bandwidth: B) -> Self {
-        Self { bandwidth }
+        Self {
+            bandwidth,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
+
+/// Removes a peer from the in-flight set on drop, so a panic or cancellation of
+/// the settle future cannot pin the peer and starve its settlement.
+struct InFlightGuard {
+    in_flight: Arc<Mutex<HashSet<OverlayAddress>>>,
+    peer: OverlayAddress,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.in_flight.lock().remove(&self.peer);
     }
 }
 
@@ -84,8 +108,19 @@ where
             debug!(%peer, "no task executor; settlement not triggered");
             return;
         };
+        // Skip if a settle to this peer is already running; the entry is cleared
+        // when the spawned settle completes, so the next trigger can start a fresh
+        // one.
+        if !self.in_flight.lock().insert(peer) {
+            return;
+        }
         let handle = self.bandwidth.for_peer(peer);
+        let guard = InFlightGuard {
+            in_flight: Arc::clone(&self.in_flight),
+            peer,
+        };
         executor.spawn(async move {
+            let _guard = guard;
             if let Err(error) = handle.settle().await {
                 debug!(%peer, %error, "best-effort settlement failed");
             }
@@ -123,10 +158,14 @@ impl PeerSelector {
 
     /// Order `candidates` (in proximity order) for a request on `chunk`.
     ///
-    /// Applies the ranking described at the module level. When the request is
-    /// blocked on balance (candidates exist but none is affordable), triggers
-    /// best-effort settlement for the unaffordable candidates before
-    /// returning them in proximity order.
+    /// Applies the ranking described at the module level. Triggers best-effort
+    /// settlement for any candidate whose debt has reached the early-payment
+    /// trigger, so the peer's view of our debt drops before it reaches the
+    /// disconnect threshold. When the request is blocked on balance (candidates
+    /// exist but none is affordable), the unaffordable candidates are settled too,
+    /// so a debt that built without crossing the early trigger is still settled
+    /// before the request gives up on the peer. A single pass triggers each peer
+    /// at most once; the in-flight set dedups across repeated calls.
     pub fn order(
         &self,
         candidates: Vec<OverlayAddress>,
@@ -141,8 +180,11 @@ impl PeerSelector {
             },
         );
 
-        if ranked.blocked_on_balance() {
-            for peer in &ranked.unaffordable {
+        let blocked = ranked.blocked_on_balance();
+        for peer in &candidates {
+            if self.affordability.should_settle(peer)
+                || (blocked && ranked.unaffordable.contains(peer))
+            {
                 self.settlement.trigger_settlement(*peer);
             }
         }
@@ -235,6 +277,17 @@ mod tests {
 
     struct FixedAffordability {
         unaffordable: Vec<OverlayAddress>,
+        /// Peers whose debt has reached the early-payment trigger.
+        settle_due: Vec<OverlayAddress>,
+    }
+
+    impl FixedAffordability {
+        fn new(unaffordable: Vec<OverlayAddress>) -> Self {
+            Self {
+                unaffordable,
+                settle_due: Vec::new(),
+            }
+        }
     }
 
     impl PeerAffordability for FixedAffordability {
@@ -244,6 +297,10 @@ mod tests {
 
         fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
+        }
+
+        fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+            self.settle_due.contains(overlay)
         }
     }
 
@@ -351,7 +408,23 @@ mod tests {
     ) -> PeerSelector {
         PeerSelector::new(
             Arc::new(FixedScores(scores)),
-            Arc::new(FixedAffordability { unaffordable }),
+            Arc::new(FixedAffordability::new(unaffordable)),
+            Arc::new(UnitPricer),
+            settlement,
+        )
+    }
+
+    fn selector_with_settle_due(
+        unaffordable: Vec<OverlayAddress>,
+        settle_due: Vec<OverlayAddress>,
+        settlement: Arc<RecordingSettlement>,
+    ) -> PeerSelector {
+        PeerSelector::new(
+            Arc::new(FixedScores(HashMap::new())),
+            Arc::new(FixedAffordability {
+                unaffordable,
+                settle_due,
+            }),
             Arc::new(UnitPricer),
             settlement,
         )
@@ -385,6 +458,30 @@ mod tests {
     }
 
     #[test]
+    fn selector_settles_proactively_when_debt_reaches_early_trigger() {
+        // A still-affordable peer whose debt has reached the early-payment trigger
+        // is settled before it becomes unaffordable, so its view of our debt drops
+        // before it would refuse or drop us.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector_with_settle_due(Vec::new(), vec![peer(1)], Arc::clone(&settlement));
+
+        let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
+        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer(1)]);
+    }
+
+    #[test]
+    fn selector_does_not_settle_below_the_early_trigger() {
+        // No candidate is over the trigger and all are affordable: no settle.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector_with_settle_due(Vec::new(), Vec::new(), Arc::clone(&settlement));
+
+        let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
+        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        assert!(settlement.triggered.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn selector_excludes_warned_peers() {
         let settlement = Arc::new(RecordingSettlement::default());
         let mut scores = HashMap::new();
@@ -393,5 +490,184 @@ mod tests {
 
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
         assert_eq!(ordered, vec![peer(2)]);
+    }
+
+    // Dedup of `AccountingSettlement` over a mock bandwidth accounting whose
+    // settle parks until released, so two triggers for one peer can overlap.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tokio::sync::Notify;
+    use vertex_swarm_accounting::{NoProvideAction, NoReceiveAction};
+    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmResult};
+    use vertex_swarm_test_utils::MockIdentity;
+    use vertex_tasks::TaskManager;
+
+    /// One process-wide multi-thread runtime for the settlement tests.
+    ///
+    /// `AccountingSettlement` spawns onto the global `TaskExecutor`, a process-wide
+    /// `OnceLock` bound to the first `TaskManager::current()`. Binding it once to a
+    /// long-lived runtime keeps every spawned settle on a live runtime regardless of
+    /// test order; a per-test `#[tokio::test]` runtime would be torn down under the
+    /// still-pointing global and starve the next test's settles.
+    fn settlement_runtime() -> &'static tokio::runtime::Runtime {
+        use std::sync::OnceLock;
+        static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        RUNTIME.get_or_init(|| {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("build settlement runtime");
+            rt.block_on(async {
+                // Bind the global executor to this runtime for the whole binary.
+                std::mem::forget(TaskManager::current());
+            });
+            rt
+        })
+    }
+
+    struct MockPeerBandwidth {
+        peer: OverlayAddress,
+        started: Arc<AtomicUsize>,
+        finished: Arc<AtomicUsize>,
+        gate: Arc<Notify>,
+    }
+
+    impl SwarmPeerBandwidth for MockPeerBandwidth {
+        fn record(&self, _amount: Au, _direction: Direction) {}
+        fn allow(&self, _amount: Au) -> bool {
+            true
+        }
+        fn balance(&self) -> Au {
+            Au::ZERO
+        }
+        async fn settle(&self) -> SwarmResult<()> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.gate.notified().await;
+            self.finished.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn peer(&self) -> OverlayAddress {
+            self.peer
+        }
+    }
+
+    struct MockBandwidth {
+        for_peer_calls: Arc<AtomicUsize>,
+        started: Arc<AtomicUsize>,
+        finished: Arc<AtomicUsize>,
+        gate: Arc<Notify>,
+    }
+
+    impl SwarmBandwidthAccounting for MockBandwidth {
+        type Identity = MockIdentity;
+        type Peer = MockPeerBandwidth;
+        type ReceiveAction = NoReceiveAction;
+        type ProvideAction = NoProvideAction;
+
+        fn identity(&self) -> &Self::Identity {
+            unreachable!("settlement never reads the identity")
+        }
+        fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
+            self.for_peer_calls.fetch_add(1, Ordering::SeqCst);
+            MockPeerBandwidth {
+                peer,
+                started: Arc::clone(&self.started),
+                finished: Arc::clone(&self.finished),
+                gate: Arc::clone(&self.gate),
+            }
+        }
+        fn peers(&self) -> Vec<OverlayAddress> {
+            Vec::new()
+        }
+        fn remove_peer(&self, _peer: &OverlayAddress) {}
+        fn prepare_receive(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+            _originated: bool,
+        ) -> SwarmResult<Self::ReceiveAction> {
+            Ok(NoReceiveAction)
+        }
+        fn prepare_provide(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+        ) -> SwarmResult<Self::ProvideAction> {
+            Ok(NoProvideAction)
+        }
+    }
+
+    #[test]
+    fn trigger_settlement_runs_one_settle_per_peer_in_flight() {
+        // The trigger spawns its settle on the shared global task executor.
+        settlement_runtime().block_on(async {
+            let for_peer_calls = Arc::new(AtomicUsize::new(0));
+            let started = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(Notify::new());
+            let bandwidth = Arc::new(MockBandwidth {
+                for_peer_calls: Arc::clone(&for_peer_calls),
+                started: Arc::clone(&started),
+                finished: Arc::clone(&finished),
+                gate: Arc::clone(&gate),
+            });
+            let trigger = AccountingSettlement::new(bandwidth);
+
+            // Two synchronous triggers for one peer. The first reserves the peer and
+            // spawns a settle that parks on the gate; the second finds the peer
+            // already in flight and is dropped before it reaches the accounting, so
+            // only one settle is ever created.
+            trigger.trigger_settlement(peer(1));
+            trigger.trigger_settlement(peer(1));
+            assert_eq!(
+                for_peer_calls.load(Ordering::SeqCst),
+                1,
+                "the second trigger is deduped while the first settle is in flight"
+            );
+
+            // Release the parked settle and wait for it to finish; the peer then
+            // leaves the in-flight set. `notify_one` stores a permit if the settle has
+            // not parked yet, so the wakeup is never lost.
+            gate.notify_one();
+            while finished.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+
+            // Once the prior settle has cleared the set, a fresh trigger starts a new
+            // settle. Retry across the brief window in which the spawned wrapper has
+            // not yet removed the peer.
+            let mut tries = 0;
+            while for_peer_calls.load(Ordering::SeqCst) < 2 {
+                trigger.trigger_settlement(peer(1));
+                tries += 1;
+                assert!(
+                    tries < 10_000,
+                    "in-flight set never cleared after completion"
+                );
+                tokio::task::yield_now().await;
+            }
+            gate.notify_one();
+        });
+    }
+
+    #[test]
+    fn in_flight_guard_clears_the_peer_on_drop() {
+        // The guard removes the peer in Drop, which runs on normal completion,
+        // unwind (a panicking settle), and cancellation alike, so a settle that
+        // never completes cleanly cannot pin the peer and starve its settlement.
+        let in_flight = Arc::new(parking_lot::Mutex::new(HashSet::new()));
+        in_flight.lock().insert(peer(1));
+        {
+            let _guard = InFlightGuard {
+                in_flight: Arc::clone(&in_flight),
+                peer: peer(1),
+            };
+            assert!(in_flight.lock().contains(&peer(1)));
+        }
+        assert!(
+            !in_flight.lock().contains(&peer(1)),
+            "the guard must clear the peer when dropped"
+        );
     }
 }
