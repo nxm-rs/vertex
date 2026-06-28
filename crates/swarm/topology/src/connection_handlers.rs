@@ -90,6 +90,20 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
+        // Resolve the close reason. An intent recorded at the close site wins;
+        // otherwise derive it from the libp2p cause. In this libp2p a clean
+        // local close is `None`, a keep-alive teardown is `KeepAliveTimeout`,
+        // and a remote graceful close and a transport reset are both `IO` and
+        // indistinguishable at this layer.
+        let reason = self
+            .pending_closes
+            .remove(&closed.peer_id)
+            .unwrap_or(match closed.cause {
+                Some(ConnectionError::IO(_)) => DisconnectReason::RemoteClose,
+                Some(ConnectionError::KeepAliveTimeout) => DisconnectReason::IdleTimeout,
+                None => DisconnectReason::LocalClose,
+            });
+
         // Drop the reachability record so memory does not accumulate for
         // transient or scanner peers. A subsequent reconnect rebuilds the
         // record from a clean slate, which is the correct behaviour for
@@ -112,7 +126,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let Some(overlay) = overlay else {
             // Unknown overlay connection closed — no routing capacity to release and
             // no routing table entry to update, so skip evaluation.
-            self.metrics.record_unknown_overlay_disconnect();
+            self.metrics.record_unknown_overlay_disconnect(reason);
             return;
         };
 
@@ -150,43 +164,34 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         SwarmRouting::on_peer_disconnected(&*self.routing, &overlay);
         let new_depth = self.routing.depth();
 
-        // Determine disconnect reason from pending evictions and libp2p cause.
-        let disconnect_reason = if self.pending_evictions.remove(&overlay) {
-            DisconnectReason::BinTrimmed
-        } else {
-            match closed.cause {
-                Some(ConnectionError::IO(_)) => DisconnectReason::ConnectionError,
-                Some(ConnectionError::KeepAliveTimeout) => DisconnectReason::ConnectionError,
-                // No error: orderly close initiated by local or remote side.
-                None => DisconnectReason::LocalClose,
-            }
-        };
-
-        // Penalize early disconnects (post-handshake connections that fail quickly).
-        // Skip BinTrimmed since we initiated the eviction.
-        if disconnect_reason != DisconnectReason::BinTrimmed
+        // Penalize early disconnects only when the close is attributable to
+        // the peer (a remote or transport close) and the connection did no
+        // useful work. Our own closes (bin-trim, ban, low-score, bootnode
+        // rotation, shutdown, idle teardown) are blameless, and a peer that
+        // served us is blameless however it closed.
+        if !reason.is_locally_initiated()
             && let Some(duration) = connection_duration
             && duration < self.early_disconnect_threshold
+            && !self.peer_manager.was_productive_since_connect(&overlay)
         {
             debug!(
                 %overlay,
                 ?duration,
-                ?disconnect_reason,
+                %reason,
                 "early disconnect detected, applying penalty"
             );
             self.peer_manager
                 .record_early_disconnect(&overlay, duration);
-            self.metrics.record_early_disconnect(disconnect_reason);
+            self.metrics.record_early_disconnect(reason);
         }
 
         // Clear the connection state on the peer record and emit the
         // Disconnected lifecycle event for subscribers.
-        self.peer_manager
-            .on_peer_disconnected(&overlay, disconnect_reason.into());
+        self.peer_manager.on_peer_disconnected(&overlay, reason);
 
         self.emit_event(TopologyEvent::PeerDisconnected {
             overlay,
-            reason: disconnect_reason,
+            reason,
             connection_duration,
             node_type,
         });

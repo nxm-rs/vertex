@@ -280,15 +280,6 @@ impl ClientBehaviour {
                     debug!(%peer, "Unknown peer for swap cheque");
                 }
             }
-            ClientCommand::DisconnectPeer { peer, reason } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, ?reason, "Disconnecting peer");
-                    self.push_event(ToSwarm::CloseConnection {
-                        peer_id,
-                        connection: libp2p::swarm::CloseConnection::All,
-                    });
-                }
-            }
             // `ClientCommand` carries swap variants when `client-protocol/swap`
             // is on, which Cargo feature unification can turn on (a workspace
             // build also compiling `accounting-swap`) even when this crate's

@@ -255,11 +255,11 @@ impl TopologyMetrics {
     }
 
     /// Record a disconnect for a connection with unknown overlay address.
-    pub fn record_unknown_overlay_disconnect(&self) {
+    pub fn record_unknown_overlay_disconnect(&self, reason: DisconnectReason) {
         counter!(
             "topology_disconnections_total",
             "connection_type" => "unknown",
-            "reason" => "no_overlay",
+            "reason" => reason.label_value(),
         )
         .increment(1);
     }
@@ -435,7 +435,7 @@ mod tests {
         // Disconnect a client that was never connected — must not wrap to u64::MAX.
         let event = TopologyEvent::PeerDisconnected {
             overlay: test_overlay(0),
-            reason: DisconnectReason::ConnectionError,
+            reason: DisconnectReason::RemoteClose,
             connection_duration: None,
             node_type: SwarmNodeType::Client,
         };
@@ -516,7 +516,7 @@ mod tests {
         for i in 10..12 {
             metrics.record_event(&TopologyEvent::PeerDisconnected {
                 overlay: test_overlay(i),
-                reason: DisconnectReason::ConnectionError,
+                reason: DisconnectReason::RemoteClose,
                 connection_duration: None,
                 node_type: SwarmNodeType::Client,
             });
@@ -567,7 +567,7 @@ mod tests {
         // Disconnect reads the same authoritative value: gauges return to zero.
         metrics.record_event(&TopologyEvent::PeerDisconnected {
             overlay,
-            reason: DisconnectReason::ConnectionError,
+            reason: DisconnectReason::RemoteClose,
             connection_duration: Some(Duration::from_secs(120)),
             node_type: pm.node_type(&overlay).unwrap(),
         });
