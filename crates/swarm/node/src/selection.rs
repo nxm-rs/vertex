@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::Shared;
@@ -92,10 +93,20 @@ pub trait SettlementTrigger: Send + Sync {
 /// the map is both the dedup and the per-peer rate limit (the next settle cannot
 /// start until the prior one is acked). The stored [`SettleCompletion`] lets a
 /// waiter await that ack.
+///
+/// The spawned settle is bounded by [`SETTLE_TIMEOUT`] so a peer that accepts the
+/// settle stream and never acks cannot park the future forever and pin its
+/// in-flight entry; the guard always drops within that window, which also fires
+/// the completion so a waiter is woken, and a later trigger starts a fresh settle.
 pub struct AccountingSettlement<B> {
     bandwidth: B,
     in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
 }
+
+/// Upper bound on a single spawned settle: long enough for a real ack round
+/// trip, short enough that a withholding peer releases its in-flight entry
+/// promptly so settlement can retry.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl<B> AccountingSettlement<B> {
     /// Trigger settlement through `bandwidth`.
@@ -155,12 +166,28 @@ where
             peer,
             done: Some(done),
         };
-        executor.spawn(async move {
+        let settle = async move {
             let _guard = guard;
-            if let Err(error) = handle.settle().await {
-                debug!(%peer, %error, "best-effort settlement failed");
+            match vertex_tasks::time::timeout(SETTLE_TIMEOUT, handle.settle()).await {
+                Ok(Err(error)) => debug!(%peer, %error, "best-effort settlement failed"),
+                Err(_elapsed) => debug!(%peer, "best-effort settlement timed out; releasing"),
+                Ok(Ok(())) => {}
             }
-        });
+        };
+        // `vertex_tasks::time::timeout` wraps a `!Send` browser timer on wasm32,
+        // so the bounded settle runs on the local spawner there.
+        #[cfg(not(target_arch = "wasm32"))]
+        executor.spawn(settle);
+        #[cfg(target_arch = "wasm32")]
+        executor.spawn_local_with_graceful_shutdown_signal(
+            "selection.settle",
+            |shutdown| async move {
+                tokio::select! {
+                    _ = settle => {}
+                    _ = shutdown => {}
+                }
+            },
+        );
     }
 
     fn settled(&self, peers: &[OverlayAddress]) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
@@ -811,20 +838,39 @@ mod tests {
     use vertex_swarm_test_utils::MockIdentity;
     use vertex_tasks::TaskManager;
 
-    /// One process-wide multi-thread runtime for the settlement tests.
+    /// Serialises the settlement tests' `block_on`.
+    ///
+    /// `settlement_runtime` is a current-thread runtime, which (unlike a
+    /// multi-thread one) cannot be entered from two threads at once. Under
+    /// `cargo test` the settlement tests share a process and could overlap, so each
+    /// holds this lock for the duration of its `block_on`. Under `cargo nextest`
+    /// each test is its own process and the lock is uncontended.
+    fn settlement_serial() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One process-wide paused-time runtime for the settlement tests.
     ///
     /// `AccountingSettlement` spawns onto the global `TaskExecutor`, a process-wide
     /// `OnceLock` bound to the first `TaskManager::current()`. Binding it once to a
     /// long-lived runtime keeps every spawned settle on a live runtime regardless of
     /// test order; a per-test `#[tokio::test]` runtime would be torn down under the
     /// still-pointing global and starve the next test's settles.
+    ///
+    /// It is a current-thread `start_paused` runtime so the bounded settle's timeout
+    /// timer can be driven with `tokio::time::advance`; the busy `yield_now` loops in
+    /// the tests keep the scheduler from auto-advancing the clock out from under them.
     fn settlement_runtime() -> &'static tokio::runtime::Runtime {
         use std::sync::OnceLock;
         static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
         RUNTIME.get_or_init(|| {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+            let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
+                .start_paused(true)
                 .build()
                 .expect("build settlement runtime");
             rt.block_on(async {
@@ -907,6 +953,7 @@ mod tests {
     #[test]
     fn trigger_settlement_runs_one_settle_per_peer_in_flight() {
         // The trigger spawns its settle on the shared global task executor.
+        let _serial = settlement_serial();
         settlement_runtime().block_on(async {
             let for_peer_calls = Arc::new(AtomicUsize::new(0));
             let started = Arc::new(AtomicUsize::new(0));
@@ -961,6 +1008,7 @@ mod tests {
     fn settled_resolves_when_the_in_flight_settle_completes() {
         // A waiter on a peer's in-flight settle resolves once that settle acks,
         // which is what paces the gated-set wait loop.
+        let _serial = settlement_serial();
         settlement_runtime().block_on(async {
             let for_peer_calls = Arc::new(AtomicUsize::new(0));
             let started = Arc::new(AtomicUsize::new(0));
@@ -990,6 +1038,77 @@ mod tests {
             vertex_tasks::time::timeout(std::time::Duration::from_secs(5), waiter)
                 .await
                 .expect("settled resolves once the in-flight settle completes");
+        });
+    }
+
+    #[test]
+    fn settle_timeout_releases_a_withholding_peer() {
+        // A peer that accepts the settle stream and never acks parks the settle
+        // future forever (its gate is never released). The bounded timeout must
+        // still drop the guard, which clears the in-flight entry AND fires the
+        // completion so a concurrent `settled()` waiter wakes; a withholding peer
+        // therefore cannot pin `order_or_wait`'s settled().await past its deadline.
+        // Paused time is advanced past the bound instead of sleeping wall-clock.
+        let _serial = settlement_serial();
+        settlement_runtime().block_on(async {
+            let for_peer_calls = Arc::new(AtomicUsize::new(0));
+            let started = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicUsize::new(0));
+            // The gate is never notified: the settle parks until the timeout fires.
+            let gate = Arc::new(Notify::new());
+            let bandwidth = Arc::new(MockBandwidth {
+                for_peer_calls: Arc::clone(&for_peer_calls),
+                started: Arc::clone(&started),
+                finished: Arc::clone(&finished),
+                gate: Arc::clone(&gate),
+            });
+            let trigger = AccountingSettlement::new(bandwidth);
+
+            // Spawn the settle and let it park on the gate (and arm its timeout timer).
+            trigger.trigger_settlement(peer(1));
+            while started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(for_peer_calls.load(Ordering::SeqCst), 1);
+
+            // A second trigger while the settle is still parked is deduped.
+            trigger.trigger_settlement(peer(1));
+            assert_eq!(
+                for_peer_calls.load(Ordering::SeqCst),
+                1,
+                "the withholding peer is pinned in flight until the timeout releases it"
+            );
+
+            // Take a waiter on the still-in-flight settle; it must wake when the
+            // timeout drops the guard, the liveness the gated-set wait loop relies on.
+            let waiter = trigger.settled(&[peer(1)]);
+
+            // Advance past the bound so the settle elapses and the guard drops.
+            tokio::time::advance(SETTLE_TIMEOUT + Duration::from_secs(1)).await;
+
+            // The timeout-driven drop fires the completion, so the waiter wakes
+            // (true: it awaited a real in-flight settle). A bounded await proves it
+            // does not hang past the bound.
+            let awaited = vertex_tasks::time::timeout(SETTLE_TIMEOUT, waiter)
+                .await
+                .expect("settled wakes when the timeout releases the peer");
+            assert!(awaited, "the waiter awaited a real in-flight settle");
+
+            // The timed-out settle cleared the in-flight set, so a fresh trigger starts
+            // a new settle (`for_peer` called again). Retry across the brief window in
+            // which the spawned wrapper has not yet run its Drop.
+            let mut tries = 0;
+            while for_peer_calls.load(Ordering::SeqCst) < 2 {
+                trigger.trigger_settlement(peer(1));
+                tries += 1;
+                assert!(tries < 10_000, "timeout never released the in-flight peer");
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                finished.load(Ordering::SeqCst),
+                0,
+                "the parked settle never completed; only the timeout released it"
+            );
         });
     }
 
