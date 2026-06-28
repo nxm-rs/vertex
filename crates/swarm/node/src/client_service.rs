@@ -539,7 +539,9 @@ impl ClientService {
 
                 let ack = PseudosettleAck {
                     accepted: Au::from_amount(amount.as_limbs()[0]),
-                    timestamp: vertex_util_runtime::time::now_unix_nanos(),
+                    // Unix seconds: the payer rejects an ack whose timestamp is
+                    // more than a couple of seconds off its own clock.
+                    timestamp: vertex_util_runtime::time::now_unix_secs() as i64,
                 };
 
                 if let Err(e) = self.handle.send_command(ClientCommand::AckPseudosettle {

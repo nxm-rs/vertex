@@ -339,12 +339,14 @@ fn current_timestamp() -> u64 {
     vertex_util_runtime::time::now_unix_secs()
 }
 
-/// Sample the clock for an outbound ack timestamp, in Unix nanoseconds.
+/// Sample the clock for an outbound ack timestamp, in Unix **seconds**.
 ///
-/// The peer refreshes its allowance against this value, so it is sampled at the
-/// decision point and carried through to the wire boundary unchanged.
+/// The payer validates this against its own clock and rejects an ack whose
+/// timestamp differs by more than a couple of seconds, so it must be seconds,
+/// not nanoseconds, to interoperate. It is sampled at the decision point and
+/// carried through to the wire boundary unchanged.
 fn ack_timestamp() -> i64 {
-    vertex_util_runtime::time::now_unix_nanos()
+    current_timestamp() as i64
 }
 
 #[cfg(test)]
