@@ -13,7 +13,10 @@ use vertex_swarm_api::{
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_topology::TopologyHandle;
 
-use crate::{ClientHandle, PeerSelector, RETRIEVAL_STAGGER, RaceFailure, race_candidates};
+use crate::{
+    ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER, RaceFailure,
+    race_candidates,
+};
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -22,8 +25,14 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// Number of closest peers to try when retrieving a chunk before giving up.
-const RETRIEVE_CANDIDATE_COUNT: usize = 3;
+/// Closest connected peers considered for a retrieval before skip-busy
+/// filtering.
+///
+/// Wider than the staggered race ever starts, so when address proximity clusters
+/// races onto a few close peers and one is at its in-flight cap it can be skipped
+/// in favour of the next-closest peer with a free slot, rather than overrunning
+/// the hot peer's per-connection substream budget.
+const RETRIEVE_CANDIDATE_WIDTH: usize = 8;
 
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
@@ -31,6 +40,7 @@ pub struct NetworkChunkProvider<I: SwarmIdentity> {
     client_handle: ClientHandle,
     topology: TopologyHandle<I>,
     selector: Option<Arc<PeerSelector>>,
+    inflight: Option<Arc<PeerInflightLimiter>>,
 }
 
 impl<I: SwarmIdentity> NetworkChunkProvider<I> {
@@ -39,6 +49,7 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             client_handle,
             topology,
             selector: None,
+            inflight: None,
         }
     }
 
@@ -46,6 +57,13 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     /// affordability-aware) instead of plain proximity order.
     pub fn with_selector(mut self, selector: Arc<PeerSelector>) -> Self {
         self.selector = Some(selector);
+        self
+    }
+
+    /// Cap concurrent outbound retrieval substreams per peer, skipping a peer at
+    /// its cap in favour of the next-closest candidate with a free slot.
+    pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
+        self.inflight = Some(inflight);
         self
     }
 
@@ -64,9 +82,17 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let chunk_address = SwarmAddress::new(address.0.into());
         let closest_peers = self
             .topology
-            .closest_to(&chunk_address, RETRIEVE_CANDIDATE_COUNT);
+            .closest_to(&chunk_address, RETRIEVE_CANDIDATE_WIDTH);
         let closest_peers = self.select(closest_peers, &chunk_address);
-        let attempts = closest_peers.len();
+
+        // Skip-busy: prefer close peers with a free retrieval slot so a hot peer
+        // at its in-flight cap is skipped at selection time rather than
+        // overrun. When every close candidate is at its cap, fall through to the
+        // full list rather than failing the request: degraded service beats
+        // failure. The cap is non-economic and composed after the economic
+        // selector above; the throttle paces each chosen request below.
+        let candidates = skip_busy(closest_peers, self.inflight.as_deref());
+        let attempts = candidates.len();
 
         // Race the candidates with a staggered start, resolving on the first
         // success, so a withholding head candidate is overtaken by the next one
@@ -74,13 +100,24 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // per-attempt deadline and blocking every later chunk behind it. Each
         // attempt carries its own pacing (the outbound self-throttle and
         // affordability check run inside `retrieve_chunk` before it dispatches),
-        // so the staggered starts preserve the per-peer pacing. Losing attempts
-        // are dropped when the race resolves.
-        match race_candidates(closest_peers, RETRIEVAL_STAGGER, |peer_overlay| {
+        // so the staggered starts preserve the per-peer pacing. The per-peer
+        // in-flight permit is reserved lazily as each leg starts and rides its
+        // request future, releasing the slot on drop including a cancelled
+        // losing leg.
+        match race_candidates(candidates, RETRIEVAL_STAGGER, |peer_overlay| {
+            let permit = self
+                .inflight
+                .as_ref()
+                .and_then(|limiter| limiter.try_acquire(&peer_overlay));
             // `originated = true`: our own retrieval, so the client service
             // debits the serving peer on delivery.
-            self.client_handle
-                .retrieve_chunk(peer_overlay, chunk_address, true)
+            let request = self
+                .client_handle
+                .retrieve_chunk(peer_overlay, chunk_address, true);
+            async move {
+                let _permit = permit;
+                request.await
+            }
         })
         .await
         {
@@ -204,6 +241,31 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         }
 
         outcome
+    }
+}
+
+/// Filter proximity-ordered `candidates` to those with a free retrieval slot.
+///
+/// With no limiter the list is unchanged. When every close candidate is at its
+/// in-flight cap the full list is returned (fall through, since degraded service
+/// beats failing the request). Skip-busy happens here, at selection time, so a
+/// busy head peer is never raced and the next-closest free peer leads instead.
+fn skip_busy(
+    candidates: Vec<SwarmAddress>,
+    inflight: Option<&PeerInflightLimiter>,
+) -> Vec<SwarmAddress> {
+    let Some(limiter) = inflight else {
+        return candidates;
+    };
+    let survivors: Vec<SwarmAddress> = candidates
+        .iter()
+        .copied()
+        .filter(|peer| limiter.has_free_slot(peer))
+        .collect();
+    if survivors.is_empty() {
+        candidates
+    } else {
+        survivors
     }
 }
 
@@ -561,6 +623,200 @@ mod tests {
 
             let outcome = race_over_handle(handle, Vec::new(), address(0xcc)).await;
             assert!(matches!(outcome, Err(RaceFailure::NoCandidates)));
+        }
+    }
+
+    mod skip_busy_scheduler {
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use nectar_primitives::ContentChunk;
+        use tokio::sync::mpsc;
+
+        use crate::{
+            ChunkTransferError, ClientCommand, ClientHandle, PeerInflightLimiter, RetrievalResult,
+        };
+
+        use super::super::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, skip_busy};
+        use super::*;
+
+        const CAP_ONE: NonZeroUsize = match NonZeroUsize::new(1) {
+            Some(cap) => cap,
+            None => unreachable!(),
+        };
+
+        fn overlay(n: u8) -> SwarmAddress {
+            SwarmAddress::from([n; 32])
+        }
+
+        fn test_chunk() -> nectar_primitives::AnyChunk {
+            ContentChunk::new(&b"skip-busy-chunk"[..])
+                .expect("valid content chunk")
+                .into()
+        }
+
+        /// Drive the exact composition the provider builds: skip-busy filtering
+        /// at selection time, then the staggered race whose legs reserve an
+        /// in-flight permit that rides the request future and releases on drop.
+        async fn race_with_limiter(
+            handle: ClientHandle,
+            limiter: Arc<PeerInflightLimiter>,
+            candidates: Vec<SwarmAddress>,
+            address: ChunkAddress,
+        ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
+            let candidates = skip_busy(candidates, Some(&limiter));
+            race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
+                let permit = limiter.try_acquire(&peer);
+                let handle = handle.clone();
+                async move {
+                    let _permit = permit;
+                    handle.retrieve_chunk(peer, address, true).await
+                }
+            })
+            .await
+        }
+
+        #[test]
+        fn skip_busy_without_a_limiter_keeps_every_candidate() {
+            let candidates = vec![overlay(1), overlay(2), overlay(3)];
+            assert_eq!(skip_busy(candidates.clone(), None), candidates);
+        }
+
+        #[test]
+        fn skip_busy_drops_a_capped_head() {
+            let limiter = PeerInflightLimiter::new(CAP_ONE);
+            let busy = overlay(1);
+            let _held = limiter.try_acquire(&busy).expect("first slot");
+
+            let survivors = skip_busy(vec![busy, overlay(2), overlay(3)], Some(&limiter));
+            assert_eq!(
+                survivors,
+                vec![overlay(2), overlay(3)],
+                "the capped head is skipped, the next-closest free peers remain"
+            );
+        }
+
+        #[test]
+        fn skip_busy_falls_through_when_every_candidate_is_capped() {
+            let limiter = PeerInflightLimiter::new(CAP_ONE);
+            let candidates = vec![overlay(1), overlay(2)];
+            let _h1 = limiter.try_acquire(&overlay(1)).expect("slot a");
+            let _h2 = limiter.try_acquire(&overlay(2)).expect("slot b");
+
+            assert_eq!(
+                skip_busy(candidates.clone(), Some(&limiter)),
+                candidates,
+                "all-busy falls through to the full list rather than failing"
+            );
+        }
+
+        #[tokio::test]
+        async fn capped_head_is_skipped_for_the_next_free_peer() {
+            // The closest peer is at its cap; the race must dispatch to the
+            // next-closest peer with a free slot, never blocking on or contacting
+            // the capped head.
+            let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+            let handle = ClientHandle::new(tx);
+            let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
+
+            let head = overlay(1);
+            let next = overlay(2);
+            // Saturate the head so it has no free slot at selection time.
+            let _held = limiter.try_acquire(&head).expect("saturate the head");
+
+            let address = address(0xab);
+            let race = tokio::spawn(race_with_limiter(
+                handle,
+                Arc::clone(&limiter),
+                vec![head, next],
+                address,
+            ));
+
+            // The only command dispatched is to the next-closest peer: the capped
+            // head was skipped at selection time, not contacted.
+            match rx.recv().await.expect("a command for the free peer") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, next, "the skipped head is not contacted");
+                    response
+                        .send(Ok(RetrievalResult {
+                            chunk: test_chunk(),
+                            stamp: None,
+                            peer: next,
+                        }))
+                        .expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+
+            let result = race.await.unwrap().expect("race resolves");
+            assert_eq!(result.peer, next, "the free next-closest peer serves");
+        }
+
+        #[tokio::test]
+        async fn losing_leg_releases_its_permit_on_drop() {
+            // The head leg reserves a permit and then withholds; the staggered
+            // second wins and the head leg is dropped. Dropping it must release
+            // the head's in-flight slot, so the head is reservable again.
+            let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+            let handle = ClientHandle::new(tx);
+            let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
+
+            let head = overlay(1);
+            let second = overlay(2);
+            let address = address(0xcd);
+
+            let start = Instant::now();
+            let race = tokio::spawn(race_with_limiter(
+                handle,
+                Arc::clone(&limiter),
+                vec![head, second],
+                address,
+            ));
+
+            // The head leg dispatches first and reserves the head's only slot.
+            let _head_response = match rx.recv().await.expect("head command") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, head);
+                    assert!(
+                        !limiter.has_free_slot(&head),
+                        "the in-flight head leg holds the head's slot"
+                    );
+                    response
+                }
+                other => panic!("unexpected command: {other:?}"),
+            };
+            // After the stagger the second candidate joins and resolves the race.
+            match rx.recv().await.expect("second command after stagger") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, second);
+                    response
+                        .send(Ok(RetrievalResult {
+                            chunk: test_chunk(),
+                            stamp: None,
+                            peer: second,
+                        }))
+                        .expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+
+            let result = race.await.unwrap().expect("race resolves");
+            assert_eq!(result.peer, second, "the staggered second wins");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "resolved within the stagger, not a per-attempt deadline"
+            );
+            // The losing head leg was dropped when the race resolved, releasing
+            // its permit: the head's slot is free again.
+            assert!(
+                limiter.has_free_slot(&head),
+                "the cancelled head leg released its in-flight slot on drop"
+            );
+            assert!(
+                limiter.try_acquire(&head).is_some(),
+                "the freed head slot is reservable again"
+            );
         }
     }
 }
