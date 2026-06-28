@@ -13,10 +13,9 @@
 //!
 //! Settlement providers (`PseudosettleProvider`, `SwapProvider`) are in sibling crates.
 //!
-//! [`Accounting`] also implements the `PeerAffordability` query surface and
-//! can report accounting violations through an optional `PeerReporter`
-//! (both from `vertex-swarm-api`), so peer selection and peer scoring can
-//! consume accounting state without depending on this crate's internals.
+//! [`Accounting`] also implements the `PeerAffordability` query surface (from
+//! `vertex-swarm-api`), so peer selection can consume accounting state without
+//! depending on this crate's internals.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
