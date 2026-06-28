@@ -19,11 +19,16 @@
 //!
 //! # Arithmetic
 //!
-//! `Add`, `Sub`, `Neg`, and `Sum` are derived. The two multiplications that
-//! historically overflowed silently (the proximity price formula and the
-//! pseudosettle `rate * elapsed` allowance) go through [`Au::checked_scale`],
-//! which returns `None` on overflow so the caller picks an explicit saturation
-//! policy. There is deliberately no `Mul` by a raw integer.
+//! `Add`, `Sub`, `Neg`, `Sum`, and the assigning variants **saturate** at the
+//! [`i64`] bounds rather than wrapping. A wrapping `+`/`-` would flip a balance's
+//! sign and invert owed/owes (M8), so the operators carry the same saturation
+//! the atomic balance counters use; AU magnitudes sit far below the bounds, so
+//! saturation never triggers on a real value and only fences off adversarial
+//! overflow. The two multiplications that historically overflowed silently (the
+//! proximity price formula and the pseudosettle `rate * elapsed` allowance) go
+//! through [`Au::checked_scale`], which returns `None` on overflow so the caller
+//! picks an explicit saturation policy. Percentage scaling goes through
+//! [`Au::scale_percent`]. There is deliberately no `Mul` by a raw integer.
 //!
 //! # Wire format
 //!
@@ -32,31 +37,17 @@
 //! representation only; it never changes the bytes on the wire.
 
 use core::fmt;
+use core::iter::Sum;
+use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use alloy_primitives::U256;
-use derive_more::{Add, AddAssign, Neg, Sub, SubAssign, Sum};
 
 /// An amount in accounting units (AU).
 ///
 /// Signed: positive means the peer owes us, negative means we owe the peer.
 /// See the [module documentation](self) for sign semantics and the boundary
 /// conversions.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Add,
-    Sub,
-    Neg,
-    Sum,
-    AddAssign,
-    SubAssign,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Au(i64);
@@ -169,6 +160,38 @@ impl Au {
         Self(self.0.saturating_sub(rhs.0))
     }
 
+    /// Saturating negation.
+    ///
+    /// `-i64::MIN` has no positive `i64` representation; plain negation would
+    /// wrap it back to a negative value and invert owed/owes (M8), so it
+    /// saturates to [`i64::MAX`].
+    #[inline]
+    #[must_use]
+    pub const fn saturating_neg(self) -> Au {
+        Self(self.0.saturating_neg())
+    }
+
+    /// Scale by a `percent` (e.g. `125` is +25%), saturating at the bounds.
+    ///
+    /// The single audited AU percentage operation, replacing the
+    /// `checked_scale(..).as_amount() / 100` pattern at the threshold and
+    /// early-payment scaling sites. Scaling is only meaningful for non-negative
+    /// amounts, so a negative receiver saturates to zero through
+    /// [`checked_scale`](Self::checked_scale).
+    #[inline]
+    #[must_use]
+    pub const fn scale_percent(self, percent: u64) -> Au {
+        if self.0 < 0 {
+            return Au::ZERO;
+        }
+        match self.checked_scale(percent) {
+            Some(Au(v)) => Au(v / 100),
+            // A non-negative receiver only reaches `None` on overflow, which
+            // saturates rather than wrapping into a tiny value.
+            None => Au(i64::MAX / 100),
+        }
+    }
+
     /// The smaller of two amounts.
     #[inline]
     #[must_use]
@@ -208,6 +231,51 @@ impl Au {
             Some(v) => Some(Self(v)),
             None => None,
         }
+    }
+}
+
+impl Add for Au {
+    type Output = Au;
+    #[inline]
+    fn add(self, rhs: Au) -> Au {
+        self.saturating_add(rhs)
+    }
+}
+
+impl Sub for Au {
+    type Output = Au;
+    #[inline]
+    fn sub(self, rhs: Au) -> Au {
+        self.saturating_sub(rhs)
+    }
+}
+
+impl Neg for Au {
+    type Output = Au;
+    #[inline]
+    fn neg(self) -> Au {
+        self.saturating_neg()
+    }
+}
+
+impl AddAssign for Au {
+    #[inline]
+    fn add_assign(&mut self, rhs: Au) {
+        *self = self.saturating_add(rhs);
+    }
+}
+
+impl SubAssign for Au {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Au) {
+        *self = self.saturating_sub(rhs);
+    }
+}
+
+impl Sum for Au {
+    #[inline]
+    fn sum<I: Iterator<Item = Au>>(iter: I) -> Au {
+        iter.fold(Au::ZERO, Au::saturating_add)
     }
 }
 
@@ -319,6 +387,47 @@ mod tests {
         assert_eq!(Au::new(10) + Au::new(5), Au::new(15));
         assert_eq!(Au::new(10) - Au::new(5), Au::new(5));
         assert_eq!(-Au::new(10), Au::new(-10));
+    }
+
+    #[test]
+    fn operators_saturate_instead_of_wrapping() {
+        // `+`/`-`/unary `-` saturate at the bounds rather than wrapping, so an
+        // adversarial overflow cannot flip a balance's sign (M8).
+        assert_eq!(Au::new(i64::MAX) + Au::new(1), Au::new(i64::MAX));
+        assert_eq!(Au::new(i64::MIN) - Au::new(1), Au::new(i64::MIN));
+        assert_eq!(-Au::new(i64::MIN), Au::new(i64::MAX));
+
+        let mut a = Au::new(i64::MAX);
+        a += Au::new(10);
+        assert_eq!(a, Au::new(i64::MAX));
+        let mut b = Au::new(i64::MIN);
+        b -= Au::new(10);
+        assert_eq!(b, Au::new(i64::MIN));
+
+        // Sum saturates rather than wrapping.
+        let total: Au = [Au::new(i64::MAX), Au::new(i64::MAX)].into_iter().sum();
+        assert_eq!(total, Au::new(i64::MAX));
+    }
+
+    #[test]
+    fn scale_percent_matches_threshold_markup() {
+        // 125% of 1000 is 1250, the disconnect-threshold markup shape.
+        assert_eq!(
+            Au::from_amount(1000).scale_percent(125),
+            Au::from_amount(1250)
+        );
+        // 50% of 13_500_000 is the early-payment-trigger shape.
+        assert_eq!(
+            Au::from_amount(13_500_000).scale_percent(50),
+            Au::from_amount(6_750_000)
+        );
+        // Overflow saturates rather than wrapping into a tiny threshold.
+        assert_eq!(
+            Au::from_amount(u64::MAX).scale_percent(125),
+            Au::new(i64::MAX / 100)
+        );
+        // Negative receiver saturates to zero (scaling is non-negative only).
+        assert_eq!(Au::new(-1).scale_percent(125), Au::ZERO);
     }
 
     #[test]
