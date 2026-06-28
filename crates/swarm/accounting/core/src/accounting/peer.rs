@@ -7,8 +7,8 @@ use vertex_swarm_api::{Au, SwarmPeerState};
 
 /// Add `delta` to an atomic balance, saturating at the [`i64`] bounds.
 ///
-/// Plain `fetch_add` wraps on overflow, which could flip a balance's sign and
-/// invert owed/owes (M8). A compare-exchange loop applies saturating addition.
+/// Plain `fetch_add` wraps on overflow and could flip a balance's sign,
+/// inverting owed/owes; a compare-exchange loop saturates instead.
 fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) {
     let mut current = atomic.load(Ordering::Relaxed);
     loop {
@@ -22,11 +22,9 @@ fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) {
 
 /// Subtract `delta` from an unsigned atomic reserve, saturating at zero.
 ///
-/// Plain `fetch_sub` wraps to near `u64::MAX` on underflow, which the reserve
-/// readers then clamp to `i64::MAX` and subtract from every allowance, jamming
-/// the peer into permanent denial. The reserve/release discipline keeps these
-/// balanced, but a saturating compare-exchange loop fences off a mismatched
-/// release rather than wrapping.
+/// Plain `fetch_sub` wraps to near `u64::MAX` on underflow, which readers clamp
+/// to `i64::MAX` and subtract from every allowance, jamming the peer into
+/// permanent denial; a compare-exchange loop floors a mismatched release at zero.
 fn saturating_fetch_sub(atomic: &AtomicU64, delta: u64) {
     let mut current = atomic.load(Ordering::Relaxed);
     loop {
@@ -87,10 +85,8 @@ impl PeerState {
         Au::new(self.balance.load(Ordering::Relaxed))
     }
 
-    /// Add to the balance atomically, saturating at the [`i64`] bounds.
-    ///
-    /// Saturating (M8): an adversarial price or settlement sequence must not
-    /// wrap the balance and flip owed/owes.
+    /// Add to the balance atomically, saturating at the [`i64`] bounds so an
+    /// adversarial price or settlement sequence cannot wrap and flip owed/owes.
     pub fn add_balance(&self, amount: Au) {
         saturating_fetch_add(&self.balance, amount.get());
     }

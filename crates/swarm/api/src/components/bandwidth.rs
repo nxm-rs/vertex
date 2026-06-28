@@ -91,13 +91,8 @@ pub trait SwarmAccountingConfig: Send + Sync {
     /// Scaling factor for client-only nodes (divides thresholds).
     fn client_only_factor(&self) -> u64;
 
-    /// Calculate the disconnect threshold in AU.
-    ///
-    /// The tolerance markup is applied through the audited AU percentage scaling
-    /// so an overlarge payment threshold cannot silently overflow into a tiny
-    /// disconnect threshold; on overflow the threshold saturates. The percent is
-    /// formed with a saturating add so a pathological tolerance cannot overflow
-    /// the markup itself.
+    /// The disconnect threshold in AU: the payment threshold plus the tolerance
+    /// markup, saturating so an overlarge threshold or tolerance cannot wrap.
     fn disconnect_threshold(&self) -> Au {
         let percent = 100u64.saturating_add(self.payment_tolerance_percent());
         self.payment_threshold().scale_percent(percent)

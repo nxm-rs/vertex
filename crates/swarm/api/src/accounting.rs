@@ -19,16 +19,10 @@
 //!
 //! # Arithmetic
 //!
-//! `Add`, `Sub`, `Neg`, `Sum`, and the assigning variants **saturate** at the
-//! [`i64`] bounds rather than wrapping. A wrapping `+`/`-` would flip a balance's
-//! sign and invert owed/owes (M8), so the operators carry the same saturation
-//! the atomic balance counters use; AU magnitudes sit far below the bounds, so
-//! saturation never triggers on a real value and only fences off adversarial
-//! overflow. The two multiplications that historically overflowed silently (the
-//! proximity price formula and the pseudosettle `rate * elapsed` allowance) go
-//! through [`Au::checked_scale`], which returns `None` on overflow so the caller
-//! picks an explicit saturation policy. Percentage scaling goes through
-//! [`Au::scale_percent`]. There is deliberately no `Mul` by a raw integer.
+//! `Add`, `Sub`, `Neg`, `Sum`, and the assigning variants saturate at the
+//! [`i64`] bounds: a wrapping `+`/`-` would flip a balance's sign and invert
+//! owed/owes. Multiplication goes through [`Au::checked_scale`] and percentage
+//! scaling through [`Au::scale_percent`]; there is deliberately no `Mul`.
 //!
 //! # Wire format
 //!
@@ -118,8 +112,7 @@ impl Au {
 
     /// The absolute value as a non-negative amount.
     ///
-    /// Saturates at [`i64::MAX`]: `|i64::MIN|` does not fit a positive `i64`, so
-    /// the raw cast would wrap it back to a negative value (M8).
+    /// Saturates at [`i64::MAX`]: `|i64::MIN|` does not fit a positive `i64`.
     #[inline]
     #[must_use]
     pub const fn unsigned_abs(self) -> Au {
@@ -160,11 +153,7 @@ impl Au {
         Self(self.0.saturating_sub(rhs.0))
     }
 
-    /// Saturating negation.
-    ///
-    /// `-i64::MIN` has no positive `i64` representation; plain negation would
-    /// wrap it back to a negative value and invert owed/owes (M8), so it
-    /// saturates to [`i64::MAX`].
+    /// Saturating negation: `-i64::MIN` saturates to [`i64::MAX`].
     #[inline]
     #[must_use]
     pub const fn saturating_neg(self) -> Au {
@@ -173,11 +162,8 @@ impl Au {
 
     /// Scale by a `percent` (e.g. `125` is +25%), saturating at the bounds.
     ///
-    /// The single audited AU percentage operation, replacing the
-    /// `checked_scale(..).as_amount() / 100` pattern at the threshold and
-    /// early-payment scaling sites. Scaling is only meaningful for non-negative
-    /// amounts, so a negative receiver saturates to zero through
-    /// [`checked_scale`](Self::checked_scale).
+    /// The one AU percentage operation, for the threshold and early-payment
+    /// markups. A negative receiver returns zero.
     #[inline]
     #[must_use]
     pub const fn scale_percent(self, percent: u64) -> Au {
@@ -233,15 +219,12 @@ impl Au {
         }
     }
 
-    /// Convert a pseudosettle wire amount (`U256`) into AU, saturating when out
-    /// of range.
+    /// Convert an inbound pseudosettle wire amount (`U256`) into AU.
     ///
-    /// In-spec pseudosettle amounts fit a `u64` of AU; a larger wire value is
-    /// out of spec and saturates to the maximum AU so the deciding service
-    /// still detects an over-acceptance in AU space rather than reading a
-    /// wrapped or truncated small amount. This is the single inbound wire
-    /// crossing, the saturating counterpart to the fallible [`TryFrom<U256>`]
-    /// used where rejecting the value is not an option.
+    /// In-spec amounts fit a `u64` of AU; an out-of-spec larger value saturates
+    /// to the maximum AU so the deciding service still sees an over-acceptance
+    /// rather than a truncated small amount. The saturating counterpart to the
+    /// fallible [`TryFrom<U256>`], for the wire where rejecting is not an option.
     #[inline]
     #[must_use]
     pub fn saturating_from_u256(value: U256) -> Au {
@@ -377,7 +360,7 @@ mod tests {
     #[test]
     fn unsigned_abs_saturates_at_i64_min() {
         // |i64::MIN| has no positive i64 representation; it must saturate to
-        // i64::MAX rather than wrap back to a negative value (M8).
+        // i64::MAX rather than wrap back to a negative value.
         assert_eq!(Au::new(i64::MIN).unsigned_abs(), Au::new(i64::MAX));
         assert_eq!(Au::new(-5).unsigned_abs(), Au::new(5));
         assert_eq!(Au::new(5).unsigned_abs(), Au::new(5));
@@ -394,7 +377,7 @@ mod tests {
     #[test]
     fn operators_saturate_instead_of_wrapping() {
         // `+`/`-`/unary `-` saturate at the bounds rather than wrapping, so an
-        // adversarial overflow cannot flip a balance's sign (M8).
+        // adversarial overflow cannot flip a balance's sign.
         assert_eq!(Au::new(i64::MAX) + Au::new(1), Au::new(i64::MAX));
         assert_eq!(Au::new(i64::MIN) - Au::new(1), Au::new(i64::MIN));
         assert_eq!(-Au::new(i64::MIN), Au::new(i64::MAX));

@@ -151,13 +151,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 
     /// Prepare a provide action (we are providing service, balance increases).
     ///
-    /// Hard serve-refuse (H3): refuse to serve once the peer's projected debt to
-    /// us (committed balance plus outstanding provides plus this price) would
-    /// cross the per-peer payment threshold, the point at which the peer is
-    /// expected to settle. Without this gate a peer could free-ride up to the
-    /// disconnect threshold per episode; the gate restores serve headroom only
-    /// once the peer settles. The receive side keeps its own
-    /// disconnect-threshold guard in [`Accounting::prepare_receive`].
+    /// Refuse to serve once the peer's projected debt to us (committed balance
+    /// plus outstanding provides plus this price) would cross the per-peer
+    /// payment threshold, the point at which the peer is expected to settle.
+    /// Without this gate a peer could free-ride up to the disconnect threshold
+    /// per episode; the gate restores serve headroom only once the peer settles.
+    /// The receive side keeps its own disconnect-threshold guard in
+    /// [`Accounting::prepare_receive`].
     pub fn prepare_provide(
         &self,
         peer: OverlayAddress,
@@ -393,8 +393,7 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
     fn record(&self, amount: Au, direction: Direction) {
         match direction {
             Direction::Upload => self.state.add_balance(amount),
-            // Saturating negation: `-amount` would wrap on `i64::MIN` (M8).
-            Direction::Download => self.state.add_balance(Au::ZERO.saturating_sub(amount)),
+            Direction::Download => self.state.add_balance(-amount),
         }
     }
 
@@ -781,8 +780,8 @@ mod tests {
 
         // The peer now owes us exactly the payment threshold. Any further
         // service is refused: it would push the projected debt over the
-        // threshold (H3 free-ride stop), even though the disconnect threshold
-        // (1250) has not been reached.
+        // threshold, even though the disconnect threshold (1250) has not been
+        // reached.
         assert!(matches!(
             accounting.prepare_provide(peer, au(1)),
             Err(AccountingError::PaymentThreshold { .. })
