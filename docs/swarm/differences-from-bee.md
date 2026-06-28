@@ -80,6 +80,12 @@ nectar-postage enables k256's `precomputed-tables` feature for faster ECDSA oper
 
 Bee's postage implementation is tightly coupled to its internal storage. nectar-postage provides composable traits that can be implemented for different storage backends.
 
+## Peer Scoring and Disconnect Attribution
+
+Bee does not penalize a peer for disconnecting: its kademlia `Disconnected` handler removes the peer and sets a retry backoff, and blocklisting is driven only by accounting debt, never by connection timing. Vertex keeps a per-peer score and adds an early-disconnect signal, a deliberate divergence on the scoring side (the wire is unaffected).
+
+The signal is deliberately narrow. Every locally-initiated close records its reason at the close site (`vertex_swarm_api::DisconnectReason`), so a close the node chose (bin trim, ban, low-score disconnect, bootnode rotation, shutdown) or an idle keep-alive teardown is never attributed to the peer. The penalty is reserved for a fast remote or transport close of a peer that did no useful work; a peer that served or accepted a chunk during the connection is exempt regardless of how it closed. This keeps honest serving peers, including mobile and browser clients whose transports reset under load, out of the penalty path while still scoring down a peer that handshakes and vanishes.
+
 ## Summary of Key Differences
 
 | Area | Vertex | Bee |
@@ -89,6 +95,7 @@ Bee's postage implementation is tightly coupled to its internal storage. nectar-
 | Postage Verification | Cached pubkeys, parallel, structural separation | Per-stamp recovery |
 | Modularity | Composable traits, pluggable backends | Monolithic implementation |
 | no_std Support | Core types work without std | Requires std |
+| Disconnect Scoring | Activity-gated early-disconnect penalty, intent-attributed closes | No disconnect penalty |
 
 ## See Also
 

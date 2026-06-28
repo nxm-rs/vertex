@@ -137,7 +137,7 @@ Victims are chosen per bin in order:
 1. Handshaking peers first; they are not yet established.
 2. Active peers ranked lowest first by a caller-supplied rank, with ties broken by lowest peer score. The topology behaviour ranks by `(reachability, is_local)`: least-reachable peers go first, and when local-peer trust is enabled a same-subnet peer outranks a remote peer of equal reachability without ever overriding a liveness demotion.
 
-Explicitly configured (trusted) peers are never evicted. Evicted overlays are marked so their disconnect is attributed to bin trimming rather than peer misbehaviour, which exempts them from the early-disconnect score penalty.
+Explicitly configured (trusted) peers are never evicted. Every locally-initiated close (bin trimming, ban, low-score disconnect, bootnode rotation, shutdown) records its reason at the close site so the close handler attributes it to that reason rather than re-deriving one from the transport, which exempts it from the early-disconnect score penalty. The penalty is reserved for a fast remote or transport close of a peer that did no useful work; a peer that served a chunk is exempt however the connection ends.
 
 ## Gossip-driven supply
 

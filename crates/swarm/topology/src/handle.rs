@@ -777,7 +777,8 @@ mod tests {
         for n in [0x40, 0x41] {
             let overlay = test_overlay(n);
             SwarmRouting::on_peer_disconnected(&*h.routing, &overlay);
-            h.peer_manager.on_peer_disconnected(&overlay, "test");
+            h.peer_manager
+                .on_peer_disconnected(&overlay, crate::DisconnectReason::RemoteClose);
         }
         assert!(
             h.handle.readiness().neighborhood_stable_for.is_none(),
@@ -909,10 +910,11 @@ mod tests {
 
         let overlay = test_overlay(2);
         SwarmRouting::on_peer_disconnected(&*h.routing, &overlay);
-        h.peer_manager.on_peer_disconnected(&overlay, "test");
+        h.peer_manager
+            .on_peer_disconnected(&overlay, crate::DisconnectReason::RemoteClose);
         let _ = h.event_tx.send(TopologyEvent::PeerDisconnected {
             overlay,
-            reason: crate::DisconnectReason::ConnectionError,
+            reason: crate::DisconnectReason::RemoteClose,
             connection_duration: None,
             node_type: SwarmNodeType::Storer,
         });

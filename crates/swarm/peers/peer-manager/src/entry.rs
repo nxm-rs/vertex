@@ -242,6 +242,11 @@ pub(crate) struct PeerEntry {
     /// Unix seconds since the current connection completed its handshake;
     /// 0 while disconnected. Process-local, never persisted.
     connected_since: AtomicU64,
+    /// Unix seconds of the last useful protocol exchange (chunk served or
+    /// pushed); 0 if never. Compared against [`Self::connected_since`] to tell
+    /// whether the current connection did real work, which exempts it from the
+    /// early-disconnect penalty. Process-local, never persisted.
+    last_productive: AtomicU64,
     /// Direction of the current connection ([`DIRECTION_NONE`] while
     /// disconnected). Process-local, never persisted.
     direction: AtomicU8,
@@ -276,6 +281,7 @@ impl PeerEntry {
             last_decay: AtomicU64::new(now),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             connected_since: AtomicU64::new(0),
+            last_productive: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
             verified: AtomicBool::new(false),
@@ -301,6 +307,7 @@ impl PeerEntry {
             last_decay: AtomicU64::new(unix_timestamp_secs()),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             connected_since: AtomicU64::new(0),
+            last_productive: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
             verified: AtomicBool::new(false),
@@ -441,6 +448,10 @@ impl PeerEntry {
     /// Scoring is not touched here; the manager reports the connection
     /// success through its report path.
     pub(crate) fn set_connected(&self, direction: ConnectionDirection, trust: TrustLevel) {
+        // Start a fresh productivity window: prior connections' work must not
+        // exempt this one. Reset before stamping connected-since so the marker
+        // can never read as productive on a connection that has done nothing.
+        self.last_productive.store(0, Ordering::Release);
         self.connected_since
             .store(unix_timestamp_secs(), Ordering::Release);
         self.direction
@@ -457,6 +468,21 @@ impl PeerEntry {
     pub(crate) fn clear_connected(&self) {
         self.connected_since.store(0, Ordering::Release);
         self.direction.store(DIRECTION_NONE, Ordering::Release);
+    }
+
+    /// Mark that the current connection just did useful protocol work.
+    pub(crate) fn record_useful_activity(&self) {
+        self.last_productive
+            .store(unix_timestamp_secs(), Ordering::Release);
+    }
+
+    /// Whether the current connection exchanged useful traffic since its
+    /// handshake completed. False while disconnected.
+    pub(crate) fn was_productive_since_connect(&self) -> bool {
+        match self.connected_since.load(Ordering::Acquire) {
+            0 => false,
+            since => self.last_productive.load(Ordering::Acquire) >= since,
+        }
     }
 
     pub(crate) fn is_connected(&self) -> bool {
@@ -755,6 +781,37 @@ mod tests {
         // A reconnect handshake may still re-confirm a different type.
         entry.confirm_node_type(SwarmNodeType::Client);
         assert_eq!(entry.node_type(), SwarmNodeType::Client);
+    }
+
+    #[test]
+    fn productive_only_counts_within_the_current_connection() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        // Disconnected: no connection to be productive on.
+        assert!(!entry.was_productive_since_connect());
+        entry.record_useful_activity();
+        assert!(
+            !entry.was_productive_since_connect(),
+            "activity while disconnected does not count"
+        );
+
+        // Connected then served a chunk: productive.
+        entry.set_connected(ConnectionDirection::Outbound, TrustLevel::Normal);
+        assert!(
+            !entry.was_productive_since_connect(),
+            "a fresh connection has done no work yet"
+        );
+        entry.record_useful_activity();
+        assert!(entry.was_productive_since_connect());
+
+        // Reconnect resets the productivity window: the prior connection's
+        // work must not exempt the new one.
+        entry.clear_connected();
+        assert!(!entry.was_productive_since_connect());
+        entry.set_connected(ConnectionDirection::Outbound, TrustLevel::Normal);
+        assert!(
+            !entry.was_productive_since_connect(),
+            "a reconnect starts a fresh productivity window"
+        );
     }
 
     #[test]

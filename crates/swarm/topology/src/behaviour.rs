@@ -22,7 +22,9 @@ use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_net_ratelimiter::{Quota, RateLimitedErr, RateLimiter};
-use vertex_swarm_api::{BanCause, ConnectionProfile, PeerLifecycleEvent, SwarmIdentity};
+use vertex_swarm_api::{
+    BanCause, ConnectionProfile, DisconnectReason, PeerLifecycleEvent, SwarmIdentity,
+};
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
@@ -254,8 +256,11 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Threshold for detecting post-handshake early disconnects.
     pub(crate) early_disconnect_threshold: Duration,
 
-    /// Overlays pending eviction from bin trimming (consumed by handle_connection_closed).
-    pub(crate) pending_evictions: HashSet<OverlayAddress>,
+    /// Close intent recorded at each close site, consumed by
+    /// `handle_connection_closed` so a deliberate close is attributed to its
+    /// real reason rather than re-derived from the libp2p cause. Keyed by
+    /// `PeerId` because every local close is `CloseConnection::All`.
+    pub(crate) pending_closes: HashMap<PeerId, DisconnectReason>,
 
     /// Connection IDs of outbound dials whose remote address was public-scope.
     /// On handshake completion these promote the peer to
@@ -341,6 +346,22 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         Arc::clone(&self.metrics)
     }
 
+    /// Close every connection to a peer, recording why so the close handler
+    /// attributes it correctly instead of re-deriving it from the libp2p cause.
+    ///
+    /// The single choke point for locally-initiated closes: routing every
+    /// close through here keeps the intent map and the close attribution in
+    /// step. The one exception is the duplicate-connection eviction, which
+    /// closes a specific stale connection (`CloseConnection::One`) that the
+    /// close handler short-circuits before attribution.
+    pub(crate) fn close_peer(&mut self, peer_id: PeerId, reason: DisconnectReason) {
+        self.pending_closes.insert(peer_id, reason);
+        self.pending_actions.push_back(ToSwarm::CloseConnection {
+            peer_id,
+            connection: libp2p::swarm::CloseConnection::All,
+        });
+    }
+
     /// Handle a topology command (dial, close connection, etc.).
     pub fn on_command(&mut self, command: TopologyCommand) {
         match command {
@@ -356,20 +377,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                     return;
                 };
                 debug!(%overlay, %peer_id, "Close connection command");
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id,
-                    connection: libp2p::swarm::CloseConnection::All,
-                });
+                self.close_peer(peer_id, DisconnectReason::Requested);
             }
             TopologyCommand::BanPeer { overlay, reason } => {
                 self.peer_manager.ban(&overlay, BanCause::Requested, reason);
                 SwarmRouting::remove_peer(&*self.routing, &overlay);
                 if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
                     debug!(%overlay, %peer_id, "Disconnecting banned peer via command");
-                    self.pending_actions.push_back(ToSwarm::CloseConnection {
-                        peer_id,
-                        connection: libp2p::swarm::CloseConnection::All,
-                    });
+                    self.close_peer(peer_id, DisconnectReason::Banned);
                 }
                 debug!(%overlay, "Banned peer via command");
             }
@@ -552,11 +567,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 "Evicting peer: bin overpopulated after depth change"
             );
 
-            self.pending_evictions.insert(candidate.overlay);
-            self.pending_actions.push_back(ToSwarm::CloseConnection {
-                peer_id,
-                connection: libp2p::swarm::CloseConnection::All,
-            });
+            self.close_peer(peer_id, DisconnectReason::BinTrimmed);
             trimmed += 1;
         }
 
@@ -582,20 +593,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             PeerLifecycleEvent::DisconnectRequested { overlay, reason } => {
                 if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
                     debug!(%overlay, %peer_id, %reason, "Disconnecting peer on request");
-                    self.pending_actions.push_back(ToSwarm::CloseConnection {
-                        peer_id,
-                        connection: libp2p::swarm::CloseConnection::All,
-                    });
+                    self.close_peer(peer_id, reason);
                 }
             }
             PeerLifecycleEvent::Banned { overlay, .. } => {
                 SwarmRouting::remove_peer(&*self.routing, &overlay);
                 if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
                     debug!(%overlay, %peer_id, "Disconnecting banned peer");
-                    self.pending_actions.push_back(ToSwarm::CloseConnection {
-                        peer_id,
-                        connection: libp2p::swarm::CloseConnection::All,
-                    });
+                    self.close_peer(peer_id, DisconnectReason::Banned);
                 }
             }
             PeerLifecycleEvent::Connected { .. }
@@ -619,10 +624,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             SwarmRouting::remove_peer(&*self.routing, &overlay);
             if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
                 debug!(%overlay, %peer_id, "Disconnecting banned peer found during reconciliation");
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id,
-                    connection: libp2p::swarm::CloseConnection::All,
-                });
+                self.close_peer(peer_id, DisconnectReason::Banned);
             }
         }
     }
@@ -1259,7 +1261,9 @@ mod tests {
             // behaviour drains its receiver.
             let other = test_overlay(2);
             for _ in 0..(2 * LIFECYCLE_CHANNEL_CAPACITY) {
-                behaviour.peer_manager.on_peer_disconnected(&other, "test");
+                behaviour
+                    .peer_manager
+                    .on_peer_disconnected(&other, DisconnectReason::RemoteClose);
             }
 
             match next_action(&mut behaviour).await {
@@ -1279,7 +1283,7 @@ mod tests {
 
             behaviour.on_lifecycle_event(PeerLifecycleEvent::DisconnectRequested {
                 overlay,
-                reason: vertex_swarm_api::DisconnectCause::LowScore,
+                reason: DisconnectReason::LowScore,
             });
 
             match next_action(&mut behaviour).await {
@@ -1288,6 +1292,126 @@ mod tests {
                 } => assert_eq!(closed, peer_id),
                 _ => panic!("expected CloseConnection for the disconnect request"),
             }
+        }
+    }
+
+    mod early_disconnect {
+        use std::io;
+
+        use libp2p::core::ConnectedPoint;
+        use libp2p::swarm::ConnectionId;
+        use libp2p::swarm::behaviour::ConnectionClosed;
+        use vertex_net_peer_registry::ConnectionDirection;
+        use vertex_swarm_api::{ReportSource, SwarmScoringEvent};
+        use vertex_swarm_test_utils::{test_overlay, test_swarm_peer};
+
+        use super::*;
+
+        fn conn() -> ConnectionId {
+            ConnectionId::new_unchecked(1)
+        }
+
+        /// Register an active, peer-manager-known connection for overlay `n`.
+        fn connect(behaviour: &TopologyBehaviour<Identity>, n: u8) -> (OverlayAddress, PeerId) {
+            let overlay = test_overlay(n);
+            let peer_id = PeerId::random();
+            behaviour
+                .connection_registry
+                .connected_inbound(peer_id, conn());
+            behaviour
+                .connection_registry
+                .activate(peer_id, conn(), overlay);
+            behaviour.peer_manager.on_peer_connected(
+                test_swarm_peer(n),
+                SwarmNodeType::Client,
+                ConnectionDirection::Inbound,
+                TrustLevel::Normal,
+                None,
+            );
+            (overlay, peer_id)
+        }
+
+        fn close(
+            behaviour: &mut TopologyBehaviour<Identity>,
+            peer_id: PeerId,
+            cause: Option<&libp2p::swarm::ConnectionError>,
+        ) {
+            let endpoint = ConnectedPoint::Listener {
+                local_addr: "/ip4/127.0.0.1/tcp/1".parse().expect("valid"),
+                send_back_addr: "/ip4/127.0.0.2/tcp/2".parse().expect("valid"),
+            };
+            behaviour.handle_connection_closed(ConnectionClosed {
+                peer_id,
+                connection_id: conn(),
+                endpoint: &endpoint,
+                cause,
+                remaining_established: 0,
+            });
+        }
+
+        fn reset() -> libp2p::swarm::ConnectionError {
+            libp2p::swarm::ConnectionError::IO(io::Error::from(io::ErrorKind::ConnectionReset))
+        }
+
+        /// A fast remote close of a peer that did nothing is the one case the
+        /// early-disconnect penalty exists for.
+        #[test]
+        fn remote_close_of_idle_peer_is_penalized() {
+            let mut behaviour = test_behaviour();
+            let (overlay, peer_id) = connect(&behaviour, 1);
+            let before = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            close(&mut behaviour, peer_id, Some(&reset()));
+            let after = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            assert!(after < before, "idle remote close must be penalized");
+        }
+
+        /// A keep-alive teardown is our own idle drop, not a peer fault.
+        #[test]
+        fn idle_timeout_is_not_penalized() {
+            let mut behaviour = test_behaviour();
+            let (overlay, peer_id) = connect(&behaviour, 1);
+            let before = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            let cause = libp2p::swarm::ConnectionError::KeepAliveTimeout;
+            close(&mut behaviour, peer_id, Some(&cause));
+            let after = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            assert_eq!(after, before, "idle teardown must not penalize the peer");
+        }
+
+        /// A close we initiated (recorded as intent) is blameless even inside
+        /// the early-disconnect window, and the intent is consumed.
+        #[test]
+        fn local_intent_close_is_not_penalized() {
+            let mut behaviour = test_behaviour();
+            let (overlay, peer_id) = connect(&behaviour, 1);
+            let before = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            behaviour
+                .pending_closes
+                .insert(peer_id, DisconnectReason::BinTrimmed);
+            close(&mut behaviour, peer_id, None);
+            let after = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            assert_eq!(after, before, "our own close must not penalize the peer");
+            assert!(
+                behaviour.pending_closes.is_empty(),
+                "intent must be consumed at the close"
+            );
+        }
+
+        /// A peer that served a chunk is blameless however the connection ends.
+        #[test]
+        fn productive_peer_is_not_penalized_on_remote_close() {
+            let mut behaviour = test_behaviour();
+            let (overlay, peer_id) = connect(&behaviour, 1);
+            behaviour.peer_manager.report_peer(
+                &overlay,
+                SwarmScoringEvent::RetrievalSuccess {
+                    latency: Duration::from_millis(5),
+                },
+                ReportSource::Protocol("retrieval"),
+            );
+            let before = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            close(&mut behaviour, peer_id, Some(&reset()));
+            let after = behaviour.peer_manager.get_peer_score(&overlay).unwrap();
+            assert_eq!(after, before, "a serving peer must not be penalized");
         }
     }
 

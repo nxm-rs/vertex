@@ -10,7 +10,7 @@ use std::time::Duration;
 use metrics::counter;
 use tracing::{debug, trace, warn};
 use vertex_swarm_api::{
-    BanCause, DisconnectCause, PeerLifecycleEvent, PeerReporter, ReportSource, SwarmIdentity,
+    BanCause, DisconnectReason, PeerLifecycleEvent, PeerReporter, ReportSource, SwarmIdentity,
     SwarmScoringEvent,
 };
 use vertex_swarm_peer_score::ScoreOutcome;
@@ -62,6 +62,16 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let source_label: &'static str = source.into();
         let event_label: &'static str = event.into();
 
+        // A chunk served or pushed marks this connection as having done real
+        // work, which exempts it from the early-disconnect penalty if it later
+        // closes quickly.
+        if matches!(
+            event,
+            SwarmScoringEvent::RetrievalSuccess { .. } | SwarmScoringEvent::PushSuccess { .. }
+        ) {
+            entry.record_useful_activity();
+        }
+
         let change = entry.record_event(event);
         self.score_distribution
             .on_score_changed(change.old_score, change.new_score);
@@ -110,7 +120,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 );
                 self.emit(PeerLifecycleEvent::DisconnectRequested {
                     overlay: *overlay,
-                    reason: DisconnectCause::LowScore,
+                    reason: DisconnectReason::LowScore,
                 });
             }
             ScoreOutcome::Ban => {

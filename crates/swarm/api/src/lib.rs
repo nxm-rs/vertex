@@ -63,7 +63,7 @@ pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };
 pub use self::reporting::{
-    BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
+    BanCause, DisconnectReason, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
     SwarmScoringEvent,
 };
 pub use self::spec::{
