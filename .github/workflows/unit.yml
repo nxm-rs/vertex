@@ -92,7 +92,8 @@ jobs:
         run: cargo build -p vertex
       - name: Clippy default client cone
         run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets -- -D warnings
-      # The chain-free swap client: cheque exchange without the storer cone.
+      # The swap client cone: cheque settlement (and the chain provider it pulls)
+      # without the storer cone.
       - name: Build swap client cone
         run: cargo build -p vertex --features swap
       - name: Build storer cone
@@ -134,6 +135,23 @@ jobs:
             exit 1
           fi
           echo "cone guard: vertex-ffi is free of the storer cone"
+      # The default binary is swap-free and chain-free: turning `swap` off strips
+      # the cheque settlement cone and the chain stack, which is what keeps the
+      # lean client lean. Pseudosettle is always on and needs neither.
+      - name: Swap cone guard (default vertex)
+        run: |
+          tree="$(cargo tree -p vertex -e features)"
+          leaked=""
+          for crate in vertex-swarm-net-swap vertex-swarm-accounting-swap vertex-swarm-accounting-chequebook vertex-chain; do
+            if grep -q "$crate" <<<"$tree"; then
+              leaked="$leaked $crate"
+            fi
+          done
+          if [ -n "$leaked" ]; then
+            echo "cone guard: default vertex pulls the swap or chain cone:$leaked" >&2
+            exit 1
+          fi
+          echo "cone guard: default vertex is free of the swap and chain cone"
 
   test:
     name: test
@@ -207,10 +225,10 @@ jobs:
       # needs a headless browser runner).
       - name: Build wasm client-core test for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
-      # The chain-free SWAP path: cheque exchange (sign, send, validate, credit)
-      # needs no chain, so the accounting stack and `vertex-swarm-node/swap`
-      # build for wasm with default features.
-      - name: Build chain-free swap path for wasm32
+      # The wasm-portable SWAP path: the swap accounting stack and
+      # `vertex-swarm-node/swap` (which pulls the wasm-portable chain provider)
+      # build for the browser target.
+      - name: Build swap path for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
       # The on-chain cashout path: the chequebook client and the swap cashout
       # logic are transport-generic, so with `swap-chequebook` selecting the
