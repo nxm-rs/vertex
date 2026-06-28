@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 vertex-swarm-test-utils = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = ["std"]
