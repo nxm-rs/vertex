@@ -5,21 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vertex Swarm browser client</title>
 
-    <!--
-      Cross-origin isolation shim for GitHub Pages.
-
-      The wasm build is compiled with the `+atomics` target feature, so the
-      module needs SharedArrayBuffer, which the browser only grants on a
-      cross-origin-isolated page (COOP `same-origin` + COEP `require-corp`).
-      `trunk serve` sets those headers locally (see Trunk.toml). On GitHub Pages
-      response headers cannot be set, so this service worker injects them on the
-      client. It must load before the wasm bootstrap, so it is referenced here as
-      a plain unbundled script and copied verbatim into `dist/`.
-    -->
-    <script src="coi-serviceworker.js"></script>
-
     <link data-trunk rel="rust" data-type="main" />
-    <link data-trunk rel="copy-file" href="coi-serviceworker.js" />
     <link data-trunk rel="css" href="styles.css" />
   </head>
   <body>

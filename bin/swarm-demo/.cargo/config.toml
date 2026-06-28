@@ -1,45 +1,5 @@
-# Threaded-wasm build configuration for the browser Swarm client demo.
-#
-# swarm-demo is its own workspace root (empty `[workspace]` table in Cargo.toml),
-# so this file fully replaces the parent workspace `.cargo/config.toml` for the
-# demo build. The parent file only sets target features and the getrandom
-# backend; here we additionally link the module with a shared, importable memory
-# and rebuild std with those target features so the browser threading transform
-# and the futures executor work.
-#
-# Why shared memory at all: the wasm cone is compiled with `+atomics` (because
-# `nectar-primitives` pulls `wasm-bindgen-rayon`). With atomics enabled,
-# `wasm-bindgen-futures` schedules its microtask queue through
-# `Atomics.waitAsync`, which only works on a SharedArrayBuffer-backed memory.
-# Linking with `--shared-memory --import-memory` gives the module exactly that;
-# without it the first async wait panics with "is not a shared typed array".
-# The demo never spawns a rayon worker pool (its connect/topology path does no
-# parallel hashing), so no `initThreadPool` call and no worker-URL wiring is
-# needed: shared memory alone is what makes the executor run.
-
-[unstable]
-# Shared memory requires std itself to be built with the atomics target
-# features, so std must be rebuilt from source rather than used prebuilt.
-build-std = ["panic_abort", "std"]
-
+# swarm-demo is its own workspace root, so this replaces the parent config.
+# Single-threaded wasm on stable: only the getrandom browser backend cfg, same
+# as the parent. See docs/agents/wasm.md.
 [target.wasm32-unknown-unknown]
-rustflags = [
-  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
-  # getrandom 0.3+/0.4 browser backend selection (matches the parent config).
-  "--cfg", "getrandom_backend=\"wasm_js\"",
-  # Shared, importable, growable linear memory for SharedArrayBuffer threads.
-  "-C", "link-arg=--shared-memory",
-  "-C", "link-arg=--import-memory",
-  "-C", "link-arg=--max-memory=1073741824",
-  # Thread-local storage exports the wasm-bindgen threading transform needs.
-  "-C", "link-arg=--export=__wasm_init_tls",
-  "-C", "link-arg=--export=__tls_size",
-  "-C", "link-arg=--export=__tls_align",
-  "-C", "link-arg=--export=__tls_base",
-  # Newer LLD no longer keeps __heap_base exported by default, so wasm-bindgen's
-  # threading transform fails with "failed to find __heap_base for injecting
-  # thread id". Export it (and __data_end) explicitly so the threaded build
-  # keeps working across nightly toolchain bumps.
-  "-C", "link-arg=--export=__heap_base",
-  "-C", "link-arg=--export=__data_end",
-]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

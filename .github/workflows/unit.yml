@@ -42,9 +42,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy (production)
-        run: cargo clippy --lib --all-features -- -D warnings
+        run: cargo clippy --workspace --lib --all-features -- -D warnings
       - name: Clippy (tests)
-        run: cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
+        run: cargo clippy --workspace --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
       # Keep the embedded FFI cone free of the native observability server stack
       # (Prometheus exporter, OTLP appender). Pure `cargo tree`, no compile.
       - name: Cone guard (ffi)
@@ -194,29 +194,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      # Nightly is required for now: the threaded-wasm dependencies of
-      # nectar-primitives need the unstable `atomics` target feature, which
-      # stable rustc does not expose. The target rustflags live in
-      # .cargo/config.toml; see docs/agents/wasm.md.
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # nightly
+      # The wasm cone is single-threaded, so it builds on the pinned stable
+      # toolchain; no nightly, no atomics, no build-std. See docs/agents/wasm.md.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: nightly
           targets: wasm32-unknown-unknown
-          # rust-src is needed to rebuild std from source for the threaded-wasm
-          # demo (its `.cargo/config.toml` sets `build-std`).
-          components: rust-src
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           cache-on-failure: true
-      # `+nightly` is load-bearing: rust-toolchain.toml pins the stable
-      # channel and would otherwise override the installed nightly.
       - name: Build peer stack for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
+        run: cargo build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
       # The full client cone: `vertex-swarm-node` pulls topology and every
       # `/swarm/...` wire protocol, so this is the milestone wasm build for a
       # browser client node.
       - name: Build client cone for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node
+        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node
       # The wasm-bindgen acceptance test for the converged client core: it
       # composes the pseudosettle and SWAP accounting, round-trips the in-memory
       # and IndexedDB-backed caches, and is the wasm-reachability gate. Built
@@ -224,12 +216,12 @@ jobs:
       # and persisted-cache test bodies are compiled. Built here (not run, which
       # needs a headless browser runner).
       - name: Build wasm client-core test for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
+        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
       # The wasm-portable SWAP path: the swap accounting stack and
       # `vertex-swarm-node/swap` (which pulls the wasm-portable chain provider)
       # build for the browser target.
       - name: Build swap path for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
+        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
       # The on-chain cashout path: the chequebook client and the swap cashout
       # logic are transport-generic, so with `swap-chequebook` selecting the
       # browser fetch transport they build for wasm. `vertex-chain` is the shared
@@ -239,30 +231,30 @@ jobs:
       # cashout into the embedded client.
       - name: Build cashout path for wasm32
         run: |
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown -p vertex-chain --features provider
+          cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap-chequebook
       # The wasm-bindgen reachability test for the construction seam: it asserts
       # `ProviderBuilder::new().connect_http(url)` links and constructs on wasm32
       # without a live RPC. Built here (not run, which needs a headless browser).
       - name: Build chain provider wasm test for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider --tests
+        run: cargo build --target wasm32-unknown-unknown -p vertex-chain --features provider --tests
       # The browser cache backend: the IndexedDB `Database` impl and the
       # `ChunkStore` backend that mirrors to it build for wasm under the
       # `indexeddb` feature.
       - name: Build IndexedDB cache backend for wasm32
         run: |
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-storage-indexeddb
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-localstore --features indexeddb
+          cargo build --target wasm32-unknown-unknown -p vertex-storage-indexeddb
+          cargo build --target wasm32-unknown-unknown -p vertex-swarm-localstore --features indexeddb
       # The browser demo is the integration target: a swap-capable client node
       # with the IndexedDB cache. It is its own workspace root (own
-      # `.cargo/config.toml` with the threaded-wasm `build-std` config), so it is
-      # built from inside its directory. Its `vertex-swarm-node` dep carries the
-      # `swap`/`swap-chequebook` and `indexeddb` features.
+      # `.cargo/config.toml`), so it is built from inside its directory. Its
+      # `vertex-swarm-node` dep carries the `swap`/`swap-chequebook` and
+      # `indexeddb` features.
       - name: Build browser demo for wasm32
         working-directory: bin/swarm-demo
-        run: cargo +nightly build --target wasm32-unknown-unknown
+        run: cargo build --target wasm32-unknown-unknown
 
   ci-success:
     name: ci success
