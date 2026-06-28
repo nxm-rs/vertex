@@ -18,14 +18,14 @@
 //! `receive` leg is genuinely complete the moment a verified chunk/receipt is in
 //! hand, so it is applied there. The upstream `provide` leg (the requester or
 //! pusher paying us) is *not* applied there: it is returned to the handler as a
-//! boxed [`AccountingAction`] and committed only after the chunk or receipt is
+//! boxed [`CommitOnWrite`] and committed only after the chunk or receipt is
 //! successfully written back to the requester's substream. If that wire write
 //! fails, the handler drops the action, releasing the reservation, so the
 //! requester is never charged for a delivery it did not receive.
 
 use futures::future::BoxFuture;
 use nectar_primitives::{AnyChunk, ChunkAddress};
-use vertex_swarm_api::{AccountingAction, SwarmTopologyRouting};
+use vertex_swarm_api::{CommitOnWrite, SwarmTopologyRouting};
 use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk};
 
@@ -145,7 +145,7 @@ pub struct ForwardedChunk {
     /// The stamp the downstream peer attached, if any.
     pub stamp: Option<Stamp>,
     /// The un-applied upstream credit; commit after a successful wire write.
-    pub provide: Box<dyn AccountingAction>,
+    pub provide: Box<dyn CommitOnWrite>,
 }
 
 impl std::fmt::Debug for ForwardedChunk {
@@ -164,7 +164,7 @@ pub struct ForwardedReceipt {
     /// checks the depth policy before relaying.
     pub receipt: Receipt,
     /// The un-applied upstream credit; commit after a successful wire write.
-    pub provide: Box<dyn AccountingAction>,
+    pub provide: Box<dyn CommitOnWrite>,
 }
 
 impl std::fmt::Debug for ForwardedReceipt {

@@ -1,4 +1,4 @@
-//! Peer reporting, affordability, and lifecycle event types.
+//! Peer reporting, admission, and lifecycle event types.
 //!
 //! These types are the shared vocabulary between the peer manager and the
 //! subsystems that observe or judge peers:
@@ -7,9 +7,9 @@
 //!   peer manager implements it via its handle; topology, gossip,
 //!   handshake, protocol handlers, bandwidth accounting, and the RPC
 //!   surface all report through it instead of mutating scores directly.
-//! - [`PeerAffordability`] is implemented by bandwidth accounting so that
-//!   protocol handlers can check whether a peer can pay for a request
-//!   before doing the work.
+//! - [`Ledger`] and [`AdmissionControl`] are implemented by bandwidth
+//!   accounting so that selection and pacing can read per-peer balances and
+//!   band a priced request before doing the work.
 //! - [`PeerLifecycleEvent`] is emitted by the peer manager; topology
 //!   subscribes to it and executes the resulting disconnects and dial
 //!   policy changes.
@@ -18,7 +18,7 @@ use core::time::Duration;
 
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use crate::Au;
+use crate::{Admission, Au, Debt, Threshold};
 
 /// Peer scoring events reported by subsystems.
 ///
@@ -187,45 +187,59 @@ pub trait PeerReporter: Send + Sync {
     fn report_peer(&self, overlay: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource);
 }
 
-/// Query whether a peer can pay for service.
+/// The per-peer ledger reads admission and pacing consume.
 ///
-/// Implemented by bandwidth accounting; protocol handlers consult it before
-/// serving a request so that work is never done for a peer that cannot
-/// settle it. Prices and allowances are in accounting units (AU).
-#[auto_impl::auto_impl(&, Arc)]
-pub trait PeerAffordability: Send + Sync {
-    /// True if the peer can afford a request of the given price in AU.
-    fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool;
+/// Implemented by bandwidth accounting. `headroom` unifies the two allowance
+/// reads (toward each [`Threshold`]) and is floored at zero for the self-throttle.
+/// The admission boundary in [`AdmissionControl::admit`] reasons in [`Debt`]
+/// against the raw, non-floored thresholds [`disconnect_line`](Self::disconnect_line)
+/// and [`settle_trigger`](Self::settle_trigger): a floored headroom collapses to the
+/// current debt once the debt is over a threshold, which would silently stop banding.
+/// Balances and amounts are in accounting units (AU).
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait Ledger: Send + Sync {
+    /// Signed balance: positive means the peer owes us, negative we owe them.
+    fn balance(&self, peer: &OverlayAddress) -> Au;
 
-    /// Remaining allowance for the peer in AU, measured against the disconnect
-    /// threshold (the point past which the peer drops us). This is the widest
-    /// headroom: it extends above the payment/settlement trigger.
-    fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au;
+    /// The outstanding receive reservation against this peer, in AU.
+    fn reserved(&self, peer: &OverlayAddress) -> Au;
 
-    /// Remaining allowance for the peer in AU, measured against the payment
-    /// threshold (the point at which settlement is triggered) rather than the
-    /// disconnect threshold.
-    ///
-    /// This is the headroom available before our debt to the peer reaches the
-    /// settlement trigger, so a consumer that wants to stay strictly below the
-    /// swap trigger paces against this rather than [`Self::allowance_remaining`].
-    /// The default falls back to [`Self::allowance_remaining`]; accounting
-    /// overrides it with the payment-threshold figure.
-    fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
-        self.allowance_remaining(overlay)
-    }
+    /// Floored allowance toward `to` before our debt reaches that threshold.
+    /// Used only by the self-throttle; admission uses the raw boundaries below.
+    fn headroom(&self, peer: &OverlayAddress, to: Threshold) -> Au;
 
-    /// True when our debt to the peer has reached the early-payment trigger, so a
-    /// debtor-initiated settlement should be sent before the debt reaches the
-    /// peer's threshold and it refuses or drops us.
-    ///
-    /// The default is `false`; accounting overrides it with the real per-peer
-    /// debt measured against the configured trigger.
-    fn should_settle(&self, overlay: &OverlayAddress) -> bool {
-        let _ = overlay;
-        false
+    /// The raw disconnect threshold for `peer`, not floored. A projected debt
+    /// strictly past this is refused.
+    fn disconnect_line(&self, peer: &OverlayAddress) -> Au;
+
+    /// The raw early-payment settle trigger for `peer`, not floored at the
+    /// current debt. A projected debt strictly past this (but within the
+    /// disconnect line) settles.
+    fn settle_trigger(&self, peer: &OverlayAddress) -> Au;
+}
+
+/// The single admission band over a [`Ledger`].
+///
+/// `admit` is the one boundary expression: it projects the debt this request
+/// would create and bands it against the payment and disconnect thresholds. The
+/// hard gate (`prepare_receive`) calls this, so the advisory query and the gate
+/// can never diverge. The blanket impl gives every ledger the band for free; do
+/// not add a second impl (the blanket already covers all `T: Ledger`).
+pub trait AdmissionControl: Ledger {
+    /// Band a priced request for `peer`.
+    fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission {
+        let projected = Debt::project(self.balance(peer), self.reserved(peer), price);
+        if projected.exceeds(self.disconnect_line(peer)) {
+            Admission::Refuse
+        } else if projected.exceeds(self.settle_trigger(peer)) {
+            Admission::SettleAndAdmit
+        } else {
+            Admission::Admit
+        }
     }
 }
+
+impl<T: Ledger> AdmissionControl for T {}
 
 /// Why a connection to a peer closed.
 ///
@@ -364,7 +378,7 @@ mod tests {
     use super::*;
 
     // Compile-time check: both traits must stay object safe.
-    fn _assert_object_safe(_: &dyn PeerReporter, _: &dyn PeerAffordability) {}
+    fn _assert_object_safe(_: &dyn PeerReporter, _: &dyn AdmissionControl) {}
 
     #[derive(Default)]
     struct RecordingReporter {
@@ -382,14 +396,28 @@ mod tests {
         }
     }
 
-    struct FixedAffordability(Au);
+    /// A ledger with a fixed headroom to both thresholds and a zero balance, so
+    /// admission reduces to `price <= headroom`.
+    struct FixedHeadroom(Au);
 
-    impl PeerAffordability for FixedAffordability {
-        fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
-            price <= self.0
+    impl Ledger for FixedHeadroom {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
         }
 
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+
+        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
+            self.0
+        }
+
+        fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
+            self.0
+        }
+
+        fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
             self.0
         }
     }
@@ -421,16 +449,22 @@ mod tests {
     }
 
     #[test]
-    fn affordability_via_arc_auto_impl() {
-        let accounting: Arc<dyn PeerAffordability> =
-            Arc::new(FixedAffordability(Au::from_amount(100)));
+    fn admit_via_arc_auto_impl() {
+        // `Ledger` auto-impls through `Arc`, and the blanket `AdmissionControl`
+        // gives the boxed handle the band. A request at the headroom is admitted;
+        // one over it is refused (payment headroom equals disconnect here, so the
+        // band has no settle middle).
+        let ledger: Arc<dyn AdmissionControl> = Arc::new(FixedHeadroom(Au::from_amount(100)));
         let overlay = OverlayAddress::zero();
-        assert!(accounting.can_afford(&overlay, Au::from_amount(100)));
-        assert!(!accounting.can_afford(&overlay, Au::from_amount(101)));
         assert_eq!(
-            accounting.allowance_remaining(&overlay),
-            Au::from_amount(100)
+            ledger.admit(&overlay, Au::from_amount(100)),
+            Admission::Admit
         );
+        assert_eq!(
+            ledger.admit(&overlay, Au::from_amount(101)),
+            Admission::Refuse
+        );
+        assert_eq!(ledger.balance(&overlay), Au::ZERO);
     }
 
     #[test]

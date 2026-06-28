@@ -27,7 +27,7 @@ use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use tracing::debug;
 use vertex_swarm_api::{
-    DEFAULT_PEER_WARN_THRESHOLD, PeerAffordability, SwarmBandwidthAccounting, SwarmIdentity,
+    AdmissionControl, DEFAULT_PEER_WARN_THRESHOLD, SwarmBandwidthAccounting, SwarmIdentity,
     SwarmPeerBandwidth, SwarmPricing,
 };
 use vertex_swarm_primitives::OverlayAddress;
@@ -135,7 +135,7 @@ where
 /// price). Consumed by the retrieval and pushsync candidate-selection paths.
 pub struct PeerSelector {
     scores: Arc<dyn PeerScores>,
-    affordability: Arc<dyn PeerAffordability>,
+    admission: Arc<dyn AdmissionControl>,
     pricing: Arc<dyn SwarmPricing>,
     settlement: Arc<dyn SettlementTrigger>,
 }
@@ -144,13 +144,13 @@ impl PeerSelector {
     /// Compose a selector from its query and trigger surfaces.
     pub fn new(
         scores: Arc<dyn PeerScores>,
-        affordability: Arc<dyn PeerAffordability>,
+        admission: Arc<dyn AdmissionControl>,
         pricing: Arc<dyn SwarmPricing>,
         settlement: Arc<dyn SettlementTrigger>,
     ) -> Self {
         Self {
             scores,
-            affordability,
+            admission,
             pricing,
             settlement,
         }
@@ -171,20 +171,22 @@ impl PeerSelector {
         candidates: Vec<OverlayAddress>,
         chunk: &ChunkAddress,
     ) -> Vec<OverlayAddress> {
+        // One admission band per candidate drives both the affordability ranking
+        // (`admits`) and the proactive settle trigger (`settles`).
+        let admit = |peer: &OverlayAddress| {
+            self.admission
+                .admit(peer, self.pricing.peer_price(peer, chunk))
+        };
+
         let ranked = rank_candidates(
             &candidates,
             |peer| self.scores.peer_score(peer),
-            |peer| {
-                self.affordability
-                    .can_afford(peer, self.pricing.peer_price(peer, chunk))
-            },
+            |peer| admit(peer).admits(),
         );
 
         let blocked = ranked.blocked_on_balance();
         for peer in &candidates {
-            if self.affordability.should_settle(peer)
-                || (blocked && ranked.unaffordable.contains(peer))
-            {
+            if admit(peer).settles() || (blocked && ranked.unaffordable.contains(peer)) {
                 self.settlement.trigger_settlement(*peer);
             }
         }
@@ -259,7 +261,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use vertex_swarm_api::Au;
+    use vertex_swarm_api::{Au, Ledger, Threshold};
 
     use super::*;
 
@@ -275,13 +277,15 @@ mod tests {
         }
     }
 
-    struct FixedAffordability {
+    /// A ledger that bands per peer at the unit price (`UnitPricer`): listed
+    /// `unaffordable` peers refuse, listed `settle_due` peers settle-and-admit,
+    /// everyone else admits.
+    struct FixedLedger {
         unaffordable: Vec<OverlayAddress>,
-        /// Peers whose debt has reached the early-payment trigger.
         settle_due: Vec<OverlayAddress>,
     }
 
-    impl FixedAffordability {
+    impl FixedLedger {
         fn new(unaffordable: Vec<OverlayAddress>) -> Self {
             Self {
                 unaffordable,
@@ -290,17 +294,45 @@ mod tests {
         }
     }
 
-    impl PeerAffordability for FixedAffordability {
-        fn can_afford(&self, overlay: &OverlayAddress, _price: Au) -> bool {
-            !self.unaffordable.contains(overlay)
-        }
-
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+    impl Ledger for FixedLedger {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
         }
 
-        fn should_settle(&self, overlay: &OverlayAddress) -> bool {
-            self.settle_due.contains(overlay)
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+
+        fn headroom(&self, overlay: &OverlayAddress, to: Threshold) -> Au {
+            // Unit price is 1; a zero headroom refuses, a wide headroom admits.
+            if self.unaffordable.contains(overlay) {
+                Au::ZERO
+            } else if self.settle_due.contains(overlay) {
+                match to {
+                    Threshold::Disconnect => Au::from_amount(1000),
+                    Threshold::Payment => Au::ZERO,
+                }
+            } else {
+                Au::from_amount(1000)
+            }
+        }
+
+        fn disconnect_line(&self, overlay: &OverlayAddress) -> Au {
+            // Unit price is 1: a zero line refuses, a wide line admits.
+            if self.unaffordable.contains(overlay) {
+                Au::ZERO
+            } else {
+                Au::from_amount(1000)
+            }
+        }
+
+        fn settle_trigger(&self, overlay: &OverlayAddress) -> Au {
+            // A zero trigger settles at the unit price; a wide one never settles.
+            if self.settle_due.contains(overlay) {
+                Au::ZERO
+            } else {
+                Au::from_amount(1000)
+            }
         }
     }
 
@@ -408,7 +440,7 @@ mod tests {
     ) -> PeerSelector {
         PeerSelector::new(
             Arc::new(FixedScores(scores)),
-            Arc::new(FixedAffordability::new(unaffordable)),
+            Arc::new(FixedLedger::new(unaffordable)),
             Arc::new(UnitPricer),
             settlement,
         )
@@ -421,7 +453,7 @@ mod tests {
     ) -> PeerSelector {
         PeerSelector::new(
             Arc::new(FixedScores(HashMap::new())),
-            Arc::new(FixedAffordability {
+            Arc::new(FixedLedger {
                 unaffordable,
                 settle_due,
             }),

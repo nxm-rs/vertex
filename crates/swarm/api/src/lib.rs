@@ -15,9 +15,10 @@
 //! `vertex-swarm-builder`, where it can name the gRPC serve view.
 //!
 //! [`PeerReporter`] is the only path for subsystems to affect a peer's score
-//! ([`SwarmScoringEvent`] is the event vocabulary). [`PeerAffordability`] asks
-//! accounting whether a peer can pay; [`PeerLifecycleEvent`] carries the resulting
-//! decisions (warnings, disconnects, bans) to subscribers such as topology.
+//! ([`SwarmScoringEvent`] is the event vocabulary). [`AdmissionControl`] (over
+//! [`Ledger`]) bands a priced request against accounting state; [`PeerLifecycleEvent`]
+//! carries the resulting decisions (warnings, disconnects, bans) to subscribers
+//! such as topology.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -35,10 +36,10 @@ mod spec;
 mod swarm;
 mod types;
 
-pub use self::accounting::{Au, AuConversionError};
+pub use self::accounting::{Admission, Au, AuConversionError, Debt, Threshold};
 pub use self::components::{
-    AccountingAction, BandwidthDebit, BinCursorStore, BinScanItem, BootnodeComponents,
-    ClientComponents, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
+    BandwidthDebit, BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Commit,
+    CommitOnWrite, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
     IntervalStore, PullChunkVerifier, PullStorage, ReserveStore, SettableRadius, StorerComponents,
     SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore,
     SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing,
@@ -63,8 +64,8 @@ pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };
 pub use self::reporting::{
-    BanCause, DisconnectReason, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
-    SwarmScoringEvent,
+    AdmissionControl, BanCause, DisconnectReason, Ledger, PeerLifecycleEvent, PeerReporter,
+    ReportSource, SwarmScoringEvent,
 };
 pub use self::spec::{
     DEFAULT_SATURATION_PEERS, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser,

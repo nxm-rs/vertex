@@ -15,15 +15,15 @@
 //!
 //! - [`PeerState`] - Atomic per-peer balance counters
 //! - [`Accounting`] - Factory with pluggable settlement providers
-//! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
+//! - [`Reservation`] - Typed receive/provide reservation legs
 
-mod action;
 mod error;
 mod peer;
+mod reservation;
 
-pub use action::{ProvideAction, ReceiveAction};
 pub use error::AccountingError;
 pub use peer::PeerState;
+pub use reservation::{Provide, Receive, Reservation};
 
 use alloc::vec::Vec;
 use parking_lot::RwLock;
@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    Au, Direction, PeerAffordability, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    AdmissionControl, Au, Debt, Direction, Ledger, SwarmAccountingConfig, SwarmBandwidthAccounting,
+    SwarmIdentity, SwarmPeerBandwidth, SwarmResult, Threshold,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -82,45 +82,30 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    /// Prepare a receive action (we are receiving service, balance decreases).
+    /// Prepare a receive reservation (we are receiving service, balance decreases).
+    ///
+    /// The hard gate shares one boundary with the advisory [`AdmissionControl::admit`]:
+    /// it calls `admit` and refuses a [`Refuse`](vertex_swarm_api::Admission::Refuse)
+    /// band. The breach is never scored against the peer; our debt reaching our own
+    /// disconnect line is a local pacing outcome, not peer misbehaviour, and the
+    /// remote enforces its own view by refusing or resetting us.
     pub fn prepare_receive(
         &self,
         peer: OverlayAddress,
         price: Au,
         _originated: bool,
-    ) -> Result<ReceiveAction, AccountingError> {
-        let state = self.get_or_create_peer(peer);
-
-        let current_balance = state.balance();
-        let reserved = state.reserved_balance();
-        let projected = current_balance
-            .saturating_sub(price)
-            .saturating_sub(reserved);
-
-        let disconnect_threshold = self.config.disconnect_threshold();
-        let threshold = -disconnect_threshold;
-        if projected < threshold {
-            // Refuse the receive: our debt to this peer would cross our own
-            // disconnect line, so the caller routes the chunk elsewhere while a
-            // background settle drains the debt below the line.
-            //
-            // The breach is never scored against the peer. Our debt reaching our
-            // own disconnect line is a local pacing outcome, not peer
-            // misbehaviour: a debtor cannot blame its creditor for its own
-            // unpaid debt, and under a sustained download the closest serving
-            // peers reach this line purely because the download outruns the rate
-            // at which they forgive our pseudosettle debt. The remote enforces
-            // its own view by refusing or resetting us; we mirror that with the
-            // refusal alone.
+    ) -> Result<Reservation<Receive>, AccountingError> {
+        if !AdmissionControl::admit(self, &peer, price).admits() {
             return Err(AccountingError::DisconnectThreshold {
                 peer,
-                balance: current_balance,
-                threshold: disconnect_threshold,
+                balance: Ledger::balance(self, &peer),
+                threshold: self.config.disconnect_threshold(),
             });
         }
 
+        let state = self.get_or_create_peer(peer);
         state.add_reserved(price);
-        Ok(ReceiveAction::new(state, price))
+        Ok(Reservation::new(state, price))
     }
 
     /// Prepare a provide action (we are providing service, balance increases).
@@ -136,7 +121,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         &self,
         peer: OverlayAddress,
         price: Au,
-    ) -> Result<ProvideAction, AccountingError> {
+    ) -> Result<Reservation<Provide>, AccountingError> {
         let state = self.get_or_create_peer(peer);
 
         let payment_threshold = state.payment_threshold();
@@ -154,7 +139,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         }
 
         state.add_shadow_reserved(price);
-        Ok(ProvideAction::new(state, price))
+        Ok(Reservation::new(state, price))
     }
 
     /// Get or create peer state (double-checked locking).
@@ -181,8 +166,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Accounting<C, I> {
     type Identity = I;
     type Peer = AccountingPeerHandle;
-    type ReceiveAction = ReceiveAction;
-    type ProvideAction = ProvideAction;
+    type ReceiveAction = Reservation<Receive>;
+    type ProvideAction = Reservation<Provide>;
 
     fn identity(&self) -> &I {
         &self.identity
@@ -212,98 +197,85 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
         peer: OverlayAddress,
         price: Au,
         originated: bool,
-    ) -> SwarmResult<ReceiveAction> {
+    ) -> SwarmResult<Reservation<Receive>> {
         Ok(Accounting::prepare_receive(self, peer, price, originated)?)
     }
 
-    fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<ProvideAction> {
+    fn prepare_provide(
+        &self,
+        peer: OverlayAddress,
+        price: Au,
+    ) -> SwarmResult<Reservation<Provide>> {
         Ok(Accounting::prepare_provide(self, peer, price)?)
     }
 }
 
-/// Affordability queries for the receive side of accounting.
+/// Per-peer ledger reads for admission and self-throttling.
 ///
-/// Sign convention: `balance` is the peer's debt to us in AU (positive means
-/// the peer owes us, negative means we owe the peer). Receiving service
-/// debits our side, so a request of `price` moves the balance by `-price`.
-/// A debit is affordable while the projected balance
-/// (`balance - price - reserved`) stays at or above the negated disconnect
-/// threshold, mirroring the guard in [`Accounting::prepare_receive`]. For
-/// peers tracked with the standard thresholds, `can_afford(peer, price)` is
-/// true exactly when a `prepare_receive` for `price` would succeed. The
-/// per-peer threshold is read, so for client-only peers with scaled
-/// thresholds affordability is stricter than the config-wide guard.
-///
-/// Unknown peers are treated as fresh zero-balance peers with the configured
-/// default thresholds, matching [`Accounting::get_or_create_peer`]. The
-/// queries are read-only and never insert peer state, so client-only
-/// threshold scaling applies only once the peer record exists.
-impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accounting<C, I> {
-    fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool {
-        price <= self.allowance_remaining(overlay)
+/// Sign convention: `balance` is the peer's debt to us in AU (positive means the
+/// peer owes us, negative we owe the peer). `headroom` is the floored allowance
+/// toward a threshold; the admission band that consumes it lives in the default
+/// [`AdmissionControl::admit`]. Unknown peers read as fresh zero-balance peers
+/// with the configured thresholds, matching [`Accounting::get_or_create_peer`],
+/// and the reads never insert peer state.
+impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
+    fn balance(&self, peer: &OverlayAddress) -> Au {
+        self.peers
+            .read()
+            .get(peer)
+            .map_or(Au::ZERO, |state| state.balance())
     }
 
-    fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au {
-        let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
+    fn reserved(&self, peer: &OverlayAddress) -> Au {
+        self.peers
+            .read()
+            .get(peer)
+            .map_or(Au::ZERO, |state| state.reserved_balance())
+    }
+
+    fn headroom(&self, peer: &OverlayAddress, to: Threshold) -> Au {
+        let (balance, reserved, threshold) = match self.peers.read().get(peer) {
             Some(state) => (
                 state.balance(),
                 state.reserved_balance(),
-                state.disconnect_threshold(),
+                match to {
+                    Threshold::Payment => state.payment_threshold(),
+                    Threshold::Disconnect => state.disconnect_threshold(),
+                },
             ),
-            None => (Au::ZERO, Au::ZERO, self.config.disconnect_threshold()),
+            None => (
+                Au::ZERO,
+                Au::ZERO,
+                match to {
+                    Threshold::Payment => self.config.payment_threshold(),
+                    Threshold::Disconnect => self.config.disconnect_threshold(),
+                },
+            ),
         };
 
-        // Headroom is the signed balance plus the (non-negative) threshold less
-        // the outstanding reservation, floored at zero. Saturating arithmetic
-        // keeps the AU domain closed without an i128 detour.
-        let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
-        headroom.max(Au::ZERO)
+        // The signed balance plus the (non-negative) threshold less the
+        // outstanding reservation, floored at zero. Saturating arithmetic keeps
+        // the AU domain closed without an i128 detour.
+        balance
+            .saturating_add(threshold)
+            .saturating_sub(reserved)
+            .max(Au::ZERO)
     }
 
-    fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
-        // Same headroom computation as `allowance_remaining`, but measured
-        // against the payment threshold (the settlement trigger) instead of the
-        // disconnect threshold. The payment threshold sits below the disconnect
-        // threshold, so this is the headroom that stays strictly under the swap
-        // trigger.
-        let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
-            Some(state) => (
-                state.balance(),
-                state.reserved_balance(),
-                state.payment_threshold(),
-            ),
-            None => (Au::ZERO, Au::ZERO, self.config.payment_threshold()),
-        };
-
-        let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
-        headroom.max(Au::ZERO)
+    fn disconnect_line(&self, peer: &OverlayAddress) -> Au {
+        self.peers.read().get(peer).map_or_else(
+            || self.config.disconnect_threshold(),
+            |state| state.disconnect_threshold(),
+        )
     }
 
-    fn should_settle(&self, overlay: &OverlayAddress) -> bool {
-        // Settle once our projected debt (the negated balance plus the pending
-        // reservation) reaches the early-payment trigger, so the peer's view of
-        // our debt is reduced before it climbs to the disconnect threshold.
-        let (balance, reserved) = match self.peers.read().get(overlay) {
-            Some(state) => (state.balance(), state.reserved_balance()),
-            None => return false,
-        };
-
-        let debt = Au::ZERO
-            .saturating_sub(balance)
-            .saturating_add(reserved)
-            .max(Au::ZERO);
-        if debt <= Au::ZERO {
-            return false;
-        }
-
-        // Floored at one refresh-rate unit so a settle always offers at least the
-        // minimum the peer acts on.
-        let trigger = self
-            .config
+    fn settle_trigger(&self, _peer: &OverlayAddress) -> Au {
+        // The early-payment trigger floored at one refresh-rate unit, so a settle
+        // always offers at least the minimum the peer acts on. Per-peer state
+        // carries no early-payment figure, so this reads from config.
+        self.config
             .early_payment_trigger()
-            .max(self.config.refresh_rate());
-
-        debt >= trigger
+            .max(self.config.refresh_rate())
     }
 }
 
@@ -340,11 +312,11 @@ impl AccountingPeerHandle {
         for provider in self.providers.iter() {
             total = total.saturating_add(provider.settle(self.peer, self.state.as_ref()).await?);
 
-            // Stop once the remaining debt is below the payment threshold. Balance is
-            // negative while we owe, so compare against the negated threshold; the next
-            // provider only needs to run while debt still exceeds it.
-            let balance = self.state.balance();
-            if balance >= Au::ZERO.saturating_sub(self.payment_threshold) {
+            // Stop once the committed debt no longer exceeds the payment
+            // threshold. Reasoning in `Debt` keeps the comparison sign-safe (both
+            // sides non-negative); each provider re-reads `balance()` internally,
+            // so the fresh committed debt drives the break.
+            if !Debt::committed(self.state.balance()).exceeds(self.payment_threshold) {
                 break;
             }
         }
@@ -378,6 +350,7 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 mod tests {
     use super::*;
     use crate::{BandwidthConfig, NoSettlement};
+    use vertex_swarm_api::Admission;
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
@@ -524,6 +497,12 @@ mod tests {
 
     const SMALL_DISCONNECT_THRESHOLD: Au = Au::new(1250);
 
+    /// The default storer config scaled to the line a storer enforces on a
+    /// client: payment 1_350_000, disconnect 1_687_500, settle trigger 675_000.
+    fn client_config() -> BandwidthConfig {
+        BandwidthConfig::default().for_client()
+    }
+
     #[test]
     fn test_receive_breach_refuses_without_scoring_the_peer() {
         // A debtor breaching its own disconnect line refuses the receive so the
@@ -572,24 +551,29 @@ mod tests {
     }
 
     #[test]
-    fn test_affordability_unknown_peer_is_fresh_and_read_only() {
+    fn test_admit_unknown_peer_is_fresh_and_read_only() {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
 
-        // Unknown peers are treated as fresh zero-balance peers.
+        // Unknown peers are treated as fresh zero-balance peers, so the
+        // disconnect headroom is the full threshold.
         assert_eq!(
-            accounting.allowance_remaining(&peer),
+            accounting.headroom(&peer, Threshold::Disconnect),
             SMALL_DISCONNECT_THRESHOLD
         );
-        assert!(accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD));
-        assert!(!accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD + Au::new(1)));
+        assert!(accounting.admit(&peer, SMALL_DISCONNECT_THRESHOLD).admits());
+        assert!(
+            !accounting
+                .admit(&peer, SMALL_DISCONNECT_THRESHOLD + Au::new(1))
+                .admits()
+        );
 
-        // Affordability queries never insert peer state.
+        // Ledger reads never insert peer state.
         assert!(accounting.peers().is_empty());
     }
 
     #[test]
-    fn test_affordability_boundaries_match_prepare_receive() {
+    fn test_admit_boundary_is_the_prepare_receive_boundary() {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
 
@@ -597,19 +581,20 @@ mod tests {
         let handle = accounting.for_peer(peer);
         handle.record(au(500), Direction::Download);
         assert_eq!(handle.balance(), au(-500));
-        assert_eq!(accounting.allowance_remaining(&peer), au(750));
+        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(750));
 
-        // Exactly at the threshold: affordable and grantable.
-        assert!(accounting.can_afford(&peer, au(750)));
+        // Exactly at the threshold: admitted and grantable (prepare_receive
+        // routes through the same admit boundary).
+        assert!(accounting.admit(&peer, au(750)).admits());
         assert!(accounting.prepare_receive(peer, au(750), true).is_ok());
 
-        // Just over: refused by both.
-        assert!(!accounting.can_afford(&peer, au(751)));
+        // Just over: refused by both, because they are one boundary.
+        assert!(!accounting.admit(&peer, au(751)).admits());
         assert!(accounting.prepare_receive(peer, au(751), true).is_err());
     }
 
     #[test]
-    fn test_affordability_accounts_for_reservations() {
+    fn test_admit_accounts_for_reservations() {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
 
@@ -618,14 +603,14 @@ mod tests {
             .expect("within threshold");
 
         // The outstanding reservation consumes headroom.
-        assert_eq!(accounting.allowance_remaining(&peer), au(250));
-        assert!(accounting.can_afford(&peer, au(250)));
-        assert!(!accounting.can_afford(&peer, au(251)));
+        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(250));
+        assert!(accounting.admit(&peer, au(250)).admits());
+        assert!(!accounting.admit(&peer, au(251)).admits());
 
         // Releasing the reservation restores the headroom.
         drop(action);
         assert_eq!(
-            accounting.allowance_remaining(&peer),
+            accounting.headroom(&peer, Threshold::Disconnect),
             SMALL_DISCONNECT_THRESHOLD
         );
     }
@@ -691,16 +676,29 @@ mod tests {
         // Payment threshold is 1000 (settlement trigger); disconnect threshold is
         // 1250. The payment-threshold headroom is narrower and sits strictly below
         // the disconnect-threshold headroom for both unknown and known peers.
-        assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(1000));
-        assert_eq!(accounting.allowance_remaining(&peer), au(1250));
+        assert_eq!(accounting.headroom(&peer, Threshold::Payment), au(1000));
+        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(1250));
 
         // Debt narrows both headrooms by the same amount, keeping the payment
         // figure below the disconnect figure.
         let handle = accounting.for_peer(peer);
         handle.record(au(400), Direction::Download);
         assert_eq!(handle.balance(), au(-400));
-        assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(600));
-        assert_eq!(accounting.allowance_remaining(&peer), au(850));
+        assert_eq!(accounting.headroom(&peer, Threshold::Payment), au(600));
+        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(850));
+    }
+
+    #[test]
+    fn test_admit_bands_settle_between_payment_and_disconnect() {
+        // Payment 1000, disconnect 1250. A request landing the projected debt in
+        // (payment, disconnect] is SettleAndAdmit; below is Admit; above Refuse.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        assert_eq!(accounting.admit(&peer, au(1000)), Admission::Admit);
+        assert_eq!(accounting.admit(&peer, au(1001)), Admission::SettleAndAdmit);
+        assert_eq!(accounting.admit(&peer, au(1250)), Admission::SettleAndAdmit);
+        assert_eq!(accounting.admit(&peer, au(1251)), Admission::Refuse);
     }
 
     /// Reports settling a fixed amount, modelling a provider that pays only part
@@ -771,30 +769,108 @@ mod tests {
     }
 
     #[test]
-    fn should_settle_fires_once_debt_reaches_the_early_trigger() {
-        // Default config: 13_500_000 payment threshold at 50% early percent gives
-        // a 6_750_000 trigger (above the 4_500_000 refresh-rate floor). An unknown
-        // peer never settles; a debt below the trigger does not; a debt at or past
-        // it does.
-        let accounting = test_accounting();
+    fn admit_settles_once_the_request_crosses_the_payment_threshold() {
+        // Payment 1000, disconnect 1250. A fresh request that lands the projected
+        // debt past the payment threshold settles; one that stays below does not.
+        let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
-        assert!(
-            !accounting.should_settle(&peer),
-            "unknown peer never settles"
-        );
+
+        // We already owe 900; a 50 AU request stays under the 1000 payment line.
+        let handle = accounting.for_peer(peer);
+        handle.record(au(900), Direction::Download);
+        assert!(!accounting.admit(&peer, au(50)).settles());
+
+        // A 200 AU request lands the projected debt at 1100, past the payment
+        // line but below disconnect: settle.
+        assert!(accounting.admit(&peer, au(200)).settles());
+    }
+
+    #[test]
+    fn admit_at_zero_price_settles_once_committed_debt_passes_the_settle_trigger() {
+        // The client settle path calls `admit(peer, Au::ZERO).settles()`. With our
+        // debt already past the payment threshold (1_350_000) but below the
+        // disconnect line, a zero-price band must still settle. The earlier
+        // floored-headroom reconstruction collapsed to `price > 0` here and stopped
+        // settling exactly when the debt most needed paying down.
+        let accounting = Accounting::new(client_config(), test_identity());
+        let peer = test_peer();
 
         let handle = accounting.for_peer(peer);
-        handle.record(au(1_000_000), Direction::Download);
-        assert!(
-            !accounting.should_settle(&peer),
-            "a debt below the trigger does not settle"
-        );
+        handle.record(au(1_500_000), Direction::Download);
+        assert_eq!(handle.balance(), au(-1_500_000));
 
-        handle.record(au(6_000_000), Direction::Download);
-        assert_eq!(handle.balance(), au(-7_000_000));
         assert!(
-            accounting.should_settle(&peer),
-            "a debt past the trigger settles"
+            accounting.admit(&peer, Au::ZERO).settles(),
+            "a client over its payment threshold must still settle at zero price"
         );
+    }
+
+    #[test]
+    fn admit_refuse_boundary_is_the_prepare_receive_boundary_at_the_disconnect_line() {
+        // Payment 1000, disconnect 1250. The refuse band is the original
+        // prepare_receive boundary: refuse exactly when the projected debt crosses
+        // the disconnect line, and `prepare_receive` errors at the same point.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Fresh peer: the projected debt equals the price. At the disconnect line
+        // the request is still admitted; one unit past it is refused.
+        assert_ne!(accounting.admit(&peer, au(1250)), Admission::Refuse);
+        assert_eq!(accounting.admit(&peer, au(1251)), Admission::Refuse);
+
+        assert!(accounting.prepare_receive(peer, au(1250), true).is_ok());
+        assert!(matches!(
+            accounting.prepare_receive(peer, au(1251), true),
+            Err(AccountingError::DisconnectThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn admit_settles_at_the_early_payment_trigger_not_the_payment_threshold() {
+        // Payment 1000, disconnect 1250, early-payment 40% so the settle trigger is
+        // 600, strictly below the payment threshold. A projected debt below 600
+        // admits; at or above (and below disconnect) settles. This pins the settle
+        // point to the early-payment value, not the full payment threshold.
+        let config = BandwidthConfig::new(
+            1000,
+            25,
+            10,
+            40,
+            5,
+            crate::constants::DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
+            crate::FixedPricingConfig::default(),
+        );
+        let accounting = Accounting::new(config, test_identity());
+        let peer = test_peer();
+
+        assert_eq!(accounting.admit(&peer, au(600)), Admission::Admit);
+        assert_eq!(accounting.admit(&peer, au(601)), Admission::SettleAndAdmit);
+        assert_eq!(accounting.admit(&peer, au(1250)), Admission::SettleAndAdmit);
+        assert_eq!(accounting.admit(&peer, au(1251)), Admission::Refuse);
+    }
+
+    #[test]
+    fn held_receive_reservation_raises_projected_but_not_committed_debt() {
+        // A held un-applied receive reservation raises the admission `project`
+        // debt (it consumes headroom) but leaves the committed debt that drives
+        // settlement unchanged, so a cheque never pays for a reservation that can
+        // still drop.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        let reservation = accounting
+            .prepare_receive(peer, au(800), true)
+            .expect("within threshold");
+
+        let balance = Ledger::balance(&accounting, &peer);
+        let reserved = Ledger::reserved(&accounting, &peer);
+        // Committed debt ignores the reservation (balance is still zero).
+        assert_eq!(Debt::committed(balance), Debt::ZERO);
+        // Projected debt for a further request includes the held reservation
+        // (800 reserved + 100 price = 900), even though committed debt is zero.
+        assert_eq!(Au::from(Debt::project(balance, reserved, au(100))), au(900));
+
+        drop(reservation);
+        assert_eq!(Ledger::reserved(&accounting, &peer), Au::ZERO);
     }
 }
