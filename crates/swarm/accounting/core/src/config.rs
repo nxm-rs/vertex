@@ -66,6 +66,19 @@ impl<P> BandwidthConfig<P> {
     pub fn throttle_allowance_percent(&self) -> u8 {
         self.throttle_allowance_percent
     }
+
+    /// This config scaled to the line a storer enforces on a client:
+    /// `payment_threshold` and `refresh_rate` divided by `client_only_factor`,
+    /// floored at one. Pacing against the unscaled storer figures would let a
+    /// burst cross the storer's disconnect line before our settle engages.
+    pub fn for_client(self) -> Self {
+        let factor = self.client_only_factor.max(1);
+        Self {
+            payment_threshold: (self.payment_threshold / factor).max(1),
+            refresh_rate: (self.refresh_rate / factor).max(1),
+            ..self
+        }
+    }
 }
 
 impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
@@ -175,5 +188,41 @@ mod tests {
                 Err(BandwidthConfigError::ThrottleAllowancePercentOutOfRange)
             ));
         }
+    }
+
+    #[test]
+    fn for_client_scales_threshold_and_refresh_by_the_factor() {
+        let storer = DefaultBandwidthConfig::default();
+        let factor = storer.client_only_factor();
+        let storer_threshold = storer.payment_threshold().as_amount();
+        let storer_refresh = storer.refresh_rate().as_amount();
+        let storer_disconnect = storer.disconnect_threshold();
+        let storer_tolerance = storer.payment_tolerance_percent();
+
+        let client = storer.for_client();
+        assert_eq!(
+            client.payment_threshold().as_amount(),
+            storer_threshold / factor
+        );
+        assert_eq!(client.refresh_rate().as_amount(), storer_refresh / factor);
+        // The disconnect threshold derives from the now-scaled payment threshold,
+        // so it scales down with it: we pace against the same client ceiling the
+        // serving storer enforces on us.
+        assert!(client.disconnect_threshold() < storer_disconnect);
+        assert_eq!(client.payment_tolerance_percent(), storer_tolerance);
+        assert_eq!(client.client_only_factor(), factor);
+    }
+
+    #[test]
+    fn for_client_floors_at_one() {
+        let cfg = BandwidthConfig {
+            payment_threshold: 5,
+            refresh_rate: 5,
+            client_only_factor: 1000,
+            ..DefaultBandwidthConfig::default()
+        }
+        .for_client();
+        assert_eq!(cfg.payment_threshold().as_amount(), 1);
+        assert_eq!(cfg.refresh_rate().as_amount(), 1);
     }
 }

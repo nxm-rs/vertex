@@ -367,11 +367,14 @@ impl ClientLauncher {
             .map_err(|e| eyre::eyre!("{e}"))?
         };
 
+        // The launcher always builds a client, which paces against the scaled line.
+        let bandwidth = self.bandwidth.for_client();
+
         let tail_params = ClientTailParams {
             node_type: SwarmNodeType::Client,
             spec: &spec,
             identity: &self.identity,
-            bandwidth: &self.bandwidth,
+            bandwidth: &bandwidth,
             verify: self.verify,
             #[cfg(feature = "swap")]
             swap: ClientSwapParams {

@@ -308,6 +308,16 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     let node_type = F::NODE_TYPE;
     log_build_start(node_type, params.spec);
 
+    // A client paces against the scaled line a storer enforces on it; a storer
+    // keeps the unscaled figures.
+    let scaled_bandwidth;
+    let bandwidth = if node_type.requires_storage() {
+        params.bandwidth
+    } else {
+        scaled_bandwidth = params.bandwidth.clone().for_client();
+        &scaled_bandwidth
+    };
+
     // SWAP defaults on for storers (maximum support) and off for clients; an
     // explicit --swap overrides. The tail derives the same value for its swap
     // wiring; here it gates the chain precondition.
@@ -343,7 +353,7 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         node_type,
         spec: params.spec,
         identity: params.identity,
-        bandwidth: params.bandwidth,
+        bandwidth,
         verify: params.verify,
         #[cfg(feature = "swap")]
         swap: ClientSwapParams {
