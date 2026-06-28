@@ -535,9 +535,6 @@ mod tests {
 
     impl SwarmPeerBandwidth for MockPeerBandwidth {
         fn record(&self, _amount: Au, _direction: Direction) {}
-        fn allow(&self, _amount: Au) -> bool {
-            true
-        }
         fn balance(&self) -> Au {
             Au::ZERO
         }

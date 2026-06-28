@@ -26,45 +26,24 @@ pub enum Direction {
     Download,
 }
 
-/// Abstract peer balance state for settlement providers.
+/// Abstract peer balance state read by settlement providers.
 ///
-/// Positive balance = peer owes us, negative = we owe peer.
-/// The peer address is passed separately to settlement methods.
+/// Positive balance = peer owes us, negative = we owe peer. The peer address is
+/// passed separately to `settle`.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmPeerState: Send + Sync {
     /// Get the current balance (positive = peer owes us).
     fn balance(&self) -> Au;
-
-    /// Add to the balance atomically.
-    fn add_balance(&self, amount: Au);
-
-    /// Get the last refresh timestamp (for pseudosettle).
-    fn last_refresh(&self) -> u64;
-
-    /// Set the last refresh timestamp.
-    fn set_last_refresh(&self, timestamp: u64);
-
-    /// Get the payment threshold for this peer.
-    fn payment_threshold(&self) -> Au;
-
-    /// Get the disconnect threshold for this peer.
-    fn disconnect_threshold(&self) -> Au;
 }
 
 /// Settlement provider for bandwidth accounting.
 ///
-/// Providers are called at `pre_allow()` (before allowing transfers) and
-/// `settle()` (when explicit settlement is requested).
-///
-/// Injected into the accounting core as `Box<dyn SwarmSettlementProvider>`, so
-/// the trait stays object-safe via `async_trait`.
+/// `settle()` runs when explicit settlement is requested. Injected into the
+/// accounting core as `Box<dyn SwarmSettlementProvider>`, so the trait stays
+/// object-safe via `async_trait`.
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmSettlementProvider: Send + Sync + 'static {
-    /// Called before checking if a transfer is allowed.
-    /// Returns the amount of balance adjustment (positive = credit added).
-    fn pre_allow(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> Au;
-
     /// Called when explicit settlement is requested.
     /// Returns the amount settled, or an error if settlement failed.
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au>;
@@ -141,10 +120,6 @@ pub trait AccountingAction: Send {
 pub trait SwarmPeerBandwidth: Send + Sync {
     /// Record a priced amount of bandwidth usage (lock-free, must not block).
     fn record(&self, amount: Au, direction: Direction);
-
-    /// Check if a transfer of `amount` is allowed (false if over disconnect
-    /// threshold).
-    fn allow(&self, amount: Au) -> bool;
 
     /// Get current balance (positive = peer owes us).
     fn balance(&self) -> Au;
@@ -235,19 +210,6 @@ pub trait SwarmClientAccounting: Send + Sync {
     /// Get the pricer.
     fn pricing(&self) -> &Self::Pricing;
 
-    /// Get the node's identity.
-    fn identity(&self) -> &<Self::Bandwidth as SwarmBandwidthAccounting>::Identity {
-        self.bandwidth().identity()
-    }
-
-    /// Get or create accounting for a peer.
-    fn for_peer(
-        &self,
-        peer: OverlayAddress,
-    ) -> <Self::Bandwidth as SwarmBandwidthAccounting>::Peer {
-        self.bandwidth().for_peer(peer)
-    }
-
     /// Prepare to receive a chunk (we pay, balance decreases).
     fn prepare_receive_chunk(
         &self,
@@ -267,15 +229,5 @@ pub trait SwarmClientAccounting: Send + Sync {
     ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ProvideAction> {
         let price = self.pricing().peer_price(&peer, chunk);
         self.bandwidth().prepare_provide(peer, price)
-    }
-
-    /// Calculate price for receiving a chunk from a peer.
-    fn receive_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au {
-        self.pricing().peer_price(peer, chunk)
-    }
-
-    /// Calculate price for providing a chunk to a peer.
-    fn provide_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au {
-        self.pricing().peer_price(peer, chunk)
     }
 }

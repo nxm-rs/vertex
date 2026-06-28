@@ -23,7 +23,7 @@ mod peer;
 
 pub use action::{ProvideAction, ReceiveAction};
 pub use error::AccountingError;
-pub use peer::{PeerState, PeerStateSnapshot};
+pub use peer::PeerState;
 
 use alloc::vec::Vec;
 use parking_lot::RwLock;
@@ -75,16 +75,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             providers: Arc::from(providers),
             peers: RwLock::new(HashMap::new()),
         }
-    }
-
-    /// Get a reference to the configuration.
-    pub fn config(&self) -> &C {
-        &self.config
-    }
-
-    /// Get a reference to the settlement providers.
-    pub fn providers(&self) -> &[Box<dyn SwarmSettlementProvider>] {
-        &self.providers
     }
 
     /// Returns the names of the active settlement providers.
@@ -182,26 +172,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
                 Arc::new(PeerState::new(
                     self.config.payment_threshold(),
                     self.config.disconnect_threshold(),
-                ))
-            })
-            .clone()
-    }
-
-    /// Get or create peer state for a Client peer, with thresholds scaled
-    /// by the client-only factor.
-    pub fn get_or_create_client_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
-        if let Some(state) = self.peers.read().get(&peer) {
-            return Arc::clone(state);
-        }
-
-        self.peers
-            .write()
-            .entry(peer)
-            .or_insert_with(|| {
-                Arc::new(PeerState::new_client_only(
-                    self.config.payment_threshold(),
-                    self.config.disconnect_threshold(),
-                    self.config.client_only_factor(),
                 ))
             })
             .clone()
@@ -363,14 +333,6 @@ impl AccountingPeerHandle {
         self.disconnect_threshold
     }
 
-    /// Call `pre_allow()` on all providers, returning total adjustment.
-    fn pre_allow_all(&self) -> Au {
-        self.providers
-            .iter()
-            .map(|p| p.pre_allow(self.peer, self.state.as_ref()))
-            .sum()
-    }
-
     /// Call `settle()` on providers in order until debt is below threshold.
     async fn settle_all(&self) -> SwarmResult<Au> {
         let mut total = Au::ZERO;
@@ -397,18 +359,6 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
             Direction::Upload => self.state.add_balance(amount),
             Direction::Download => self.state.add_balance(-amount),
         }
-    }
-
-    fn allow(&self, amount: Au) -> bool {
-        // Let providers adjust balance first (e.g., pseudosettle refresh)
-        self.pre_allow_all();
-
-        // Check threshold
-        let balance = self.state.balance();
-        let reserved = self.state.reserved_balance();
-        let projected = balance.saturating_sub(amount).saturating_sub(reserved);
-
-        projected >= -self.disconnect_threshold
     }
 
     fn balance(&self) -> Au {
@@ -515,23 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn test_allow_under_threshold() {
-        let accounting = test_accounting();
-
-        let handle = accounting.for_peer(test_peer());
-
-        // Should allow small transfers
-        assert!(handle.allow(au(1000)));
-
-        // Record some debt
-        handle.record(au(1000), Direction::Download);
-        assert_eq!(handle.balance(), au(-1000));
-
-        // Should still allow more (under disconnect threshold)
-        assert!(handle.allow(au(1000)));
-    }
-
-    #[test]
     fn test_peers_list() {
         let accounting = test_accounting();
 
@@ -573,52 +506,6 @@ mod tests {
         // Both handles should see the same balance (shared state)
         assert_eq!(handle1.balance(), au(1000));
         assert_eq!(handle2.balance(), au(1000));
-    }
-
-    struct FixedAdjustProvider(Au);
-
-    #[async_trait::async_trait]
-    impl SwarmSettlementProvider for FixedAdjustProvider {
-        fn pre_allow(
-            &self,
-            _peer: OverlayAddress,
-            state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> Au {
-            state.add_balance(self.0);
-            self.0
-        }
-
-        async fn settle(
-            &self,
-            _peer: OverlayAddress,
-            _state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> SwarmResult<Au> {
-            Ok(Au::ZERO)
-        }
-
-        fn name(&self) -> &'static str {
-            "fixed-adjust"
-        }
-    }
-
-    #[test]
-    fn test_provider_composition_pre_allow() {
-        let accounting = Accounting::with_providers(
-            BandwidthConfig::default(),
-            test_identity(),
-            vec![
-                Box::new(FixedAdjustProvider(au(100))),
-                Box::new(FixedAdjustProvider(au(200))),
-            ],
-        );
-
-        let handle = accounting.for_peer(test_peer());
-
-        // Trigger pre_allow via allow()
-        handle.allow(au(0));
-
-        // Both providers should have adjusted the balance
-        assert_eq!(handle.balance(), au(300));
     }
 
     /// Config with payment threshold 1000 and 25% tolerance, so the
@@ -816,26 +703,19 @@ mod tests {
         assert_eq!(accounting.allowance_remaining(&peer), au(850));
     }
 
-    /// Credits a fixed amount, modelling a provider that pays only part of a
-    /// large debt.
+    /// Reports settling a fixed amount, modelling a provider that pays only part
+    /// of a large debt. In production the tracked balance is reduced by the
+    /// async service ack, not by the provider, so the mock leaves the state arg
+    /// untouched.
     struct PartialSettleProvider(Au);
 
     #[async_trait::async_trait]
     impl SwarmSettlementProvider for PartialSettleProvider {
-        fn pre_allow(
-            &self,
-            _peer: OverlayAddress,
-            _state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> Au {
-            Au::ZERO
-        }
-
         async fn settle(
             &self,
             _peer: OverlayAddress,
-            state: &dyn vertex_swarm_api::SwarmPeerState,
+            _state: &dyn vertex_swarm_api::SwarmPeerState,
         ) -> SwarmResult<Au> {
-            state.add_balance(self.0);
             Ok(self.0)
         }
 
@@ -849,14 +729,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SwarmSettlementProvider for RecordingProvider {
-        fn pre_allow(
-            &self,
-            _peer: OverlayAddress,
-            _state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> Au {
-            Au::ZERO
-        }
-
         async fn settle(
             &self,
             _peer: OverlayAddress,
@@ -873,9 +745,9 @@ mod tests {
 
     #[tokio::test]
     async fn settle_all_reaches_every_provider_while_debt_remains() {
-        // Payment threshold 1000. A 5000 debt, of which the first provider settles
-        // only 1000 (leaving -4000, still past the threshold), so the fan-out must
-        // run the second provider.
+        // Payment threshold 1000. A 5000 debt stays past the threshold while the
+        // first provider settles only part of it, so the fan-out must run the
+        // second provider too.
         let ran_second = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let accounting = Accounting::with_providers(
             small_config(),
@@ -896,8 +768,6 @@ mod tests {
             ran_second.load(std::sync::atomic::Ordering::SeqCst),
             "the second provider must run while debt remains past the threshold"
         );
-        // The first provider credited 1000, leaving -4000.
-        assert_eq!(handle.balance(), au(-4000));
     }
 
     #[test]

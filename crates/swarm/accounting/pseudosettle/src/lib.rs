@@ -41,9 +41,8 @@ pub use vertex_swarm_client_protocol::PseudosettleEvent;
 ///
 /// `settle()` sends a pseudosettle to the peer offering our debt; the peer
 /// forgives up to its time-based allowance and acks the accepted amount, which
-/// the service credits back. `pre_allow()` is a no-op: a debtor must not forgive
-/// its own debt on elapsed time, or our balance would understate the debt the
-/// peer records and we would under-settle.
+/// the service credits back. A debtor never forgives its own debt locally: our
+/// balance drops only when the peer acks a settle we sent.
 pub struct PseudosettleProvider<C> {
     config: C,
     /// Optional handle for delegating to the service.
@@ -83,15 +82,6 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
 
 #[async_trait::async_trait]
 impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for PseudosettleProvider<C> {
-    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
-        // A debtor never forgives its own debt locally. The peer reduces its view
-        // of our debt only when it acks a settle we sent; crediting our balance
-        // on elapsed time here would mask a debt that has actually climbed at the
-        // peer, suppressing the settle that recovers it and letting the peer drop
-        // us. Debt recovers only through the network ack credited in the service.
-        Au::ZERO
-    }
-
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
         // If we have a handle, delegate to the service
         if let Some(handle) = &self.handle {
@@ -190,23 +180,6 @@ mod tests {
 
         handle.record(Au::from_amount(500), Direction::Download);
         assert_eq!(handle.balance(), Au::from_amount(500));
-    }
-
-    #[test]
-    fn pre_allow_never_forgives_debt_locally() {
-        // A debtor's balance must track the debt the peer records; only a network
-        // ack reduces it. `pre_allow` leaves the balance untouched however much
-        // time has elapsed, so the debt cannot look settled locally while the peer
-        // still counts it.
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(-10_000));
-        state.set_last_refresh(vertex_util_runtime::time::now_unix_secs() - 10);
-
-        let credit = provider.pre_allow(test_peer(), &state);
-
-        assert_eq!(credit, Au::ZERO);
-        assert_eq!(state.balance(), Au::new(-10_000));
     }
 
     #[tokio::test]
