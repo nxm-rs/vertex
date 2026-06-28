@@ -31,8 +31,7 @@ mod noop;
 mod settlement;
 
 pub use accounting::{
-    Accounting, AccountingError, AccountingPeerHandle, PeerState, PeerStateSnapshot, ProvideAction,
-    ReceiveAction,
+    Accounting, AccountingError, AccountingPeerHandle, PeerState, ProvideAction, ReceiveAction,
 };
 pub use args::BandwidthArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};

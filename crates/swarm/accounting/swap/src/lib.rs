@@ -93,12 +93,6 @@ impl<C: SwarmAccountingConfig> SwapProvider<C> {
 
 #[async_trait::async_trait]
 impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvider<C> {
-    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
-        // SWAP does not modify the balance during the allow check; payment is
-        // driven by `settle()` once debt crosses the threshold.
-        Au::ZERO
-    }
-
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
         let balance = state.balance();
         // Positive balance means the peer owes us; nothing for us to pay.
