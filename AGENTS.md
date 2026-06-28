@@ -109,6 +109,8 @@ Primary sources for the Process step:
 - `docs/protocol-errors.md`: error taxonomy, `IntoStaticStr` for metric labels.
 - `docs/development/bee-protocol-improvements.md`: upstream suggestions, do not unilaterally apply.
 - `docs/design/chunk-size-const-generic.md`: the const-generic design template.
+- `docs/design/accounting-seam.md`: the bandwidth-accounting trait surface (Ledger/AdmissionControl/Reserve/Settle, the Debt newtype, the settlement enum).
+- `docs/design/client-credit-admission.md`: the client-side reserve/settle/skip band policy.
 - `docs/observability/{design,helpers,profiling}.md`.
 - `docs/networking/{address-management,peer-management,peer-dialing-strategy}.md`.
 - `docs/cli/configuration.md`.
