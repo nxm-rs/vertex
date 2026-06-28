@@ -12,7 +12,10 @@
 //! Limiting is by chunk count, not bytes (a Swarm chunk is size-bounded);
 //! byte/bandwidth limiting lives at the libp2p connection layer. Items are
 //! yielded in completion order, so each carries its chunk address and reordering
-//! is the consumer's job. Downloads yield [`VerifiedChunk`] only: a chunk proven
+//! is the consumer's job (the nectar `WindowedReader` is the reference
+//! consumer). The concurrency cap bounds pipeline depth and memory, not
+//! per-peer substream count; capping concurrent substreams to one peer lives in
+//! the node retrieval layer. Downloads yield [`VerifiedChunk`] only: a chunk proven
 //! to answer the requested address surfaces wrong bytes as an error item.
 
 #[cfg(target_arch = "wasm32")]
