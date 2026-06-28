@@ -46,6 +46,10 @@ The protocol crates under `crates/swarm/net/` are codec-and-upgrade crates, not 
 
 A per-node-type `#[derive(NetworkBehaviour)]` composite (modelled on `topology`) selecting the client composite plus topology and identity remains a possible future direction; it is not how nodes are assembled today.
 
+## Retrieval dispatch ordering
+
+Retrieval fan-out is free to redirect a chunk to any close peer in any completion order because the consumer reorders (see `crates/swarm/stream/AGENTS.md`). Per-peer substream capping is a non-economic guard composed AFTER economic selection: the dispatch order is selector (who is eligible) then skip-busy (who has a free slot) then throttle (pace the chosen request). The substream cap must never be merged with the affordability or debt signals.
+
 ## Nectar boundary
 
 Primitives and layer-2 constructs (chunks, addresses, BMT, manifests, feeds, postage, erasure) live in `nectar` (https://github.com/nxm-rs/nectar), not vertex. Before adding a new type to `primitives`, `spec`, or any sibling crate, check the Repo split section in `/AGENTS.md`. If the new type is non-node-specific, file the PR against `nxm-rs/nectar` and consume it here through `vertex-swarm-primitives` once merged. The workspace pins all nectar deps to the same git rev (`/Cargo.toml`).
