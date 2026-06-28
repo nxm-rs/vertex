@@ -3,17 +3,7 @@
 use libp2p::Multiaddr;
 use vertex_swarm_primitives::OverlayAddress;
 
-/// Reason for peer disconnection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum DisconnectReason {
-    /// Local node closed the connection (e.g., bin pruning).
-    LocalClose,
-    /// Connection timed out or network error.
-    ConnectionError,
-    /// Evicted because bin exceeded target after depth change.
-    BinTrimmed,
-}
+pub use vertex_swarm_api::DisconnectReason;
 
 /// Dial failure reasons for structured error handling.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]

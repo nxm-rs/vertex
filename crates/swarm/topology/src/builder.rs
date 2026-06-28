@@ -256,7 +256,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 ..Default::default()
             }),
             early_disconnect_threshold: self.config.early_disconnect_threshold,
-            pending_evictions: HashSet::new(),
+            pending_closes: HashMap::new(),
             outbound_public_dials: HashSet::new(),
             connection_remote_ips: HashMap::new(),
             lifecycle_rx,

@@ -22,7 +22,7 @@ use vertex_net_local::IpCapability;
 use vertex_net_peer_registry::ConnectionDirection;
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_api::{
-    BanCause, PeerLifecycleEvent, ReportSource, SwarmIdentity, SwarmPeerResolver,
+    BanCause, DisconnectReason, PeerLifecycleEvent, ReportSource, SwarmIdentity, SwarmPeerResolver,
     SwarmScoringEvent, SwarmSpec,
 };
 use vertex_swarm_peer::{SwarmPeer, Timestamp, check_timestamp};
@@ -674,15 +674,30 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// Called by topology when the last connection to a peer closes.
     ///
     /// Clears the connection state recorded by [`Self::on_peer_connected`]
-    /// and emits [`PeerLifecycleEvent::Disconnected`]. `reason` is a static
-    /// label for the debug log; scoring consequences (early-disconnect
-    /// penalties) go through [`Self::record_early_disconnect`].
-    pub fn on_peer_disconnected(&self, overlay: &OverlayAddress, reason: &'static str) {
-        debug!(?overlay, reason, "peer disconnected");
+    /// and emits [`PeerLifecycleEvent::Disconnected`] carrying `reason`.
+    /// Scoring consequences (early-disconnect penalties) go through
+    /// [`Self::record_early_disconnect`].
+    pub fn on_peer_disconnected(&self, overlay: &OverlayAddress, reason: DisconnectReason) {
+        debug!(?overlay, %reason, "peer disconnected");
         if let Some(entry) = self.peers.get(overlay) {
             entry.clear_connected();
         }
-        self.emit(PeerLifecycleEvent::Disconnected { overlay: *overlay });
+        self.emit(PeerLifecycleEvent::Disconnected {
+            overlay: *overlay,
+            reason,
+        });
+    }
+
+    /// Whether the peer's current connection has exchanged useful traffic
+    /// (a chunk served or pushed) since its handshake completed.
+    ///
+    /// Topology consults this at the close site: a connection that did real
+    /// work is never an early disconnect, however it closed.
+    #[must_use]
+    pub fn was_productive_since_connect(&self, overlay: &OverlayAddress) -> bool {
+        self.peers
+            .get(overlay)
+            .is_some_and(|e| e.was_productive_since_connect())
     }
 
     /// Stored [`TrustLevel`] for a peer (one atomic load on the entry).
@@ -917,7 +932,7 @@ impl<I: SwarmIdentity> SwarmPeerResolver for PeerManager<I> {
 mod tests {
     use super::*;
     use vertex_net_peer_store::MemoryPeerStore;
-    use vertex_swarm_api::DisconnectCause;
+    use vertex_swarm_api::DisconnectReason;
     use vertex_swarm_test_utils::{
         MockIdentity, make_swarm_peer_minimal, test_overlay, test_swarm_peer,
         test_swarm_peer_with_timestamp,
@@ -1163,7 +1178,7 @@ mod tests {
         let pm = manager();
         pm.store_discovered_peer(test_swarm_peer(1));
         connect(&pm, 2, SwarmNodeType::Storer);
-        pm.on_peer_disconnected(&test_overlay(2), "test");
+        pm.on_peer_disconnected(&test_overlay(2), DisconnectReason::RemoteClose);
 
         for n in [1, 2] {
             for _ in 0..3 {
@@ -1228,7 +1243,7 @@ mod tests {
         let overlay = test_overlay(1);
 
         connect(&pm, 1, SwarmNodeType::Storer);
-        pm.on_peer_disconnected(&overlay, "test");
+        pm.on_peer_disconnected(&overlay, DisconnectReason::RemoteClose);
         pm.on_dialed_overlay_mismatch(&overlay);
 
         assert!(
@@ -1893,7 +1908,7 @@ mod tests {
                 e,
                 PeerLifecycleEvent::DisconnectRequested {
                     overlay: o,
-                    reason: DisconnectCause::LowScore,
+                    reason: DisconnectReason::LowScore,
                 } if *o == overlay
             )),
             "disconnect crossing must emit DisconnectRequested"
@@ -1981,7 +1996,7 @@ mod tests {
             }) if o == overlay
         ));
 
-        pm.on_peer_disconnected(&overlay, "test");
+        pm.on_peer_disconnected(&overlay, DisconnectReason::RemoteClose);
         assert!(!pm.is_connected(&overlay));
         assert!(pm.connected_since(&overlay).is_none());
         assert_eq!(pm.connection_direction(&overlay), None);
@@ -1990,7 +2005,7 @@ mod tests {
         assert_eq!(pm.trust_level(&overlay), TrustLevel::LocalSubnet);
         let events = drain_events(&mut rx);
         assert!(events.iter().any(
-            |e| matches!(e, PeerLifecycleEvent::Disconnected { overlay: o } if *o == overlay)
+            |e| matches!(e, PeerLifecycleEvent::Disconnected { overlay: o, .. } if *o == overlay)
         ));
     }
 
@@ -2106,7 +2121,7 @@ mod tests {
         assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 3);
 
         // Drive peer 2 stale and purge it via the tick path.
-        pm.on_peer_disconnected(&test_overlay(2), "test");
+        pm.on_peer_disconnected(&test_overlay(2), DisconnectReason::RemoteClose);
         for _ in 0..48 {
             pm.record_dial_failure(&test_overlay(2));
         }
@@ -2417,7 +2432,7 @@ mod tests {
         let mut rx = pm.subscribe();
 
         for _ in 0..(LIFECYCLE_CHANNEL_CAPACITY + 16) {
-            pm.on_peer_disconnected(&overlay, "test");
+            pm.on_peer_disconnected(&overlay, DisconnectReason::RemoteClose);
         }
 
         // The documented policy: a lagged receiver sees Lagged once, losing

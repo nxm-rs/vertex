@@ -401,16 +401,6 @@ pub enum ClientCommand {
         /// The signed cheque to send.
         cheque: SignedCheque,
     },
-
-    /// Disconnect from a peer.
-    ///
-    /// Used when a peer fails validation (e.g., threshold too low).
-    DisconnectPeer {
-        /// The peer to disconnect.
-        peer: OverlayAddress,
-        /// Reason for disconnection.
-        reason: Option<String>,
-    },
 }
 
 /// Events extracted from [`ClientEvent`] and routed to the pseudosettle service.

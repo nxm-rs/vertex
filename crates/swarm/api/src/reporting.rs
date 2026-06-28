@@ -216,10 +216,31 @@ pub trait PeerAffordability: Send + Sync {
     }
 }
 
-/// Why a peer's connection should be closed.
+/// Why a connection to a peer closed.
+///
+/// One vocabulary for both the intent recorded before the node issues a close
+/// and the attribution derived afterwards. Every variant except [`RemoteClose`]
+/// is locally initiated: the node either chose the close or tore down an idle
+/// connection. [`RemoteClose`] is the only peer-attributable case, so the
+/// early-disconnect penalty keys on [`Self::is_locally_initiated`].
+///
+/// The node records the precise intent at every close site; the close handler
+/// reads it back and falls through to the libp2p cause only when no intent was
+/// recorded ([`IdleTimeout`] for a keep-alive teardown, [`RemoteClose`] for a
+/// peer or transport close, [`LocalClose`] for an untagged local close).
+///
+/// [`RemoteClose`]: Self::RemoteClose
+/// [`IdleTimeout`]: Self::IdleTimeout
+/// [`LocalClose`]: Self::LocalClose
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
-pub enum DisconnectCause {
+pub enum DisconnectReason {
+    /// Evicted to rebalance an overpopulated bin after a depth change.
+    BinTrimmed,
+    /// Inbound connection refused because its bin was saturated.
+    BinSaturated,
+    /// Connection to a banned peer was closed.
+    Banned,
     /// Score fell below the disconnect threshold.
     LowScore,
     /// A protocol handler reported a violation.
@@ -228,10 +249,33 @@ pub enum DisconnectCause {
     AllowanceExceeded,
     /// Disconnect requested by an operator over the RPC surface.
     Requested,
-    /// The connection slot was reclaimed by topology pruning.
-    Pruned,
+    /// Replaced by a newer connection from the same peer.
+    DuplicateConnection,
+    /// Bootnode dropped after its initial hive gossip batch.
+    BootnodeRotation,
     /// The node is shutting down.
     ShuttingDown,
+    /// Local idle teardown (libp2p keep-alive timeout). Not a peer fault.
+    IdleTimeout,
+    /// A local close with no recorded intent. Rare; indicates a close path
+    /// that did not record its reason.
+    LocalClose,
+    /// The peer or the transport closed the connection. A graceful remote
+    /// close and a transport reset are indistinguishable at this layer; this
+    /// is the only peer-attributable reason.
+    RemoteClose,
+}
+
+impl DisconnectReason {
+    /// Whether the local node initiated the close.
+    ///
+    /// Only [`RemoteClose`](Self::RemoteClose) is attributable to the peer;
+    /// every other reason is the node's own action or an idle teardown, so the
+    /// early-disconnect penalty skips them.
+    #[must_use]
+    pub fn is_locally_initiated(self) -> bool {
+        !matches!(self, Self::RemoteClose)
+    }
 }
 
 /// Why a peer was banned.
@@ -268,6 +312,8 @@ pub enum PeerLifecycleEvent {
     Disconnected {
         /// The peer's overlay address.
         overlay: OverlayAddress,
+        /// Why the connection closed.
+        reason: DisconnectReason,
     },
     /// A peer's score crossed the warn threshold; exclude it from selection.
     ScoreWarning {
@@ -281,7 +327,7 @@ pub enum PeerLifecycleEvent {
         /// The peer's overlay address.
         overlay: OverlayAddress,
         /// Why the disconnect was requested.
-        reason: DisconnectCause,
+        reason: DisconnectReason,
     },
     /// The peer was banned.
     Banned {
@@ -426,15 +472,31 @@ mod tests {
 
     #[test]
     fn cause_labels_are_snake_case() {
-        let label: &'static str = DisconnectCause::LowScore.into();
+        let label: &'static str = DisconnectReason::LowScore.into();
         assert_eq!(label, "low_score");
         assert_eq!(
-            DisconnectCause::AllowanceExceeded.to_string(),
+            DisconnectReason::AllowanceExceeded.to_string(),
             "allowance_exceeded"
         );
 
         let label: &'static str = BanCause::InvalidData.into();
         assert_eq!(label, "invalid_data");
+    }
+
+    #[test]
+    fn only_remote_close_is_peer_attributable() {
+        assert!(!DisconnectReason::RemoteClose.is_locally_initiated());
+        for reason in [
+            DisconnectReason::BinTrimmed,
+            DisconnectReason::Banned,
+            DisconnectReason::LowScore,
+            DisconnectReason::BootnodeRotation,
+            DisconnectReason::IdleTimeout,
+            DisconnectReason::LocalClose,
+            DisconnectReason::ShuttingDown,
+        ] {
+            assert!(reason.is_locally_initiated(), "{reason} must be local");
+        }
     }
 
     #[test]

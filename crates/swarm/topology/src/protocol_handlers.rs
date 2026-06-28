@@ -17,7 +17,7 @@ use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use crate::DialReason;
 use crate::composed::ProtocolEvent;
-use crate::error::RejectionReason;
+use crate::error::{DisconnectReason, RejectionReason};
 use crate::events::{ConnectionDirection, TopologyEvent};
 use crate::gossip::GossipInput;
 use crate::kademlia::{RoutingCapacity, SwarmRouting};
@@ -95,10 +95,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 reason: RejectionReason::Banned,
                 direction,
             });
-            self.pending_actions.push_back(ToSwarm::CloseConnection {
-                peer_id,
-                connection: libp2p::swarm::CloseConnection::All,
-            });
+            self.close_peer(peer_id, DisconnectReason::Banned);
             return;
         }
 
@@ -151,10 +148,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                     reason: RejectionReason::BinSaturated,
                     direction,
                 });
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id,
-                    connection: libp2p::swarm::CloseConnection::All,
-                });
+                self.close_peer(peer_id, DisconnectReason::BinSaturated);
                 return;
             }
             // Reserve inbound slot so handshake_completed can transition Handshaking->Active
@@ -217,7 +211,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 });
                 // Close only the specific old connection, not all connections.
                 // This handles racing dialers (same PeerId claiming same overlay)
-                // correctly by keeping the new connection active.
+                // correctly by keeping the new connection active. It bypasses
+                // `close_peer` deliberately: closing `One` leaves the new
+                // connection established, so the close handler short-circuits
+                // before attribution and never penalizes this peer.
                 self.pending_actions.push_back(ToSwarm::CloseConnection {
                     peer_id: old_peer_id,
                     connection: libp2p::swarm::CloseConnection::One(old_connection_id),
@@ -433,10 +430,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 peer_count,
                 "Disconnecting from bootnode after initial hive gossip"
             );
-            self.pending_actions.push_back(ToSwarm::CloseConnection {
-                peer_id,
-                connection: libp2p::swarm::CloseConnection::All,
-            });
+            self.close_peer(peer_id, DisconnectReason::BootnodeRotation);
         }
     }
 
