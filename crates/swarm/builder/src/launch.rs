@@ -733,15 +733,22 @@ mod tests {
         assert_eq!(after, baseline, "a receive breach must not score the peer");
     }
 
-    /// The shared accounting wired into the client service via `with_accounting`
-    /// debits the serving peer for an own-request delivery. This proves the
-    /// builder's wiring expression activates the origin debit, not just that the
-    /// service supports it.
+    /// The origin gate wired onto the client handle reserves the price at
+    /// dispatch and commits it exactly once on delivery, debiting the serving
+    /// peer by the per-chunk price. This mirrors the `with_origin_gate` wiring
+    /// `assemble_client_core` builds, proving an end-to-end origin retrieval
+    /// debits the serving peer exactly once through the reservation path.
     #[tokio::test]
     async fn builder_wiring_debits_an_origin_delivery() {
         use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
-        use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing};
-        use vertex_swarm_node::{ClientEvent, ClientService};
+        use tokio::sync::mpsc;
+        use vertex_swarm_api::{
+            AdmissionControl, BandwidthReserve, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+            SwarmPricing,
+        };
+        use vertex_swarm_node::{
+            AccountingSettlement, ClientCommand, ClientHandle, RetrievalResult, SettlementTrigger,
+        };
 
         let identity = test_identity_arc();
         let config = DefaultBandwidthConfig::default();
@@ -759,33 +766,35 @@ mod tests {
         let price = accounting.pricing().peer_price(&overlay, &address);
         assert!(price > Au::ZERO, "the per-chunk price is non-zero");
 
-        // The same wiring expression `build_client_backed_node` uses.
-        let (service, event_tx, _handle) = ClientService::new();
-        let service = service.with_accounting(
+        // The same gate `assemble_client_core` wires onto the throttled handle.
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let settlement: Arc<dyn SettlementTrigger> =
+            Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
+        let handle = ClientHandle::new(tx).with_origin_gate(
             Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone(),
+            accounting.bandwidth().clone() as Arc<dyn BandwidthReserve>,
+            accounting.bandwidth().clone() as Arc<dyn AdmissionControl>,
+            settlement,
         );
 
-        let manager = TaskManager::current();
-        let handle = manager
-            .executor()
-            .spawn_service("test.client_service", service);
+        let request = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.retrieve_chunk(overlay, address, true).await }
+        });
 
-        event_tx
-            .send(ClientEvent::ChunkReceived {
-                peer: overlay,
-                address,
+        // The reservation is held the moment the command is dispatched.
+        let response = match rx.recv().await.expect("origin retrieval dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        response
+            .send(Ok(RetrievalResult {
                 chunk,
                 stamp: None,
-                latency: std::time::Duration::from_millis(1),
-                originated: true,
-            })
-            .await
-            .expect("service is running");
-        // Dropping the sender closes the channel, so the run loop drains the one
-        // queued event and then exits.
-        drop(event_tx);
-        handle.await.expect("service task joins cleanly");
+                peer: overlay,
+            }))
+            .expect("receiver alive");
+        request.await.unwrap().expect("delivery ok");
 
         assert_eq!(
             accounting.bandwidth().for_peer(overlay).balance(),

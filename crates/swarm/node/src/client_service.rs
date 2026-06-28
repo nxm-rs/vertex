@@ -8,8 +8,8 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    AdmissionControl, Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore,
-    SwarmPricing, SwarmScoringEvent,
+    Admission, AdmissionControl, Au, BandwidthReserve, HeldReceive, PeerReporter, ReportSource,
+    SwarmLocalStore, SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
@@ -40,6 +40,24 @@ pub struct ClientHandle {
     /// When set, requests pace themselves under the peer's pseudosettle
     /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
+    /// When set, an origin request reserves its price at dispatch, gates on the
+    /// admission band, and commits the reserved debit on delivery. Absent on the
+    /// lightweight launcher, where origin dispatch neither reserves nor gates.
+    origin: Option<OriginGate>,
+}
+
+/// Reserve-at-dispatch and the admission band for origin requests.
+///
+/// All four read the one shared accounting the selector and throttle use, so the
+/// dispatch gate, the candidate selector, and the in-flight reservation agree on
+/// one ledger. The settlement trigger is the selector's, so settles dedup across
+/// both paths.
+#[derive(Clone)]
+struct OriginGate {
+    pricing: Arc<dyn SwarmPricing>,
+    reserve: Arc<dyn BandwidthReserve>,
+    admission: Arc<dyn AdmissionControl>,
+    settlement: Arc<dyn SettlementTrigger>,
 }
 
 impl ClientHandle {
@@ -48,6 +66,7 @@ impl ClientHandle {
         Self {
             command_tx,
             throttle: None,
+            origin: None,
         }
     }
 
@@ -57,6 +76,77 @@ impl ClientHandle {
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
         self
+    }
+
+    /// Attach the origin credit gate so an own-request dispatch reserves its
+    /// price, bands the request, and commits the debit on delivery.
+    ///
+    /// `pricing`, `reserve`, and `admission` must read the one shared accounting
+    /// the selector and throttle use, and `settlement` must be the selector's so
+    /// the in-flight settle dedup is shared. Relay legs (`originated == false`)
+    /// are accounted by the forwarder and bypass this gate.
+    #[must_use]
+    pub fn with_origin_gate(
+        mut self,
+        pricing: Arc<dyn SwarmPricing>,
+        reserve: Arc<dyn BandwidthReserve>,
+        admission: Arc<dyn AdmissionControl>,
+        settlement: Arc<dyn SettlementTrigger>,
+    ) -> Self {
+        self.origin = Some(OriginGate {
+            pricing,
+            reserve,
+            admission,
+            settlement,
+        });
+        self
+    }
+
+    /// Gate and reserve an origin request before dispatch.
+    ///
+    /// Returns the hold to carry across the in-flight leg (`Ok(Some(_))`), or
+    /// `Ok(None)` for a relay leg or when no origin gate is attached. An
+    /// [`Admit`](Admission::Admit) band reserves and sends; a
+    /// [`SettleAndAdmit`](Admission::SettleAndAdmit) triggers a settle and sends
+    /// anyway (the band keeps us under the disconnect line whichever order the
+    /// storer applies them); a [`Refuse`](Admission::Refuse) at the disconnect
+    /// line triggers a settle and refuses, so the caller routes elsewhere.
+    fn reserve_origin(
+        &self,
+        peer: OverlayAddress,
+        address: &ChunkAddress,
+        originated: bool,
+    ) -> Result<Option<Box<dyn HeldReceive>>, ChunkTransferError> {
+        let Some(gate) = &self.origin else {
+            return Ok(None);
+        };
+        if !originated {
+            return Ok(None);
+        }
+
+        let price = gate.pricing.peer_price(&peer, address);
+        match gate.admission.admit(&peer, price) {
+            Admission::Refuse => {
+                gate.settlement.trigger_settlement(peer);
+                return Err(ChunkTransferError::Refused);
+            }
+            admission => {
+                if admission.settles() {
+                    gate.settlement.trigger_settlement(peer);
+                }
+            }
+        }
+
+        // The reserve shares the admit boundary, so it refuses at the disconnect
+        // line too; a concurrent burst that crossed it between the band check and
+        // here surfaces as a refusal, handled identically.
+        match gate.reserve.reserve_received(peer, price, true) {
+            Ok(held) => Ok(Some(held)),
+            Err(_) => {
+                gate.settlement.trigger_settlement(peer);
+                Err(ChunkTransferError::Refused)
+            }
+        }
     }
 
     /// Send a command to the network layer.
@@ -92,6 +182,11 @@ impl ClientHandle {
                 .await;
         }
 
+        // Reserve the origin debit and gate on the band before sending. The hold
+        // rides this future: applied on delivery, released on any other exit
+        // (failure, cancel, a dropped losing race leg).
+        let reservation = self.reserve_origin(peer, &address, originated)?;
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::RetrieveChunk {
@@ -101,7 +196,13 @@ impl ClientHandle {
             originated,
         })?;
 
-        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
+        let result = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
+        if result.is_ok()
+            && let Some(held) = reservation
+        {
+            held.apply();
+        }
+        result
     }
 
     /// Push a stamped chunk to a specific peer.
@@ -124,6 +225,11 @@ impl ClientHandle {
                 .await;
         }
 
+        // Pushsync reserves the origin debit and gates like retrieval. A
+        // `SettleAndAdmit` peer is still sent to (closeness preserved); only a
+        // `Refuse` at the disconnect line refuses here.
+        let reservation = self.reserve_origin(peer, &address, originated)?;
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::PushChunk {
@@ -134,7 +240,13 @@ impl ClientHandle {
             originated,
         })?;
 
-        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
+        let result = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
+        if result.is_ok()
+            && let Some(held) = reservation
+        {
+            held.apply();
+        }
+        result
     }
 }
 
@@ -154,31 +266,6 @@ pub struct ClientService {
     /// Per-peer retrieval in-flight limiter shared with the chunk provider;
     /// the peer entry is forgotten on disconnect.
     inflight: Option<Arc<PeerInflightLimiter>>,
-    /// Per-peer chunk pricer and the receive-debit half of the shared
-    /// accounting. Present only on the full builder; absent on the lightweight
-    /// launcher, where the origin debit is a no-op.
-    accounting: Option<OriginAccounting>,
-    /// Debtor-initiated settlement over the shared accounting. Present whenever
-    /// accounting is. The selector drives settlement on the candidate-selection
-    /// path, which the shared retrieval path the client drives never runs, so the
-    /// service settles after an own delivery instead.
-    settlement: Option<ClientSettlement>,
-}
-
-/// The pricing and debit handles the service needs to debit own-request
-/// deliveries. Both halves come from the one shared accounting instance.
-struct OriginAccounting {
-    pricing: Arc<dyn SwarmPricing>,
-    bandwidth: Arc<dyn BandwidthDebit>,
-}
-
-/// The affordability query and settlement trigger the service needs to settle
-/// after an own-request delivery. Both read the same shared accounting the origin
-/// debit, the selector, and the throttle use, and the trigger shares its
-/// in-flight set with the selector so overlapping settles are deduped.
-struct ClientSettlement {
-    admission: Arc<dyn AdmissionControl>,
-    trigger: Arc<dyn SettlementTrigger>,
 }
 
 impl ClientService {
@@ -197,8 +284,6 @@ impl ClientService {
             store: None,
             throttle: None,
             inflight: None,
-            accounting: None,
-            settlement: None,
         };
 
         (service, event_tx, handle)
@@ -219,8 +304,6 @@ impl ClientService {
             store: None,
             throttle: None,
             inflight: None,
-            accounting: None,
-            settlement: None,
         };
 
         (service, handle)
@@ -269,77 +352,9 @@ impl ClientService {
         self
     }
 
-    /// Attach the shared accounting so own-request deliveries debit the serving
-    /// peer by the per-chunk price.
-    ///
-    /// `pricing` and `bandwidth` are the two halves of the one accounting
-    /// instance the selector, throttle, and forwarder also share. Only origin
-    /// (own-request) completions are debited here; relay legs are accounted by
-    /// the forwarder, so debiting them here would double-charge.
-    #[must_use]
-    pub fn with_accounting(
-        mut self,
-        pricing: Arc<dyn SwarmPricing>,
-        bandwidth: Arc<dyn BandwidthDebit>,
-    ) -> Self {
-        self.accounting = Some(OriginAccounting { pricing, bandwidth });
-        self
-    }
-
-    /// Attach debtor-initiated settlement so each own-request delivery that
-    /// leaves us past the early-payment trigger settles the serving peer.
-    ///
-    /// `admission` and `trigger` must read the same shared accounting the origin
-    /// debit uses, and `trigger` must be the selector's so the in-flight dedup is
-    /// shared. The selector drives settlement on the candidate-selection path; the
-    /// shared retrieval path never runs the selector, so without this a client's
-    /// debt only ever climbs until peers drop it.
-    #[must_use]
-    pub fn with_settlement(
-        mut self,
-        admission: Arc<dyn AdmissionControl>,
-        trigger: Arc<dyn SettlementTrigger>,
-    ) -> Self {
-        self.settlement = Some(ClientSettlement { admission, trigger });
-        self
-    }
-
     /// Get a handle for sending commands.
     pub fn handle(&self) -> ClientHandle {
         self.handle.clone()
-    }
-
-    /// Debit the serving peer by the per-chunk price for a completed
-    /// own-request delivery. A no-op when no accounting handle is attached.
-    ///
-    /// The chunk is already in hand, so the debit commits immediately. A
-    /// disconnect-threshold breach is already reported to peer scoring inside
-    /// accounting; this only logs it.
-    fn debit_origin(&self, peer: &OverlayAddress, address: &ChunkAddress) {
-        let Some(accounting) = &self.accounting else {
-            return;
-        };
-        let price = accounting.pricing.peer_price(peer, address);
-        if let Err(error) = accounting.bandwidth.debit_received(*peer, price, true) {
-            debug!(%peer, %address, %error, "origin debit refused at disconnect threshold");
-        }
-    }
-
-    /// Settle the serving peer when the own-request debit just committed has
-    /// pushed our debt past the payment threshold. A no-op without settlement.
-    ///
-    /// The trigger self-gates (a settle already in flight to this peer is skipped)
-    /// and `admit(..).settles()` gates on the committed-plus-reserved debt at a
-    /// zero incremental price (the debit already landed), so polling every in-debt
-    /// delivery is cheap. The accepted amount is credited back by the pseudosettle
-    /// service on the ack.
-    fn settle_origin(&self, peer: &OverlayAddress) {
-        let Some(settlement) = &self.settlement else {
-            return;
-        };
-        if settlement.admission.admit(peer, Au::ZERO).settles() {
-            settlement.trigger.trigger_settlement(*peer);
-        }
     }
 
     fn report(&self, peer: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource) {
@@ -401,18 +416,15 @@ impl ClientService {
                 chunk,
                 stamp,
                 latency,
-                originated,
+                originated: _,
             } => {
                 // The requester is resolved by the handler; this event exists for
-                // accounting, scoring, and caching. Content chunks are cached by
-                // address (immutable); SOCs are not (no version signal). The
-                // debit is origin-gated (a relay leg is debited by the
-                // forwarder); cache and scoring apply to every delivery.
+                // scoring and caching. Content chunks are cached by address
+                // (immutable); SOCs are not (no version signal). The origin debit
+                // is committed by the dispatch reservation, not here; a relay leg
+                // is accounted by the forwarder. Cache and scoring apply to every
+                // delivery.
                 debug!(%peer, %address, ?latency, "Chunk received");
-                if originated {
-                    self.debit_origin(&peer, &address);
-                    self.settle_origin(&peer);
-                }
                 if let Some(store) = &self.store
                     && chunk.is_content()
                 {
@@ -459,16 +471,13 @@ impl ClientService {
                 peer,
                 address,
                 latency,
-                originated,
+                originated: _,
             } => {
                 // The pusher is resolved by the handler; this event exists for
-                // accounting and scoring. The debit is origin-gated; a relay leg
-                // is debited by the forwarder.
+                // scoring. The origin debit is committed by the dispatch
+                // reservation, not here; a relay leg is accounted by the
+                // forwarder.
                 debug!(%peer, %address, ?latency, "Receipt received");
-                if originated {
-                    self.debit_origin(&peer, &address);
-                    self.settle_origin(&peer);
-                }
                 self.report(
                     &peer,
                     SwarmScoringEvent::PushSuccess { latency },
@@ -794,138 +803,318 @@ mod tests {
         assert_eq!(source, ReportSource::Protocol("pushsync"));
     }
 
-    /// A fixed per-chunk price for the origin-debit tests.
-    const ORIGIN_PRICE: u64 = 7;
-
-    /// Records every receive debit so a test can assert exactly which peer was
-    /// charged, how much, and that the `originated` flag carried through.
-    #[derive(Default)]
-    struct RecordingDebit {
-        debits: Mutex<Vec<(OverlayAddress, Au, bool)>>,
-    }
-
-    impl vertex_swarm_api::BandwidthDebit for RecordingDebit {
-        fn debit_received(
-            &self,
-            peer: OverlayAddress,
-            price: Au,
-            originated: bool,
-        ) -> vertex_swarm_api::SwarmResult<()> {
-            self.debits.lock().unwrap().push((peer, price, originated));
-            Ok(())
-        }
-    }
-
-    /// A pricer charging `ORIGIN_PRICE` for every peer and chunk.
-    struct FixedPricer;
-    impl vertex_swarm_api::SwarmPricing for FixedPricer {
-        fn price(&self, _chunk: &ChunkAddress) -> Au {
-            Au::from_amount(ORIGIN_PRICE)
-        }
-        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
-            Au::from_amount(ORIGIN_PRICE)
-        }
-    }
-
-    fn service_with_accounting() -> (ClientService, Arc<RecordingDebit>) {
-        let debit = Arc::new(RecordingDebit::default());
-        let (service, _event_tx, _handle) = ClientService::new();
-        let service = service.with_accounting(
-            Arc::new(FixedPricer) as Arc<dyn SwarmPricing>,
-            Arc::clone(&debit) as Arc<dyn BandwidthDebit>,
-        );
-        (service, debit)
-    }
-
     fn content_chunk() -> nectar_primitives::AnyChunk {
-        nectar_primitives::ContentChunk::new(&b"origin-debit-test"[..])
+        nectar_primitives::ContentChunk::new(&b"origin-reserve-test"[..])
             .expect("valid content chunk")
             .into()
     }
 
-    #[test]
-    fn origin_retrieval_debits_serving_peer_exactly_once() {
-        let (service, debit) = service_with_accounting();
-        service.process_event(ClientEvent::ChunkReceived {
-            peer: peer(1),
-            address: ChunkAddress::zero(),
-            chunk: content_chunk(),
-            stamp: None,
-            latency: Duration::from_millis(1),
-            originated: true,
-        });
-        let debits = debit.debits.lock().unwrap();
-        assert_eq!(
-            *debits,
-            vec![(peer(1), Au::from_amount(ORIGIN_PRICE), true)],
-            "an origin retrieval debits the serving peer once by the per-chunk price"
-        );
+    // Reserve-at-dispatch lifecycle over a real `Accounting`. The origin gate on
+    // the handle reserves the price before sending, commits it on delivery, and
+    // releases it on every other exit.
+    use vertex_swarm_accounting::{Accounting, FixedPricingConfig};
+
+    /// Records the peers a settle was triggered for.
+    #[derive(Default)]
+    struct RecordingSettlement {
+        triggered: std::sync::Mutex<Vec<OverlayAddress>>,
     }
 
-    #[test]
-    fn relay_retrieval_is_not_debited_by_the_service() {
-        // The forwarder accounts a relay leg itself; the service must not also
-        // debit it, or the transfer is charged twice.
-        let (service, debit) = service_with_accounting();
-        service.process_event(ClientEvent::ChunkReceived {
-            peer: peer(2),
-            address: ChunkAddress::zero(),
-            chunk: content_chunk(),
-            stamp: None,
-            latency: Duration::from_millis(1),
-            originated: false,
+    impl SettlementTrigger for RecordingSettlement {
+        fn trigger_settlement(&self, peer: OverlayAddress) {
+            self.triggered.lock().unwrap().push(peer);
+        }
+
+        fn settled(
+            &self,
+            _peers: &[OverlayAddress],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(std::future::ready(false))
+        }
+    }
+
+    /// A pricer charging a fixed price for every peer and chunk.
+    struct FixedPeerPricer(u64);
+
+    impl SwarmPricing for FixedPeerPricer {
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+    }
+
+    type GatedAccounting = Accounting<DefaultBandwidthConfig, MockIdentity>;
+
+    /// Build a handle whose origin gate reserves against a real `Accounting`.
+    /// The config bands at payment 1000 (settle trigger 400, floored at refresh
+    /// 10) and disconnect 1250, so a `price` of 100 admits, 800 lands in the
+    /// tolerance band, and 2000 refuses. Returns the handle, the shared
+    /// accounting (to observe balance and reserved), the recording settle
+    /// trigger, and the command receiver.
+    fn gated_handle(
+        price: u64,
+    ) -> (
+        ClientHandle,
+        Arc<GatedAccounting>,
+        Arc<RecordingSettlement>,
+        mpsc::Receiver<ClientCommand>,
+    ) {
+        let config =
+            DefaultBandwidthConfig::new(1000, 25, 10, 60, 1, 50, FixedPricingConfig::default());
+        let accounting = Arc::new(Accounting::new(config, MockIdentity::with_first_byte(0)));
+        let settlement = Arc::new(RecordingSettlement::default());
+        let (tx, rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx).with_origin_gate(
+            Arc::new(FixedPeerPricer(price)) as Arc<dyn SwarmPricing>,
+            accounting.clone() as Arc<dyn BandwidthReserve>,
+            accounting.clone() as Arc<dyn AdmissionControl>,
+            settlement.clone() as Arc<dyn SettlementTrigger>,
+        );
+        (handle, accounting, settlement, rx)
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_reserves_then_applies_on_delivery() {
+        let (handle, accounting, settlement, mut rx) = gated_handle(100);
+        let peer = peer(1);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
         });
+
+        // The dispatched command means the reservation is held: the price is
+        // reserved and the committed balance is still zero.
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk {
+                peer: p, response, ..
+            } => {
+                assert_eq!(p, peer);
+                response
+            }
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+
+        // Delivery applies the reservation: debited once, reserve cleared.
+        response
+            .send(Ok(RetrievalResult {
+                chunk: content_chunk(),
+                stamp: None,
+                peer,
+            }))
+            .expect("receiver alive");
+        task.await.unwrap().expect("delivery ok");
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        // An in-band Admit needs no settle.
+        assert!(settlement.triggered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_releases_reservation_on_failure() {
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(2);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+
+        // A remote failure releases the reservation, leaving the balance untouched.
+        response
+            .send(Err(ChunkTransferError::Remote))
+            .expect("receiver alive");
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ChunkTransferError::Remote)
+        ));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_releases_reservation_on_dropped_response() {
+        // The cancel path: the response oneshot is dropped without an answer, so
+        // the request returns `Cancelled` and the held reservation releases. No
+        // leak, no debit.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(3);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+
+        drop(response);
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ChunkTransferError::Cancelled)
+        ));
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_in_the_band_still_sends_and_triggers_settle() {
+        // A price landing the projected debt in the tolerance band sends anyway
+        // (closeness preserved) and triggers a settle.
+        let (handle, _accounting, settlement, mut rx) = gated_handle(800);
+        let peer = peer(4);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched anyway in the band") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer]);
+        response.send(Err(ChunkTransferError::Remote)).ok();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_refused_at_the_disconnect_line_skips_and_settles() {
+        // A price past the disconnect line refuses: no bytes are sent, nothing is
+        // reserved, and a settle is triggered so the peer drains.
+        let (handle, accounting, settlement, mut rx) = gated_handle(2000);
+        let peer = peer(5);
+
+        let outcome = handle
+            .retrieve_chunk(peer, ChunkAddress::zero(), true)
+            .await;
+        assert!(matches!(outcome, Err(ChunkTransferError::Refused)));
         assert!(
-            debit.debits.lock().unwrap().is_empty(),
-            "a relay retrieval is debited by the forwarder, never by the service"
+            rx.try_recv().is_err(),
+            "no bytes are sent to a refused peer"
         );
+        assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer]);
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
     }
 
-    #[test]
-    fn origin_push_debits_serving_peer_exactly_once() {
-        let (service, debit) = service_with_accounting();
-        service.process_event(ClientEvent::ReceiptReceived {
-            peer: peer(3),
-            address: ChunkAddress::zero(),
-            latency: Duration::from_millis(1),
-            originated: true,
+    #[tokio::test]
+    async fn relay_leg_bypasses_the_origin_gate() {
+        // A relay leg (`originated = false`) neither reserves nor settles; the
+        // forwarder accounts its own legs.
+        let (handle, accounting, settlement, mut rx) = gated_handle(100);
+        let peer = peer(6);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), false)
+                    .await
+            }
         });
-        let debits = debit.debits.lock().unwrap();
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk {
+                originated,
+                response,
+                ..
+            } => {
+                assert!(!originated, "a relay leg is not an origin request");
+                response
+            }
+            other => panic!("unexpected command: {other:?}"),
+        };
         assert_eq!(
-            *debits,
-            vec![(peer(3), Au::from_amount(ORIGIN_PRICE), true)],
-            "an origin push debits the storer once by the per-chunk price"
+            Ledger::reserved(&*accounting, &peer),
+            Au::ZERO,
+            "a relay leg holds no reservation"
         );
+        response
+            .send(Ok(RetrievalResult {
+                chunk: content_chunk(),
+                stamp: None,
+                peer,
+            }))
+            .ok();
+        let _ = task.await;
+        assert_eq!(
+            Ledger::balance(&*accounting, &peer),
+            Au::ZERO,
+            "a relay leg is not debited by the origin gate"
+        );
+        assert!(settlement.triggered.lock().unwrap().is_empty());
     }
 
-    #[test]
-    fn relay_push_is_not_debited_by_the_service() {
-        let (service, debit) = service_with_accounting();
-        service.process_event(ClientEvent::ReceiptReceived {
-            peer: peer(4),
-            address: ChunkAddress::zero(),
-            latency: Duration::from_millis(1),
-            originated: false,
+    #[tokio::test]
+    async fn origin_push_reserves_then_releases_on_failure() {
+        // Pushsync reserves at dispatch like retrieval and releases on failure.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(7);
+        let stamped = test_stamped_chunk();
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.push_chunk(peer, stamped, true).await }
         });
-        assert!(
-            debit.debits.lock().unwrap().is_empty(),
-            "a relay push is debited by the forwarder, never by the service"
-        );
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::PushChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+
+        response.send(Err(ChunkTransferError::Remote)).ok();
+        let _ = task.await;
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
     }
 
-    #[test]
-    fn origin_delivery_without_accounting_is_a_noop() {
-        // The lightweight launcher attaches no accounting; an origin delivery
-        // must not panic and simply skips the debit.
-        let (service, _event_tx, _handle) = ClientService::new();
-        service.process_event(ClientEvent::ChunkReceived {
-            peer: peer(5),
-            address: ChunkAddress::zero(),
-            chunk: content_chunk(),
-            stamp: None,
-            latency: Duration::from_millis(1),
-            originated: true,
+    #[tokio::test]
+    async fn origin_dispatch_without_a_gate_is_a_noop() {
+        // The lightweight launcher attaches no origin gate; an origin dispatch
+        // must still send and never panic.
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer(8), ChunkAddress::zero(), true)
+                    .await
+            }
         });
+        match rx.recv().await.expect("dispatched without a gate") {
+            ClientCommand::RetrieveChunk { response, .. } => {
+                response.send(Err(ChunkTransferError::Remote)).ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let _ = task.await;
     }
 
     // Throttle wiring at the outbound API boundary.

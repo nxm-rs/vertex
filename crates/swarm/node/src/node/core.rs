@@ -168,7 +168,21 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // peer's pseudosettle allowance so a burst never crosses the settlement
     // trigger.
     let throttle = Arc::new(SelfThrottle::new(&accounting, &bandwidth));
-    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
+    // The throttled handle the chunk provider dispatches through also carries the
+    // origin credit gate: each own-request leg reserves its price (so `reserved`
+    // matches the storer's shadow reserve), bands on the same admission boundary
+    // the selector uses, commits the debit on delivery, and releases it on any
+    // other exit. The settle trigger is the selector's, so settles dedup across
+    // both paths.
+    let throttled_handle = client_handle
+        .clone()
+        .with_throttle(Arc::clone(&throttle))
+        .with_origin_gate(
+            Arc::new(accounting.pricing().clone()),
+            accounting.bandwidth().clone(),
+            admission.clone(),
+            settlement_trigger.clone(),
+        );
 
     // Per-peer retrieval substream cap: the non-economic overrun guard the chunk
     // provider consults at selection time. One shared instance so a disconnect on
@@ -177,18 +191,13 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
 
     // The service reports through the same peer-manager authority accounting
     // uses, shares the handle's throttle so a disconnect clears that peer's
-    // bucket, forgets that peer's in-flight slots on disconnect, and debits the
-    // serving peer for our own-request deliveries through the same shared
-    // accounting the selector, throttle, and forwarder use.
+    // bucket, and forgets that peer's in-flight slots on disconnect. The origin
+    // debit is reserved and committed by the dispatch gate on the throttled
+    // handle, not by the service.
     let client_service = client_service
         .with_reporter(reporter)
         .with_throttle(Arc::clone(&throttle))
-        .with_inflight_limiter(Arc::clone(&inflight))
-        .with_accounting(
-            Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone(),
-        )
-        .with_settlement(admission, settlement_trigger);
+        .with_inflight_limiter(Arc::clone(&inflight));
 
     ClientCore {
         accounting,

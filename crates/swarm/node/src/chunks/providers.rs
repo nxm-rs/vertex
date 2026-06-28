@@ -12,6 +12,9 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_topology::TopologyHandle;
+// `Instant` is portable (the browser performance clock on wasm); only timer
+// sleeps are `!Send`, and the gated-set wait awaits a settle completion instead.
+use vertex_tasks::time::{Duration, Instant};
 
 use crate::{
     ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER, RaceFailure,
@@ -39,6 +42,14 @@ const RETRIEVE_CANDIDATE_WIDTH: usize = 8;
 /// does not amplify paid bandwidth: the wider pool only supplies free-slot
 /// alternatives, the race still meters at most this many legs (the prior bound).
 const RETRIEVE_MAX_ATTEMPTS: usize = 3;
+
+/// Bound on the settle-and-await for a fully gated close set: the request's own
+/// retrieval lifetime, matching the client-behaviour outbound retrieval timeout.
+/// Accounting-timing back-pressure blocks within the request rather than failing
+/// early to the consumer, and only a genuine lifetime expiry falls through to the
+/// generic transient failure. The wait is progress-aware, so it paces on
+/// settlement RTT and returns at once when no settle is in flight to drain debt.
+const GATE_SETTLE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
@@ -73,10 +84,27 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         self
     }
 
-    /// Order proximity-sorted `candidates` for a request on `chunk`.
-    fn select(&self, candidates: Vec<SwarmAddress>, chunk: &ChunkAddress) -> Vec<SwarmAddress> {
+    /// Order proximity-sorted `candidates` for a request on `chunk`, settling
+    /// and awaiting a fully gated close set.
+    ///
+    /// With a selector this delegates to the score- and affordability-aware
+    /// ordering. A non-empty order returns at once (the fast path); a fully
+    /// gated close set awaits its in-flight settles up to the retrieval-lifetime
+    /// [`GATE_SETTLE_BUDGET`], returning at the deadline or promptly once no
+    /// settle is in flight to drain debt, with whatever is admissible (possibly
+    /// empty). An empty result falls through to the caller's generic transient
+    /// failure, never an accounting-specific error. The wait is `Send` on every
+    /// platform. With no selector the proximity order is returned unchanged.
+    async fn select_or_wait(
+        &self,
+        candidates: Vec<SwarmAddress>,
+        chunk: &ChunkAddress,
+    ) -> Vec<SwarmAddress> {
         match &self.selector {
-            Some(selector) => selector.order(candidates, chunk),
+            Some(selector) => {
+                let deadline = Instant::now() + GATE_SETTLE_BUDGET;
+                selector.order_or_wait(candidates, chunk, deadline).await
+            }
             None => candidates,
         }
     }
@@ -89,7 +117,11 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self
             .topology
             .closest_to(&chunk_address, RETRIEVE_CANDIDATE_WIDTH);
-        let closest_peers = self.select(closest_peers, &chunk_address);
+        // Settle-and-await when every close peer is gated, so a fully gated set
+        // recovers instead of failing; if still gated at the budget the empty
+        // result falls through to the no-connected-peers path below, the same
+        // generic transient error a no-peers failure yields.
+        let closest_peers = self.select_or_wait(closest_peers, &chunk_address).await;
 
         // Skip-busy: prefer close peers with a free retrieval slot so a hot peer
         // at its in-flight cap is skipped at selection time rather than
@@ -166,7 +198,10 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     async fn push_to_closest(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
         let address = *chunk.address();
         let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
-        let closest = self.select(closest, &address);
+        // Settle-and-await an all-gated closest set rather than immediately
+        // falling through to a farther peer or failing; if still gated at the
+        // budget the empty result yields the generic no-storer outcome below.
+        let closest = self.select_or_wait(closest, &address).await;
         let attempts = closest.len();
 
         // The required custody depth is derived from our locally observed
@@ -851,6 +886,157 @@ mod tests {
                 limiter.try_acquire(&head).is_some(),
                 "the freed head slot is reservable again"
             );
+        }
+    }
+
+    mod gated_fallback {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use nectar_primitives::SwarmAddress;
+        use vertex_swarm_api::{Au, ChunkAddress, Ledger, SwarmError, SwarmPricing, Threshold};
+        use vertex_tasks::time::Instant;
+
+        use crate::{PeerScores, PeerSelector, SettlementTrigger};
+
+        use super::address;
+
+        fn overlay(n: u8) -> SwarmAddress {
+            SwarmAddress::from([n; 32])
+        }
+
+        struct NoScores;
+        impl PeerScores for NoScores {
+            fn peer_score(&self, _overlay: &SwarmAddress) -> Option<f64> {
+                None
+            }
+        }
+
+        struct UnitPricer;
+        impl SwarmPricing for UnitPricer {
+            fn price(&self, _chunk: &ChunkAddress) -> Au {
+                Au::from_amount(1)
+            }
+            fn peer_price(&self, _peer: &SwarmAddress, _chunk: &ChunkAddress) -> Au {
+                Au::from_amount(1)
+            }
+        }
+
+        /// Refuses every peer at the unit price while `gated`; admits once clear.
+        struct GatedLedger(Arc<AtomicBool>);
+        impl Ledger for GatedLedger {
+            fn balance(&self, _o: &SwarmAddress) -> Au {
+                Au::ZERO
+            }
+            fn reserved(&self, _o: &SwarmAddress) -> Au {
+                Au::ZERO
+            }
+            fn headroom(&self, _o: &SwarmAddress, _t: Threshold) -> Au {
+                Au::from_amount(1000)
+            }
+            fn disconnect_line(&self, _o: &SwarmAddress) -> Au {
+                if self.0.load(Ordering::SeqCst) {
+                    Au::ZERO
+                } else {
+                    Au::from_amount(1000)
+                }
+            }
+            fn settle_trigger(&self, _o: &SwarmAddress) -> Au {
+                Au::from_amount(1000)
+            }
+        }
+
+        /// `settled` resolves at once; when `drains` it clears the gate first
+        /// (modelling a completed in-flight settle that drops the peer's debt
+        /// under its line) and reports `true`. Otherwise it reports `false`: no
+        /// settle is draining debt, so the wait loop stops without spinning.
+        struct DrainSettlement {
+            gate: Arc<AtomicBool>,
+            drains: bool,
+        }
+        impl SettlementTrigger for DrainSettlement {
+            fn trigger_settlement(&self, _peer: SwarmAddress) {}
+            fn settled(
+                &self,
+                _peers: &[SwarmAddress],
+            ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+                if self.drains {
+                    self.gate.store(false, Ordering::SeqCst);
+                }
+                Box::pin(std::future::ready(self.drains))
+            }
+        }
+
+        fn selector(gate: Arc<AtomicBool>, drains: bool) -> PeerSelector {
+            PeerSelector::new(
+                Arc::new(NoScores),
+                Arc::new(GatedLedger(Arc::clone(&gate))),
+                Arc::new(UnitPricer),
+                Arc::new(DrainSettlement { gate, drains }),
+            )
+        }
+
+        #[tokio::test]
+        async fn a_recovering_gated_set_returns_the_admissible_peers() {
+            // Every close peer is gated on the first order; the awaited settle
+            // drains the debt (the gate clears) and the re-order returns them.
+            let gate = Arc::new(AtomicBool::new(true));
+            let sel = selector(Arc::clone(&gate), true);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let ordered = sel
+                .order_or_wait(
+                    vec![overlay(1), overlay(2)],
+                    &ChunkAddress::zero(),
+                    deadline,
+                )
+                .await;
+            assert_eq!(
+                ordered,
+                vec![overlay(1), overlay(2)],
+                "recovers once the settle drains"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_fully_gated_set_with_no_draining_settle_returns_empty() {
+            // The gate never clears and no settle is draining debt: the
+            // no-progress guard terminates the wait with an empty result, so the
+            // dispatch falls through to its generic transient error rather than
+            // hanging or spinning to the far deadline.
+            let gate = Arc::new(AtomicBool::new(true));
+            let sel = selector(Arc::clone(&gate), false);
+            let deadline = Instant::now() + std::time::Duration::from_secs(30);
+            let ordered = sel
+                .order_or_wait(
+                    vec![overlay(1), overlay(2)],
+                    &ChunkAddress::zero(),
+                    deadline,
+                )
+                .await;
+            assert!(ordered.is_empty(), "still gated, no settle draining");
+        }
+
+        #[test]
+        fn an_empty_close_set_surfaces_a_generic_transient_error() {
+            // What a fully gated (empty) selection falls through to is the same
+            // generic transient failure a genuine no-peers/no-storer case yields:
+            // retrieval a `Network` error, push a `NoStorer` error. Neither is an
+            // accounting-specific variant, so the accounting concern never reaches
+            // the consumer.
+            let retrieval = SwarmError::network_msg("no connected peers available for retrieval");
+            assert!(matches!(retrieval, SwarmError::Network { .. }));
+            assert!(
+                retrieval.is_retryable(),
+                "a no-peers retrieval is transient"
+            );
+
+            let push = SwarmError::NoStorer {
+                chunk_address: address(0xaa),
+            };
+            assert!(matches!(push, SwarmError::NoStorer { .. }));
+            assert!(push.is_retryable(), "a no-storer push is transient");
         }
     }
 }

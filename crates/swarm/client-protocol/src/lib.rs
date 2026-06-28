@@ -92,18 +92,28 @@ pub enum ChunkTransferError {
     /// Retrieval only.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
+
+    /// The local credit gate refused the request at the peer's disconnect line.
+    /// No bytes were sent and a settle was triggered so the peer drains; another
+    /// candidate should be tried.
+    #[error("Admission refused at the disconnect line")]
+    Refused,
 }
 
 impl ChunkTransferError {
     /// Whether retrying the request against another candidate may succeed.
     ///
-    /// Timeout, remote failure, transient protocol error, and not-found are
-    /// retryable (another candidate may hold the chunk); a cancelled or
-    /// channel-closed request reflects a local teardown that another attempt
-    /// cannot fix.
+    /// Timeout, remote failure, transient protocol error, not-found, and a local
+    /// credit refusal are retryable (another candidate may hold the chunk or be
+    /// affordable); a cancelled or channel-closed request reflects a local
+    /// teardown that another attempt cannot fix.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
+            Self::TimedOut
+            | Self::Remote
+            | Self::Protocol(_)
+            | Self::NotFound(_)
+            | Self::Refused => true,
             Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
         }
     }
