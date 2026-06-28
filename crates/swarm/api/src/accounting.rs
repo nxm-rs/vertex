@@ -232,6 +232,24 @@ impl Au {
             None => None,
         }
     }
+
+    /// Convert a pseudosettle wire amount (`U256`) into AU, saturating when out
+    /// of range.
+    ///
+    /// In-spec pseudosettle amounts fit a `u64` of AU; a larger wire value is
+    /// out of spec and saturates to the maximum AU so the deciding service
+    /// still detects an over-acceptance in AU space rather than reading a
+    /// wrapped or truncated small amount. This is the single inbound wire
+    /// crossing, the saturating counterpart to the fallible [`TryFrom<U256>`]
+    /// used where rejecting the value is not an option.
+    #[inline]
+    #[must_use]
+    pub fn saturating_from_u256(value: U256) -> Au {
+        match u64::try_from(value) {
+            Ok(raw) => Au::from_amount(raw),
+            Err(_) => Au::from_amount(u64::MAX),
+        }
+    }
 }
 
 impl Add for Au {
@@ -458,6 +476,24 @@ mod tests {
             Au::try_from(way_too_big),
             Err(AuConversionError::U256TooLarge(way_too_big))
         );
+    }
+
+    #[test]
+    fn saturating_from_u256_saturates_out_of_range() {
+        // In-range amounts convert exactly.
+        assert_eq!(Au::saturating_from_u256(U256::from(0u64)), Au::ZERO);
+        assert_eq!(
+            Au::saturating_from_u256(U256::from(13_500_000u64)),
+            Au::from_amount(13_500_000)
+        );
+        // A value above i64::MAX (but within u64) saturates rather than landing
+        // as a negative balance.
+        let above_i64 = U256::from(i64::MAX as u64) + U256::from(1u64);
+        assert_eq!(Au::saturating_from_u256(above_i64), Au::new(i64::MAX));
+        // A value above u64::MAX saturates rather than truncating to its low
+        // limb (which would credit a tiny amount).
+        let above_u64 = U256::from(u64::MAX) + U256::from(6u64);
+        assert_eq!(Au::saturating_from_u256(above_u64), Au::new(i64::MAX));
     }
 
     #[test]

@@ -245,7 +245,8 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 // Calculate acceptable amount based on time-based refresh
                 let handle = self.accounting.for_peer(peer);
-                let acceptable = self.calculate_acceptable(&peer, &handle, au_from_wire(amount));
+                let acceptable =
+                    self.calculate_acceptable(&peer, &handle, Au::saturating_from_u256(amount));
 
                 if acceptable.is_positive() {
                     // Credit peer's balance (they paid us)
@@ -312,18 +313,11 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
     }
 }
 
-/// Convert a wire settlement amount (`U256`) into AU.
-///
-/// Pseudosettle amounts on the wire are at most a `u64` of AU, so this takes
-/// the low 64 bits, matching the legacy behaviour. It is the only `U256` to AU
-/// crossing in this crate.
-fn au_from_wire(amount: U256) -> Au {
-    Au::from_amount(amount.as_limbs()[0])
-}
-
 /// Convert an AU amount into the wire settlement representation (`U256`).
 ///
-/// The only AU to `U256` crossing in this crate.
+/// The only AU to `U256` crossing in this crate. The amount is always
+/// non-negative (an offer or a `min` of non-negative caps), so the clamp in
+/// [`Au::as_amount`] never engages.
 fn wire_from_au(amount: Au) -> U256 {
     U256::from(amount.as_amount())
 }

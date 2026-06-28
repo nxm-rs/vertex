@@ -538,7 +538,7 @@ impl ClientService {
                 //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
 
                 let ack = PseudosettleAck {
-                    accepted: Au::from_amount(amount.as_limbs()[0]),
+                    accepted: Au::saturating_from_u256(amount),
                     // Unix seconds: the payer rejects an ack whose timestamp is
                     // more than a couple of seconds off its own clock.
                     timestamp: vertex_util_runtime::time::now_unix_secs() as i64,
