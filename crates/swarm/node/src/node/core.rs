@@ -143,7 +143,6 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // before swap settles originated debt; the order matches `settle_all`.
     let accounting = AccountingBuilder::new(bandwidth.clone())
         .with_pricer_from_config(spec)
-        .with_reporter(Arc::clone(&reporter))
         .with_settlement(pseudosettle_provider)
         .with_settlements(extra_settlement)
         .build(&identity);
