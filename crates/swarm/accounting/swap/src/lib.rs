@@ -87,12 +87,8 @@ impl<C: SwarmAccountingConfig> SwapProvider<C> {
     /// The early-payment trigger: pay once debt reaches this fraction of the
     /// payment threshold, mirroring pseudosettle's early-payment behaviour.
     fn early_payment_trigger(&self) -> Au {
-        let threshold = self.config.payment_threshold();
         let early = self.config.early_payment_percent().min(100);
-        let scaled = threshold
-            .checked_scale(100 - early)
-            .unwrap_or(Au::from_amount(u64::MAX));
-        Au::from_amount(scaled.as_amount() / 100)
+        self.config.payment_threshold().scale_percent(100 - early)
     }
 }
 
