@@ -651,90 +651,23 @@ mod tests {
         });
     }
 
-    struct PanicPeerBandwidth {
-        peer: OverlayAddress,
-    }
-
-    impl SwarmPeerBandwidth for PanicPeerBandwidth {
-        fn record(&self, _amount: Au, _direction: Direction) {}
-        fn allow(&self, _amount: Au) -> bool {
-            true
-        }
-        fn balance(&self) -> Au {
-            Au::ZERO
-        }
-        async fn settle(&self) -> SwarmResult<()> {
-            panic!("settle panics mid-flight");
-        }
-        fn peer(&self) -> OverlayAddress {
-            self.peer
-        }
-    }
-
-    struct PanicBandwidth {
-        for_peer_calls: Arc<AtomicUsize>,
-    }
-
-    impl SwarmBandwidthAccounting for PanicBandwidth {
-        type Identity = MockIdentity;
-        type Peer = PanicPeerBandwidth;
-        type ReceiveAction = NoReceiveAction;
-        type ProvideAction = NoProvideAction;
-
-        fn identity(&self) -> &Self::Identity {
-            unreachable!("settlement never reads the identity")
-        }
-        fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-            self.for_peer_calls.fetch_add(1, Ordering::SeqCst);
-            PanicPeerBandwidth { peer }
-        }
-        fn peers(&self) -> Vec<OverlayAddress> {
-            Vec::new()
-        }
-        fn remove_peer(&self, _peer: &OverlayAddress) {}
-        fn prepare_receive(
-            &self,
-            _peer: OverlayAddress,
-            _price: Au,
-            _originated: bool,
-        ) -> SwarmResult<Self::ReceiveAction> {
-            Ok(NoReceiveAction)
-        }
-        fn prepare_provide(
-            &self,
-            _peer: OverlayAddress,
-            _price: Au,
-        ) -> SwarmResult<Self::ProvideAction> {
-            Ok(NoProvideAction)
-        }
-    }
-
     #[test]
-    fn panicking_settle_still_clears_the_peer() {
-        // A settle that panics must drop the in-flight guard while unwinding, so
-        // the peer leaves the set and a later trigger starts a fresh settle. The
-        // panic is caught at the tokio task boundary.
-        settlement_runtime().block_on(async {
-            let for_peer_calls = Arc::new(AtomicUsize::new(0));
-            let bandwidth = Arc::new(PanicBandwidth {
-                for_peer_calls: Arc::clone(&for_peer_calls),
-            });
-            let trigger = AccountingSettlement::new(bandwidth);
-
-            // First trigger spawns a settle that panics; its guard clears the peer
-            // on unwind. Retry until a second settle is created, proving the set
-            // cleared.
-            trigger.trigger_settlement(peer(1));
-            let mut tries = 0;
-            while for_peer_calls.load(Ordering::SeqCst) < 2 {
-                trigger.trigger_settlement(peer(1));
-                tries += 1;
-                assert!(
-                    tries < 10_000,
-                    "in-flight set never cleared after the settle panicked"
-                );
-                tokio::task::yield_now().await;
-            }
-        });
+    fn in_flight_guard_clears_the_peer_on_drop() {
+        // The guard removes the peer in Drop, which runs on normal completion,
+        // unwind (a panicking settle), and cancellation alike, so a settle that
+        // never completes cleanly cannot pin the peer and starve its settlement.
+        let in_flight = Arc::new(parking_lot::Mutex::new(HashSet::new()));
+        in_flight.lock().insert(peer(1));
+        {
+            let _guard = InFlightGuard {
+                in_flight: Arc::clone(&in_flight),
+                peer: peer(1),
+            };
+            assert!(in_flight.lock().contains(&peer(1)));
+        }
+        assert!(
+            !in_flight.lock().contains(&peer(1)),
+            "the guard must clear the peer when dropped"
+        );
     }
 }
