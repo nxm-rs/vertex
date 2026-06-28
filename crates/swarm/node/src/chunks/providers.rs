@@ -25,14 +25,20 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// Closest connected peers considered for a retrieval before skip-busy
-/// filtering.
+/// Pool of closest connected peers scanned for a free retrieval slot before
+/// skip-busy filtering.
 ///
-/// Wider than the staggered race ever starts, so when address proximity clusters
-/// races onto a few close peers and one is at its in-flight cap it can be skipped
-/// in favour of the next-closest peer with a free slot, rather than overrunning
-/// the hot peer's per-connection substream budget.
+/// Intentionally wider than [`RETRIEVE_MAX_ATTEMPTS`] so that when address
+/// proximity clusters onto a few close peers and one is at its in-flight cap,
+/// skip-busy still has next-closest alternatives with a free slot rather than
+/// overrunning the hot peer's per-connection substream budget. This is only a
+/// selection pool: the race is bounded separately by [`RETRIEVE_MAX_ATTEMPTS`].
 const RETRIEVE_CANDIDATE_WIDTH: usize = 8;
+
+/// Maximum retrieval legs raced per chunk, so widening the skip-busy pool
+/// does not amplify paid bandwidth: the wider pool only supplies free-slot
+/// alternatives, the race still meters at most this many legs (the prior bound).
+const RETRIEVE_MAX_ATTEMPTS: usize = 3;
 
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
@@ -91,7 +97,13 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // full list rather than failing the request: degraded service beats
         // failure. The cap is non-economic and composed after the economic
         // selector above; the throttle paces each chosen request below.
-        let candidates = skip_busy(closest_peers, self.inflight.as_deref());
+        let mut candidates = skip_busy(closest_peers, self.inflight.as_deref());
+        // Bound the raced legs so the wider skip-busy pool only supplies
+        // free-slot alternatives and never amplifies metered bandwidth: the
+        // survivor list is proximity-ordered and skip-busy preserves order, so
+        // this keeps the closest free-slot peers (or, in the all-busy
+        // fall-through, the closest few, the prior bound).
+        candidates.truncate(RETRIEVE_MAX_ATTEMPTS);
         let attempts = candidates.len();
 
         // Race the candidates with a staggered start, resolving on the first
@@ -638,7 +650,9 @@ mod tests {
             ChunkTransferError, ClientCommand, ClientHandle, PeerInflightLimiter, RetrievalResult,
         };
 
-        use super::super::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, skip_busy};
+        use super::super::{
+            RETRIEVAL_STAGGER, RETRIEVE_MAX_ATTEMPTS, RaceFailure, race_candidates, skip_busy,
+        };
         use super::*;
 
         const CAP_ONE: NonZeroUsize = match NonZeroUsize::new(1) {
@@ -708,6 +722,26 @@ mod tests {
                 skip_busy(candidates.clone(), Some(&limiter)),
                 candidates,
                 "all-busy falls through to the full list rather than failing"
+            );
+        }
+
+        #[test]
+        fn skip_busy_pool_is_truncated_to_the_attempts_bound() {
+            // A wide pool of free-slot peers must not race every leg: the
+            // production path truncates the skip-busy survivors to the attempts
+            // bound, so the wider pool only supplies free-slot alternatives
+            // without amplifying metered bandwidth.
+            let limiter = PeerInflightLimiter::new(CAP_ONE);
+            let pool: Vec<SwarmAddress> = (1..=8).map(overlay).collect();
+
+            let mut candidates = skip_busy(pool, Some(&limiter));
+            candidates.truncate(RETRIEVE_MAX_ATTEMPTS);
+
+            assert_eq!(candidates.len(), RETRIEVE_MAX_ATTEMPTS);
+            assert_eq!(
+                candidates,
+                vec![overlay(1), overlay(2), overlay(3)],
+                "the closest attempts-bound free-slot peers are kept in order"
             );
         }
 
