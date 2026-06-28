@@ -292,31 +292,15 @@ impl fmt::Display for Au {
 /// value here rather than wrapping or clamping it. The offending value is kept
 /// so callers can report it (the swap path maps it onto its own overflow
 /// error).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
 pub enum AuConversionError {
     /// A `U256` exceeded [`i64::MAX`] and cannot be held in an [`Au`].
+    #[error("value {0} overflows accounting unit")]
     U256TooLarge(U256),
     /// A negative [`Au`] has no `U256` representation.
+    #[error("negative accounting unit {0} has no U256 representation")]
     Negative(Au),
 }
-
-impl fmt::Display for AuConversionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::U256TooLarge(value) => {
-                write!(f, "value {value} overflows accounting unit")
-            }
-            Self::Negative(value) => {
-                write!(
-                    f,
-                    "negative accounting unit {value} has no U256 representation"
-                )
-            }
-        }
-    }
-}
-
-impl core::error::Error for AuConversionError {}
 
 /// Convert a `U256` (the swap/pseudosettle wire amount) into an [`Au`].
 ///
