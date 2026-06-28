@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use vertex_swarm_api::{
     AdmissionControl, Au, Debt, Direction, Ledger, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmIdentity, SwarmPeerBandwidth, SwarmResult, Threshold,
+    SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -210,14 +210,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
     }
 }
 
-/// Per-peer ledger reads for admission and self-throttling.
+/// Per-peer ledger reads for admission.
 ///
 /// Sign convention: `balance` is the peer's debt to us in AU (positive means the
-/// peer owes us, negative we owe the peer). `headroom` is the floored allowance
-/// toward a threshold; the admission band that consumes it lives in the default
-/// [`AdmissionControl::admit`]. Unknown peers read as fresh zero-balance peers
-/// with the configured thresholds, matching [`Accounting::get_or_create_peer`],
-/// and the reads never insert peer state.
+/// peer owes us, negative we owe the peer). The admission band that consumes
+/// these reads lives in the default [`AdmissionControl::admit`]. Unknown peers
+/// read as fresh zero-balance peers with the configured thresholds, matching
+/// [`Accounting::get_or_create_peer`], and the reads never insert peer state.
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
     fn balance(&self, peer: &OverlayAddress) -> Au {
         self.peers
@@ -231,35 +230,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
             .read()
             .get(peer)
             .map_or(Au::ZERO, |state| state.reserved_balance())
-    }
-
-    fn headroom(&self, peer: &OverlayAddress, to: Threshold) -> Au {
-        let (balance, reserved, threshold) = match self.peers.read().get(peer) {
-            Some(state) => (
-                state.balance(),
-                state.reserved_balance(),
-                match to {
-                    Threshold::Payment => state.payment_threshold(),
-                    Threshold::Disconnect => state.disconnect_threshold(),
-                },
-            ),
-            None => (
-                Au::ZERO,
-                Au::ZERO,
-                match to {
-                    Threshold::Payment => self.config.payment_threshold(),
-                    Threshold::Disconnect => self.config.disconnect_threshold(),
-                },
-            ),
-        };
-
-        // The signed balance plus the (non-negative) threshold less the
-        // outstanding reservation, floored at zero. Saturating arithmetic keeps
-        // the AU domain closed without an i128 detour.
-        balance
-            .saturating_add(threshold)
-            .saturating_sub(reserved)
-            .max(Au::ZERO)
     }
 
     fn disconnect_line(&self, peer: &OverlayAddress) -> Au {
@@ -484,15 +454,7 @@ mod tests {
     /// Config with payment threshold 1000 and 25% tolerance, so the
     /// disconnect threshold is 1250.
     fn small_config() -> BandwidthConfig {
-        BandwidthConfig::new(
-            1000,
-            25,
-            0,
-            0,
-            5,
-            crate::constants::DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
-            crate::FixedPricingConfig::default(),
-        )
+        BandwidthConfig::new(1000, 25, 0, 0, 5, crate::FixedPricingConfig::default())
     }
 
     const SMALL_DISCONNECT_THRESHOLD: Au = Au::new(1250);
@@ -555,12 +517,8 @@ mod tests {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
 
-        // Unknown peers are treated as fresh zero-balance peers, so the
-        // disconnect headroom is the full threshold.
-        assert_eq!(
-            accounting.headroom(&peer, Threshold::Disconnect),
-            SMALL_DISCONNECT_THRESHOLD
-        );
+        // Unknown peers are treated as fresh zero-balance peers, so the band
+        // admits right up to the disconnect threshold.
         assert!(accounting.admit(&peer, SMALL_DISCONNECT_THRESHOLD).admits());
         assert!(
             !accounting
@@ -581,7 +539,6 @@ mod tests {
         let handle = accounting.for_peer(peer);
         handle.record(au(500), Direction::Download);
         assert_eq!(handle.balance(), au(-500));
-        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(750));
 
         // Exactly at the threshold: admitted and grantable (prepare_receive
         // routes through the same admit boundary).
@@ -602,17 +559,14 @@ mod tests {
             .prepare_receive(peer, au(1000), true)
             .expect("within threshold");
 
-        // The outstanding reservation consumes headroom.
-        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(250));
+        // The outstanding reservation narrows the band: only 250 AU of the 1250
+        // disconnect threshold remains admissible.
         assert!(accounting.admit(&peer, au(250)).admits());
         assert!(!accounting.admit(&peer, au(251)).admits());
 
-        // Releasing the reservation restores the headroom.
+        // Releasing the reservation restores the full band.
         drop(action);
-        assert_eq!(
-            accounting.headroom(&peer, Threshold::Disconnect),
-            SMALL_DISCONNECT_THRESHOLD
-        );
+        assert!(accounting.admit(&peer, SMALL_DISCONNECT_THRESHOLD).admits());
     }
 
     #[test]
@@ -666,26 +620,6 @@ mod tests {
         ));
         // A smaller provide that stays under the threshold still succeeds.
         assert!(accounting.prepare_provide(peer, au(100)).is_ok());
-    }
-
-    #[test]
-    fn test_payment_threshold_headroom_is_below_disconnect_headroom() {
-        let accounting = Accounting::new(small_config(), test_identity());
-        let peer = test_peer();
-
-        // Payment threshold is 1000 (settlement trigger); disconnect threshold is
-        // 1250. The payment-threshold headroom is narrower and sits strictly below
-        // the disconnect-threshold headroom for both unknown and known peers.
-        assert_eq!(accounting.headroom(&peer, Threshold::Payment), au(1000));
-        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(1250));
-
-        // Debt narrows both headrooms by the same amount, keeping the payment
-        // figure below the disconnect figure.
-        let handle = accounting.for_peer(peer);
-        handle.record(au(400), Direction::Download);
-        assert_eq!(handle.balance(), au(-400));
-        assert_eq!(accounting.headroom(&peer, Threshold::Payment), au(600));
-        assert_eq!(accounting.headroom(&peer, Threshold::Disconnect), au(850));
     }
 
     #[test]
@@ -831,15 +765,8 @@ mod tests {
         // 600, strictly below the payment threshold. A projected debt below 600
         // admits; at or above (and below disconnect) settles. This pins the settle
         // point to the early-payment value, not the full payment threshold.
-        let config = BandwidthConfig::new(
-            1000,
-            25,
-            10,
-            40,
-            5,
-            crate::constants::DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
-            crate::FixedPricingConfig::default(),
-        );
+        let config =
+            BandwidthConfig::new(1000, 25, 10, 40, 5, crate::FixedPricingConfig::default());
         let accounting = Accounting::new(config, test_identity());
         let peer = test_peer();
 

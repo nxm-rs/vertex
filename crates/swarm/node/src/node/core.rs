@@ -1,7 +1,7 @@
 //! Shared client-core assembly surface for the native builder and the embedded
 //! launcher.
 //!
-//! Both client entry points wire the same accounting/selector/throttle middle.
+//! Both client entry points wire the same accounting/selector middle.
 //! This module owns the pieces that middle needs to be reachable from the wasm
 //! launcher: the concrete shared accounting alias, the pseudosettle and (behind
 //! the `swap` feature) swap service wiring, and the command bridge that drains a
@@ -50,45 +50,44 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
-    PeerInflightLimiter, PeerSelector, SelfThrottle,
+    PeerInflightLimiter, PeerSelector,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
 /// default bandwidth accounting wrapped with the config pricer, pinned to the
-/// node identity. One instance is shared across the selector, throttle,
-/// forwarder, client service, and settlement services.
+/// node identity. One instance is shared across the selector, forwarder, client
+/// service, and settlement services.
 pub type SharedAccounting = Arc<
     ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>,
 >;
 
 /// The shared client middle both client-backed entry points assemble: the
-/// accounting, the candidate selector, the outbound self-throttle, the throttled
-/// client handle, and the accounting-attached client service.
+/// accounting, the candidate selector, the origin-gated client handle, and the
+/// accounting-attached client service.
 ///
 /// Provider-free by design: the chunk provider lives in the native builder
 /// (which depends up on this crate) and is also the RPC providers payload, so
-/// each entry point builds its own from `throttled_handle` and `selector` after
+/// each entry point builds its own from `origin_handle` and `selector` after
 /// calling [`assemble_client_core`]. `enable_forwarding` is likewise the entry
 /// point's call: it borrows the node mutably before the node moves into the run
 /// loop, so the borrow and the move stay in one scope.
 pub struct ClientCore {
-    /// The one accounting instance shared across selector, throttle, forwarder,
-    /// service, and settlement.
+    /// The one accounting instance shared across selector, forwarder, service,
+    /// and settlement.
     pub accounting: SharedAccounting,
     /// Retrieval and pushsync candidate selection over the shared accounting.
     pub selector: Arc<PeerSelector>,
-    /// Outbound self-throttle shared by both protocols and the service.
-    pub throttle: Arc<SelfThrottle>,
     /// Per-peer retrieval in-flight cap shared by the chunk provider (reserves
     /// slots) and the service (forgets a peer on disconnect).
     pub inflight: Arc<PeerInflightLimiter>,
-    /// The client handle paced by `throttle`; the provider dispatches through it.
-    pub throttled_handle: ClientHandle,
+    /// The origin-gated client handle the provider dispatches through; its
+    /// admission band paces each own request before it sends.
+    pub origin_handle: ClientHandle,
     /// The node's topology handle, threaded through unchanged.
     pub topology: TopologyHandle<Arc<Identity>>,
-    /// The client service with accounting, throttle, and reporter attached.
+    /// The client service with accounting and reporter attached.
     pub client_service: ClientService,
-    /// The unthrottled client handle settlement services forward commands to.
+    /// The plain client handle settlement services forward commands to.
     pub client_handle: ClientHandle,
 }
 
@@ -102,14 +101,13 @@ pub struct ClientCoreCtx {
     pub spec: Arc<Spec>,
     /// Node identity the accounting and overlay are pinned to.
     pub identity: Arc<Identity>,
-    /// Bandwidth config; the accounting builder consumes a clone and the
-    /// throttle derives its sizing from a borrow.
+    /// Bandwidth config the accounting builder consumes.
     pub bandwidth: DefaultBandwidthConfig,
     /// The node's topology handle.
     pub topology: TopologyHandle<Arc<Identity>>,
-    /// The client service to attach accounting, throttle, and reporter to.
+    /// The client service to attach the reporter and in-flight limiter to.
     pub client_service: ClientService,
-    /// The unthrottled client handle.
+    /// The plain client handle.
     pub client_handle: ClientHandle,
     /// Soft-accounting settlement, registered first.
     pub pseudosettle_provider: PseudosettleProvider<DefaultBandwidthConfig>,
@@ -120,7 +118,7 @@ pub struct ClientCoreCtx {
 }
 
 /// Assemble the shared client middle: build the accounting with its settlement
-/// providers, the selector and throttle over it, the throttled handle, and the
+/// providers, the selector over it, the origin-gated handle, and the
 /// accounting-attached service.
 ///
 /// Does not build a chunk provider and does not call `enable_forwarding`; both
@@ -141,13 +139,13 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
 
     // Pseudosettle is registered first so soft accounting forgives total debt
     // before swap settles originated debt; the order matches `settle_all`.
-    let accounting = AccountingBuilder::new(bandwidth.clone())
+    let accounting = AccountingBuilder::new(bandwidth)
         .with_pricer_from_config(spec)
         .with_settlement(pseudosettle_provider)
         .with_settlements(extra_settlement)
         .build(&identity);
-    // One accounting instance is shared by the selector, throttle, forwarder,
-    // service, and settlement services.
+    // One accounting instance is shared by the selector, forwarder, service, and
+    // settlement services.
     let accounting: SharedAccounting = Arc::new(accounting);
 
     // One admission band and settlement trigger shared by the selector and the
@@ -164,47 +162,38 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         settlement_trigger.clone(),
     ));
 
-    // Outbound self-throttle: pace our retrieval and pushsync requests under each
-    // peer's pseudosettle allowance so a burst never crosses the settlement
-    // trigger.
-    let throttle = Arc::new(SelfThrottle::new(&accounting, &bandwidth));
-    // The throttled handle the chunk provider dispatches through also carries the
-    // origin credit gate: each own-request leg reserves its price (so `reserved`
-    // matches the storer's shadow reserve), bands on the same admission boundary
-    // the selector uses, commits the debit on delivery, and releases it on any
-    // other exit. The settle trigger is the selector's, so settles dedup across
-    // both paths.
-    let throttled_handle = client_handle
-        .clone()
-        .with_throttle(Arc::clone(&throttle))
-        .with_origin_gate(
-            Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone(),
-            admission.clone(),
-            settlement_trigger.clone(),
-        );
+    // The origin-gated handle the chunk provider dispatches through: each
+    // own-request leg reserves its price (so `reserved` matches the storer's
+    // shadow reserve), bands on the same admission boundary the selector uses,
+    // commits the debit on delivery, and releases it on any other exit. The band
+    // is the synchronous brake on the outbound rate: an over-threshold request
+    // settles or refuses before it sends. The settle trigger is the selector's,
+    // so settles dedup across both paths.
+    let origin_handle = client_handle.clone().with_origin_gate(
+        Arc::new(accounting.pricing().clone()),
+        accounting.bandwidth().clone(),
+        admission.clone(),
+        settlement_trigger.clone(),
+    );
 
     // Per-peer retrieval substream cap: the non-economic overrun guard the chunk
     // provider consults at selection time. One shared instance so a disconnect on
     // the service path forgets the same peer the provider reserves against.
     let inflight = Arc::new(PeerInflightLimiter::new(DEFAULT_PEER_INFLIGHT_CAP));
 
-    // The service reports through the same peer-manager authority accounting
-    // uses, shares the handle's throttle so a disconnect clears that peer's
-    // bucket, and forgets that peer's in-flight slots on disconnect. The origin
-    // debit is reserved and committed by the dispatch gate on the throttled
-    // handle, not by the service.
+    // The service reports through the same peer-manager authority accounting uses
+    // and forgets a peer's in-flight slots on disconnect. The origin debit is
+    // reserved and committed by the dispatch gate on the origin-gated handle, not
+    // by the service.
     let client_service = client_service
         .with_reporter(reporter)
-        .with_throttle(Arc::clone(&throttle))
         .with_inflight_limiter(Arc::clone(&inflight));
 
     ClientCore {
         accounting,
         selector,
-        throttle,
         inflight,
-        throttled_handle,
+        origin_handle,
         topology,
         client_service,
         client_handle,
@@ -734,15 +723,15 @@ where
 
     // Multi-hop forwarding plus storer ingest must precede the event loop. The
     // run closure applies both to its concrete node over the shared accounting,
-    // then returns the run task. Forwarder relay legs run over the unthrottled
-    // handle: the self-throttle paces only our own origin retrieval and pushsync.
+    // then returns the run task. Forwarder relay legs run over the plain handle:
+    // the origin gate bands only our own origin retrieval and pushsync.
     let task = (run)(
         Arc::clone(&core.accounting),
         reporter.clone(),
         core.client_handle.clone(),
     );
 
-    let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
+    let chunk_provider = NetworkChunkProvider::new(core.origin_handle.clone(), topology.clone())
         .with_selector(Arc::clone(&core.selector))
         .with_inflight_limiter(Arc::clone(&core.inflight));
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
@@ -784,7 +773,7 @@ where
         topology,
         chunks,
         accounting: core.accounting,
-        client: core.throttled_handle,
+        client: core.origin_handle,
         provider_store,
     })
 }

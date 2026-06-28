@@ -128,7 +128,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // overrun. When every close candidate is at its cap, fall through to the
         // full list rather than failing the request: degraded service beats
         // failure. The cap is non-economic and composed after the economic
-        // selector above; the throttle paces each chosen request below.
+        // selector above; the admission band paces each chosen request below.
         let mut candidates = skip_busy(closest_peers, self.inflight.as_deref());
         // Bound the raced legs so the wider skip-busy pool only supplies
         // free-slot alternatives and never amplifies metered bandwidth: the
@@ -142,9 +142,9 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // success, so a withholding head candidate is overtaken by the next one
         // within the stagger instead of stalling this slot for a full
         // per-attempt deadline and blocking every later chunk behind it. Each
-        // attempt carries its own pacing (the outbound self-throttle and
-        // affordability check run inside `retrieve_chunk` before it dispatches),
-        // so the staggered starts preserve the per-peer pacing. The per-peer
+        // attempt carries its own pacing (the admission band and affordability
+        // check run inside `retrieve_chunk` before it dispatches), so the
+        // staggered starts preserve the per-peer pacing. The per-peer
         // in-flight permit is reserved lazily as each leg starts and rides its
         // request future, releasing the slot on drop including a cancelled
         // losing leg.
@@ -568,8 +568,8 @@ mod tests {
 
         /// Drive the exact future the provider builds per candidate: each
         /// attempt is `client_handle.retrieve_chunk(peer, address)`, raced with a
-        /// staggered start. The per-candidate pacing (the outbound self-throttle
-        /// and affordability check) lives inside that call, so this exercises the
+        /// staggered start. The per-candidate pacing (the admission band and
+        /// affordability check) lives inside that call, so this exercises the
         /// provider's retrieval leg and race wiring without standing up a
         /// topology mock.
         async fn race_over_handle(
@@ -896,7 +896,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use nectar_primitives::SwarmAddress;
-        use vertex_swarm_api::{Au, ChunkAddress, Ledger, SwarmError, SwarmPricing, Threshold};
+        use vertex_swarm_api::{Au, ChunkAddress, Ledger, SwarmError, SwarmPricing};
         use vertex_tasks::time::Instant;
 
         use crate::{PeerScores, PeerSelector, SettlementTrigger};
@@ -932,9 +932,6 @@ mod tests {
             }
             fn reserved(&self, _o: &SwarmAddress) -> Au {
                 Au::ZERO
-            }
-            fn headroom(&self, _o: &SwarmAddress, _t: Threshold) -> Au {
-                Au::from_amount(1000)
             }
             fn disconnect_line(&self, _o: &SwarmAddress) -> Au {
                 if self.0.load(Ordering::SeqCst) {

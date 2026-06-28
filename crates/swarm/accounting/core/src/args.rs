@@ -35,11 +35,6 @@ pub struct BandwidthArgs {
     #[arg(long = "bandwidth.client-only-factor", default_value_t = DEFAULT_CLIENT_ONLY_FACTOR)]
     pub client_only_factor: u64,
 
-    /// Percent (1..=100) of the payment-threshold headroom the outbound
-    /// self-throttle will consume. Leaves a margin below the settlement trigger.
-    #[arg(long = "bandwidth.throttle-allowance-percent", default_value_t = DEFAULT_THROTTLE_ALLOWANCE_PERCENT)]
-    pub throttle_allowance_percent: u8,
-
     /// Chunk pricing configuration.
     #[command(flatten)]
     #[serde(default)]
@@ -54,17 +49,14 @@ impl Default for BandwidthArgs {
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
-            throttle_allowance_percent: DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
             pricing: FixedPricingArgs::default(),
         }
     }
 }
 
 impl BandwidthArgs {
-    /// Create validated BandwidthConfig from these CLI arguments.
-    pub fn accounting_config(
-        &self,
-    ) -> Result<crate::DefaultBandwidthConfig, crate::BandwidthConfigError> {
-        crate::BandwidthConfig::try_from(self)
+    /// Build the runtime BandwidthConfig from these CLI arguments.
+    pub fn accounting_config(&self) -> crate::DefaultBandwidthConfig {
+        crate::BandwidthConfig::from(self)
     }
 }

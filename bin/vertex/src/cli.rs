@@ -138,10 +138,7 @@ pub async fn run() -> Result<()> {
         // shell: build the validated config, then `with_protocol().launch()`.
         match node_type {
             SwarmNodeType::Client => {
-                let bandwidth = config
-                    .protocol
-                    .bandwidth_config()
-                    .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+                let bandwidth = config.protocol.bandwidth_config();
                 let local_store = config.protocol.local_store_config();
                 let chain = config.protocol.chain_config();
                 let swap = config.protocol.swap_config();
@@ -178,10 +175,7 @@ pub async fn run() -> Result<()> {
             }
             #[cfg(feature = "storer")]
             SwarmNodeType::Storer => {
-                let bandwidth = config
-                    .protocol
-                    .bandwidth_config()
-                    .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+                let bandwidth = config.protocol.bandwidth_config();
                 let local_store = config.protocol.local_store_config();
                 let storage = config.protocol.storage_config();
                 let chain = config.protocol.chain_config();

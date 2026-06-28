@@ -6,15 +6,7 @@ use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmPricingConfig};
 use crate::args::BandwidthArgs;
 use crate::constants::*;
 
-/// Error during bandwidth configuration validation.
-#[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum BandwidthConfigError {
-    #[error("throttle-allowance-percent must be in 1..=100")]
-    ThrottleAllowancePercentOutOfRange,
-}
-
-/// Validated bandwidth accounting configuration.
+/// Bandwidth accounting configuration.
 ///
 /// Generic over the pricing configuration type `P`. Use [`DefaultBandwidthConfig`]
 /// for the standard CLI-produced configuration with fixed pricing.
@@ -25,7 +17,6 @@ pub struct BandwidthConfig<P = FixedPricingConfig> {
     refresh_rate: u64,
     early_payment_percent: u64,
     client_only_factor: u64,
-    throttle_allowance_percent: u8,
     pricing: P,
 }
 
@@ -41,7 +32,6 @@ impl<P> BandwidthConfig<P> {
         refresh_rate: u64,
         early_payment_percent: u64,
         client_only_factor: u64,
-        throttle_allowance_percent: u8,
         pricing: P,
     ) -> Self {
         Self {
@@ -50,7 +40,6 @@ impl<P> BandwidthConfig<P> {
             refresh_rate,
             early_payment_percent,
             client_only_factor,
-            throttle_allowance_percent,
             pricing,
         }
     }
@@ -58,13 +47,6 @@ impl<P> BandwidthConfig<P> {
     /// Get the pricing configuration.
     pub fn pricing(&self) -> &P {
         &self.pricing
-    }
-
-    /// Percent (1..=100) of the payment-threshold headroom the outbound
-    /// self-throttle will consume, leaving a margin below the settlement
-    /// trigger.
-    pub fn throttle_allowance_percent(&self) -> u8 {
-        self.throttle_allowance_percent
     }
 
     /// This config scaled to the line a storer enforces on a client:
@@ -81,23 +63,16 @@ impl<P> BandwidthConfig<P> {
     }
 }
 
-impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
-    type Error = BandwidthConfigError;
-
-    fn try_from(args: &BandwidthArgs) -> Result<Self, Self::Error> {
-        if !(1..=100).contains(&args.throttle_allowance_percent) {
-            return Err(BandwidthConfigError::ThrottleAllowancePercentOutOfRange);
-        }
-
-        Ok(Self {
+impl From<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
+    fn from(args: &BandwidthArgs) -> Self {
+        Self {
             payment_threshold: args.payment_threshold,
             payment_tolerance_percent: args.payment_tolerance_percent,
             refresh_rate: args.refresh_rate,
             early_payment_percent: args.early_payment_percent,
             client_only_factor: args.client_only_factor,
-            throttle_allowance_percent: args.throttle_allowance_percent,
             pricing: FixedPricingConfig::from(&args.pricing),
-        })
+        }
     }
 }
 
@@ -109,7 +84,6 @@ impl Default for BandwidthConfig<FixedPricingConfig> {
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
-            throttle_allowance_percent: DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
             pricing: FixedPricingConfig::default(),
         }
     }
@@ -156,38 +130,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_throttle_allowance_percent() {
-        let config = DefaultBandwidthConfig::default();
+    fn from_args_carries_the_thresholds() {
+        let config = BandwidthConfig::from(&BandwidthArgs::default());
         assert_eq!(
-            config.throttle_allowance_percent(),
-            DEFAULT_THROTTLE_ALLOWANCE_PERCENT
+            config.payment_threshold().as_amount(),
+            DEFAULT_PAYMENT_THRESHOLD
         );
-    }
-
-    #[test]
-    fn throttle_allowance_percent_in_range_is_accepted() {
-        for pct in [1u8, 50, 85, 100] {
-            let args = BandwidthArgs {
-                throttle_allowance_percent: pct,
-                ..BandwidthArgs::default()
-            };
-            let config = BandwidthConfig::try_from(&args).expect("valid percent");
-            assert_eq!(config.throttle_allowance_percent(), pct);
-        }
-    }
-
-    #[test]
-    fn throttle_allowance_percent_out_of_range_is_rejected() {
-        for pct in [0u8, 101, 200] {
-            let args = BandwidthArgs {
-                throttle_allowance_percent: pct,
-                ..BandwidthArgs::default()
-            };
-            assert!(matches!(
-                BandwidthConfig::try_from(&args),
-                Err(BandwidthConfigError::ThrottleAllowancePercentOutOfRange)
-            ));
-        }
+        assert_eq!(config.refresh_rate().as_amount(), DEFAULT_REFRESH_RATE);
+        assert_eq!(config.client_only_factor(), DEFAULT_CLIENT_ONLY_FACTOR);
     }
 
     #[test]
