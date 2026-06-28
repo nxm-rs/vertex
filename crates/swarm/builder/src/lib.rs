@@ -11,7 +11,7 @@
 //!
 //! The crate has two build modes, selected by the `chain` cargo feature:
 //!
-//! - Default (`chain` off): the light, chain-free build. No Ethereum RPC stack
+//! - Default (`chain` off): the lean, chain-free build. No Ethereum RPC stack
 //!   is compiled in; only chain-free node types (a bootnode, a client without
 //!   SWAP) launch, and a chain-needing node type hard-fails the build with
 //!   `SwarmNodeError::ChainRequired`. This is what the default `vertex` binary
