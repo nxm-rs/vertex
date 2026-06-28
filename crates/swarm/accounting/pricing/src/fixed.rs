@@ -39,7 +39,11 @@ impl<S: SwarmSpec + Send + Sync + 'static> SwarmPricing for FixedPricer<S> {
         let peer_addr: &SwarmAddress = peer;
         let chunk_addr: &SwarmAddress = chunk;
         let proximity = peer_addr.proximity(chunk_addr);
-        let factor = u64::from(self.spec.max_po()) - u64::from(proximity.get()) + 1;
+        // Proximity is capped at the canonical MAX_PO, which the default spec
+        // reports as max_po, so the subtraction is non-negative; a saturating
+        // subtraction keeps it that way even if a spec ever reports a lower
+        // max_po than the proximity cap, never underflowing into a giant factor.
+        let factor = u64::from(self.spec.max_po()).saturating_sub(u64::from(proximity.get())) + 1;
         // The proximity factor is the only bytes-to-AU multiplication on the
         // pricing path. It goes through the audited checked scaling so a large
         // base price cannot wrap into a tiny one; on overflow the price
