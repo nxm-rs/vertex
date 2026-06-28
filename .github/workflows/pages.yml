@@ -32,15 +32,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      # Nightly with rust-src: the demo is a threaded-wasm build that rebuilds
-      # std from source (build-std) with the unstable atomics target feature, and
-      # links shared memory. The flags live in bin/swarm-demo/.cargo/config.toml;
-      # see docs/agents/wasm.md.
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # nightly
+      # The demo is a single-threaded wasm build on the pinned stable toolchain;
+      # no nightly, no build-std. See docs/agents/wasm.md.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: nightly
           targets: wasm32-unknown-unknown
-          components: rust-src
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           cache-on-failure: true
@@ -52,13 +48,9 @@ jobs:
         with:
           tool: trunk,wasm-bindgen-cli
       # `--public-url /vertex/` matches the Pages subpath for nxm-rs/vertex
-      # (https://nxm-rs.github.io/vertex/). `+nightly` is load-bearing:
-      # rust-toolchain.toml pins stable and would otherwise shadow the installed
-      # nightly that the atomics target feature needs.
+      # (https://nxm-rs.github.io/vertex/).
       - name: Build the demo
         working-directory: bin/swarm-demo
-        env:
-          RUSTUP_TOOLCHAIN: nightly
         run: trunk build --release --public-url /vertex/
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b  # v4.0.0

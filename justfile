@@ -20,11 +20,10 @@ nextest:
 check:
     cargo check --all-features
 
-# Wasm conformance build for the peer stack. Needs a nightly toolchain with
-# the wasm32-unknown-unknown target; rustflags come from .cargo/config.toml.
-# See docs/agents/wasm.md.
+# Wasm conformance build for the peer stack. Needs the wasm32-unknown-unknown
+# target; rustflags come from .cargo/config.toml. See docs/agents/wasm.md.
 wasm-peers:
-    cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager
+    cargo build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager
 
 # Assert the embedded FFI cone stays free of the native observability server
 # stack. The server feature of vertex-observability pulls the Prometheus

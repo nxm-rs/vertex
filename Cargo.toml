@@ -119,16 +119,13 @@ members = [
     # "crates/manifest",
 ]
 
-# Wasm-only crates that must never enter the native default workspace build.
-# `bin/swarm-demo` is a browser `cdylib` that depends on the wasm-only client
-# launch path and never compiles for native, so it is excluded here and built
-# with the Trunk pipeline documented in its README.
-exclude = [
-    "bin/swarm-demo",
-]
+# Bare cargo commands (no -p/--workspace) act on this set: just the binary and
+# its deps, not the ffi cdylib or wasm-only crates. CI passes --workspace.
+default-members = ["bin/vertex"]
 
-# Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
-# https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
+# swarm-demo is a browser cdylib that never compiles for native.
+exclude = ["bin/swarm-demo"]
+
 resolver = "2"
 
 [workspace.lints]

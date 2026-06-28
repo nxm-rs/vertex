@@ -1,32 +1,11 @@
-# Trunk build/serve config for the browser Swarm client demo.
-#
-# Build (see README.md for the full toolchain setup):
-#
-#   RUSTUP_TOOLCHAIN=nightly trunk build --release
-#
-# The wasm cone is compiled threaded: `+atomics,+bulk-memory,+mutable-globals`
-# plus a shared, importable memory and a rebuilt std, all from the demo-local
-# `.cargo/config.toml` `[target.wasm32-unknown-unknown]` table, which Trunk
-# passes through to `cargo`. The atomics feature is unstable, so a nightly
-# toolchain is required.
+# Trunk build/serve config for the browser Swarm client demo. Single-threaded
+# wasm on the pinned stable toolchain; the only wasm rustflag lives in the
+# demo-local .cargo/config.toml. See README.md for the toolchain setup.
 
 [build]
 target = "index.html"
 dist = "dist"
-# Disable wasm-opt: binaryen rejects the shared-memory threaded module unless it
-# runs with --enable-threads, which is not wired into the Pages workflow. Size
-# comes from the release profile instead.
-wasm_opt = false
-# Do not hash the wasm/JS filenames. The wasm-bindgen-rayon worker bootstrap
-# resolves the main module by relative path (`import('../../..')`), which only
-# lines up when the emitted filenames are stable. Hashing them breaks that
-# resolution, so the build keeps fixed names.
-filehash = false
 
 [serve]
 address = "127.0.0.1"
 port = 8080
-# Cross-origin isolation for SharedArrayBuffer (the threaded build needs it).
-# On GitHub Pages these headers cannot be set, so `coi-serviceworker.js` injects
-# the same isolation client-side; locally Trunk sets them directly.
-headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp" }
