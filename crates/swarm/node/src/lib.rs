@@ -16,6 +16,7 @@ pub use config::ProtocolConfig;
 mod bootnodes;
 mod chunks;
 mod client_service;
+mod inflight;
 mod node;
 mod protocol;
 mod selection;
@@ -52,6 +53,7 @@ pub use protocol::{
     ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
 
+pub use inflight::{DEFAULT_PEER_INFLIGHT_CAP, PeerInflightLimiter};
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 pub use throttle::SelfThrottle;

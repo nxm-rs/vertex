@@ -49,7 +49,8 @@ use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapServ
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
 use crate::{
-    AccountingSettlement, ClientCommand, ClientHandle, ClientService, PeerSelector, SelfThrottle,
+    AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
+    PeerInflightLimiter, PeerSelector, SelfThrottle,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
@@ -78,6 +79,9 @@ pub struct ClientCore {
     pub selector: Arc<PeerSelector>,
     /// Outbound self-throttle shared by both protocols and the service.
     pub throttle: Arc<SelfThrottle>,
+    /// Per-peer retrieval in-flight cap shared by the chunk provider (reserves
+    /// slots) and the service (forgets a peer on disconnect).
+    pub inflight: Arc<PeerInflightLimiter>,
     /// The client handle paced by `throttle`; the provider dispatches through it.
     pub throttled_handle: ClientHandle,
     /// The node's topology handle, threaded through unchanged.
@@ -160,13 +164,20 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     let throttle = Arc::new(SelfThrottle::new(&accounting, &bandwidth));
     let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
 
+    // Per-peer retrieval substream cap: the non-economic overrun guard the chunk
+    // provider consults at selection time. One shared instance so a disconnect on
+    // the service path forgets the same peer the provider reserves against.
+    let inflight = Arc::new(PeerInflightLimiter::new(DEFAULT_PEER_INFLIGHT_CAP));
+
     // The service reports through the same peer-manager authority accounting
     // uses, shares the handle's throttle so a disconnect clears that peer's
-    // bucket, and debits the serving peer for our own-request deliveries through
-    // the same shared accounting the selector, throttle, and forwarder use.
+    // bucket, forgets that peer's in-flight slots on disconnect, and debits the
+    // serving peer for our own-request deliveries through the same shared
+    // accounting the selector, throttle, and forwarder use.
     let client_service = client_service
         .with_reporter(reporter)
         .with_throttle(Arc::clone(&throttle))
+        .with_inflight_limiter(Arc::clone(&inflight))
         .with_accounting(
             Arc::new(accounting.pricing().clone()),
             accounting.bandwidth().clone(),
@@ -176,6 +187,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         accounting,
         selector,
         throttle,
+        inflight,
         throttled_handle,
         topology,
         client_service,
@@ -715,7 +727,8 @@ where
     );
 
     let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
-        .with_selector(Arc::clone(&core.selector));
+        .with_selector(Arc::clone(&core.selector))
+        .with_inflight_limiter(Arc::clone(&core.inflight));
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     executor.spawn_service("swarm.client_service", core.client_service);

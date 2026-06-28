@@ -17,6 +17,7 @@ use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
+use crate::inflight::PeerInflightLimiter;
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
 use crate::throttle::{ProtocolKind, SelfThrottle};
 
@@ -149,6 +150,9 @@ pub struct ClientService {
     /// Outbound self-throttle shared with the handle; cleared per peer on
     /// disconnect so memory does not grow with distinct peers seen.
     throttle: Option<Arc<SelfThrottle>>,
+    /// Per-peer retrieval in-flight limiter shared with the chunk provider;
+    /// the peer entry is forgotten on disconnect.
+    inflight: Option<Arc<PeerInflightLimiter>>,
     /// Per-peer chunk pricer and the receive-debit half of the shared
     /// accounting. Present only on the full builder; absent on the lightweight
     /// launcher, where the origin debit is a no-op.
@@ -177,6 +181,7 @@ impl ClientService {
             reporter: None,
             store: None,
             throttle: None,
+            inflight: None,
             accounting: None,
         };
 
@@ -197,6 +202,7 @@ impl ClientService {
             reporter: None,
             store: None,
             throttle: None,
+            inflight: None,
             accounting: None,
         };
 
@@ -230,6 +236,19 @@ impl ClientService {
     #[must_use]
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
+        self
+    }
+
+    /// Attach the per-peer retrieval in-flight limiter so the service forgets a
+    /// peer's slot accounting on disconnect.
+    ///
+    /// Must be the same [`PeerInflightLimiter`] the chunk provider reserves
+    /// against via [`NetworkChunkProvider::with_inflight_limiter`].
+    ///
+    /// [`NetworkChunkProvider::with_inflight_limiter`]: crate::NetworkChunkProvider::with_inflight_limiter
+    #[must_use]
+    pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
+        self.inflight = Some(inflight);
         self
     }
 
@@ -407,6 +426,9 @@ impl ClientService {
                 debug!(%peer_id, %overlay, "Peer disconnected");
                 if let Some(throttle) = &self.throttle {
                     throttle.clear(&overlay);
+                }
+                if let Some(inflight) = &self.inflight {
+                    inflight.forget(&overlay);
                 }
             }
 
