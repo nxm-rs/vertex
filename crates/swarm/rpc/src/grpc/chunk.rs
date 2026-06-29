@@ -11,8 +11,7 @@ use futures::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmError};
 use vertex_swarm_stream::{
-    ChunkClient, ChunkClientExt, NATIVE_DOWNLOAD_CONCURRENCY, StreamConfig, VerifiedChunk,
-    get_stream_from, parse_address,
+    ChunkClient, ChunkClientExt, StreamConfig, VerifiedChunk, get_stream_from, parse_address,
 };
 
 /// Server-side policy for the caller-controlled per-request `validate` flag. A
@@ -41,20 +40,35 @@ impl StampValidation {
 pub struct ChunkService<P> {
     provider: P,
     stamp_validation: StampValidation,
+    connected_peers: std::sync::Arc<dyn Fn() -> usize + Send + Sync>,
 }
 
 impl<P> ChunkService<P> {
-    /// Defaults to [`StampValidation::Enforce`].
+    /// Defaults to [`StampValidation::Enforce`] and a zero peer count (the
+    /// download pipeline depth falls back to its floor until a live peer-count
+    /// source is wired in).
     pub fn new(provider: P) -> Self {
         Self {
             provider,
             stamp_validation: StampValidation::Enforce,
+            connected_peers: std::sync::Arc::new(|| 0),
         }
     }
 
     #[must_use]
     pub fn with_stamp_validation(mut self, stamp_validation: StampValidation) -> Self {
         self.stamp_validation = stamp_validation;
+        self
+    }
+
+    /// Wire a live connected-peer count so the download pipeline depth scales
+    /// with the connected peer set.
+    #[must_use]
+    pub fn with_peer_count(
+        mut self,
+        connected_peers: std::sync::Arc<dyn Fn() -> usize + Send + Sync>,
+    ) -> Self {
+        self.connected_peers = connected_peers;
         self
     }
 }
@@ -253,18 +267,25 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
     /// route through the bounded, verify-by-default [`get_stream_from`] prefetch
     /// shared with the FFI and wasm download paths; malformed addresses and
     /// inbound-stream errors interleave as their own error items.
+    ///
+    /// The in-flight cap is derived from the connected peer set (peers times the
+    /// per-peer cap, clamped), so the Kademlia peer count is the throughput
+    /// lever rather than a fixed number; the node's per-peer cap plus skip-busy
+    /// remain the true fan-out limiter.
     async fn retrieve_chunks(
         &self,
         request: Request<Streaming<RetrieveChunkRequest>>,
     ) -> Result<Response<Self::RetrieveChunksStream>, Status> {
         let inbound = request.into_inner();
 
+        let config = StreamConfig::peer_bounded((self.connected_peers)());
+
         // Side channel for errors that never reach the prefetch (malformed
         // bytes, inbound errors). Bounded so a flood of bad requests cannot
         // outrun a slow consumer: `send` parks the parser, back-pressuring the
         // inbound reads.
         let (err_tx, err_rx) =
-            tokio::sync::mpsc::channel::<RetrieveChunkResponse>(NATIVE_DOWNLOAD_CONCURRENCY);
+            tokio::sync::mpsc::channel::<RetrieveChunkResponse>(config.max_concurrency);
 
         let addresses = inbound.filter_map(move |item| {
             let err_tx = err_tx.clone();
@@ -292,15 +313,13 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
             }
         });
 
-        let verified = get_stream_from(
-            self.provider.clone(),
-            addresses,
-            StreamConfig::NATIVE_DOWNLOAD,
-        )
-        .map(|(address, result)| match result {
-            Ok(verified) => verified_response(address, verified),
-            Err(e) => retrieve_error(address.as_bytes().to_vec(), e.to_string()),
-        });
+        let verified =
+            get_stream_from(self.provider.clone(), addresses, config).map(|(address, result)| {
+                match result {
+                    Ok(verified) => verified_response(address, verified),
+                    Err(e) => retrieve_error(address.as_bytes().to_vec(), e.to_string()),
+                }
+            });
 
         let errors = tokio_stream::wrappers::ReceiverStream::new(err_rx);
         let out = futures::stream::select(verified, errors).map(Ok);
@@ -450,7 +469,7 @@ mod tests {
         let mut out = get_stream_from(
             provider,
             futures::stream::iter(vec![address]),
-            StreamConfig::NATIVE_DOWNLOAD,
+            StreamConfig::peer_bounded(1),
         );
         let (item_address, result) = out.next().await.expect("one item");
         let verified = result.expect("retrieval verifies");

@@ -78,19 +78,21 @@ impl VerifiedChunk {
 /// body.
 pub const MAX_CHUNK_BYTES: usize = 8 + nectar_primitives::DEFAULT_BODY_SIZE;
 
-/// Sustained rate (chunks/s) a native node is assumed to serve from one bulk
-/// download over forwarding retrieval: ~0.75 MiB/s of 4 KiB chunks.
-const ASSUMED_SERVE_CHUNKS_PER_SEC: usize = 192;
-/// Assumed mean wall-clock for one forwarding retrieval (kademlia hops + storer RTT).
-const ASSUMED_RETRIEVAL_MILLIS: usize = 400;
-/// Headroom over the bandwidth-delay product to absorb latency jitter.
-const RETRIEVAL_BUFFER_PERCENT: usize = 25;
+/// Per-peer concurrent outbound retrieval cap. The node retrieval layer
+/// enforces this many in-flight retrieval substreams per peer, so aggregate
+/// download concurrency is `connected_peers * PER_PEER_INFLIGHT_CAP`. Kept in
+/// step with the node's per-peer inflight cap.
+pub const PER_PEER_INFLIGHT_CAP: usize = 4;
 
-/// In-flight retrievals [`StreamConfig::NATIVE_DOWNLOAD`] keeps to saturate the
-/// assumed serve rate over one retrieval latency, plus jitter headroom.
-pub const NATIVE_DOWNLOAD_CONCURRENCY: usize =
-    ASSUMED_SERVE_CHUNKS_PER_SEC * ASSUMED_RETRIEVAL_MILLIS * (100 + RETRIEVAL_BUFFER_PERCENT)
-        / (1000 * 100);
+/// Floor on download pipeline depth so a node with few connected peers still
+/// makes progress.
+pub const MIN_DOWNLOAD_CONCURRENCY: usize = PER_PEER_INFLIGHT_CAP;
+
+/// Ceiling on download pipeline depth: bounds pipeline memory and the gRPC
+/// error side-channel. Sized well above any realistic connected-peer count
+/// times the per-peer cap, so the node's per-peer cap plus skip-busy stay the
+/// true limiter, never this number.
+pub const MAX_DOWNLOAD_CONCURRENCY: usize = 1024;
 
 /// How many chunks a streaming pipeline keeps in flight at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,18 +107,23 @@ impl StreamConfig {
         max_concurrency: 32,
     };
 
-    /// High-throughput preset for a native node serving a bulk download:
-    /// the bandwidth-delay product of [`NATIVE_DOWNLOAD_CONCURRENCY`].
-    pub const NATIVE_DOWNLOAD: Self = Self {
-        max_concurrency: NATIVE_DOWNLOAD_CONCURRENCY,
-    };
-
     /// Clamps to at least one in flight so the stream always makes progress.
     #[must_use]
     pub fn new(max_concurrency: usize) -> Self {
         Self {
             max_concurrency: max_concurrency.max(1),
         }
+    }
+
+    /// Download pipeline depth derived from the connected peer set: the aggregate
+    /// in-flight retrievals a serving node keeps is `connected_peers *
+    /// PER_PEER_INFLIGHT_CAP`, clamped to `[MIN_DOWNLOAD_CONCURRENCY,
+    /// MAX_DOWNLOAD_CONCURRENCY]`. The Kademlia peer count is the throughput lever;
+    /// the node's per-peer cap and skip-busy bound real fan-out.
+    #[must_use]
+    pub fn peer_bounded(connected_peers: usize) -> Self {
+        let derived = connected_peers.saturating_mul(PER_PEER_INFLIGHT_CAP);
+        Self::new(derived.clamp(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY))
     }
 }
 
@@ -1112,17 +1119,20 @@ mod tests {
     }
 
     #[test]
-    fn native_download_concurrency_stays_in_sane_band() {
-        // The derived value must track the bandwidth-delay product, not drift to
-        // something that floods peers or starves the pipe.
-        assert!(
-            (64..=160).contains(&NATIVE_DOWNLOAD_CONCURRENCY),
-            "derived native-download concurrency drifted: {NATIVE_DOWNLOAD_CONCURRENCY}"
-        );
+    fn peer_bounded_scales_with_the_connected_peer_set() {
+        // No peers still yields the floor so the pipeline makes progress.
         assert_eq!(
-            StreamConfig::NATIVE_DOWNLOAD.max_concurrency,
-            NATIVE_DOWNLOAD_CONCURRENCY
+            StreamConfig::peer_bounded(0).max_concurrency,
+            MIN_DOWNLOAD_CONCURRENCY
         );
+        // Aggregate depth is peers times the per-peer cap.
+        assert_eq!(StreamConfig::peer_bounded(10).max_concurrency, 40);
+        // A wildly large peer set clamps to the ceiling, never floods.
+        assert_eq!(
+            StreamConfig::peer_bounded(1_000_000).max_concurrency,
+            MAX_DOWNLOAD_CONCURRENCY
+        );
+        const { assert!(MIN_DOWNLOAD_CONCURRENCY <= MAX_DOWNLOAD_CONCURRENCY) };
     }
 
     #[tokio::test]
