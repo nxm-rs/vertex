@@ -56,6 +56,10 @@ pub enum RaceFailure<E> {
     NoCandidates,
     /// Every candidate was attempted and failed; carries the last failure.
     AllFailed(E),
+    /// The walk's wall-clock deadline elapsed before any candidate succeeded.
+    /// Distinct from [`AllFailed`](Self::AllFailed) because the walk may still
+    /// have had legs in flight or untried candidates when the clock ran out.
+    TimedOut,
 }
 
 /// Race `candidates` for the first success, dispatching each through `attempt`
@@ -109,6 +113,91 @@ where
                     in_flight.push(attempt(candidate));
                     stagger_tick = Delay::new(stagger).fuse();
                 }
+            }
+        }
+    }
+}
+
+/// Like [`race_candidates`], but bounded to at most `budget` dispatched legs and
+/// an overall wall-clock `deadline`.
+///
+/// This is the difficult-chunk retrieval walk. Retrieval is forwarding-Kademlia
+/// with no authoritative negative response: a leg that errors or times out means
+/// "this entry point could not serve it", never "the chunk is absent". So the
+/// walk keeps trying the next candidate on every failure and only gives up on a
+/// real bound: `budget` legs dispatched, the candidate source exhausted, or the
+/// `deadline`. The caller filters back-pressured peers out of `candidates`
+/// beforehand (skip-busy), so a busy peer is never dispatched and never spends a
+/// budget unit; `budget` therefore counts only genuine coverage attempts.
+///
+/// Each leg is still staggered and losers are dropped on resolve, so true
+/// concurrency stays a handful regardless of `budget`: this is a patient walk,
+/// not a wide simultaneous fan-out.
+pub async fn race_walk<C, T, E, I, F, Fut>(
+    candidates: I,
+    budget: usize,
+    deadline: Duration,
+    stagger: Duration,
+    mut attempt: F,
+) -> Result<T, RaceFailure<E>>
+where
+    I: IntoIterator<Item = C>,
+    F: FnMut(C) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut candidates = candidates.into_iter();
+    let mut in_flight = FuturesUnordered::new();
+    let mut dispatched = 0usize;
+    let mut last_error: Option<E> = None;
+
+    // Dispatch the next candidate while the leg budget allows. Returns whether a
+    // leg was pushed (false once the budget is spent or the source is drained).
+    let mut dispatch_next = |in_flight: &mut FuturesUnordered<Fut>, dispatched: &mut usize| {
+        if *dispatched >= budget {
+            return false;
+        }
+        match candidates.next() {
+            Some(candidate) => {
+                in_flight.push(attempt(candidate));
+                *dispatched += 1;
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !dispatch_next(&mut in_flight, &mut dispatched) {
+        return Err(RaceFailure::NoCandidates);
+    }
+
+    let mut stagger_tick = Delay::new(stagger).fuse();
+    let mut deadline_tick = Delay::new(deadline).fuse();
+
+    loop {
+        futures::select! {
+            result = in_flight.select_next_some() => match result {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    // A failed leg frees its slot: dispatch the next candidate at
+                    // once. When the budget and the source are both spent and no
+                    // leg is in flight, this failure is the walk's last word.
+                    if !dispatch_next(&mut in_flight, &mut dispatched) && in_flight.is_empty() {
+                        return Err(RaceFailure::AllFailed(error));
+                    }
+                    last_error = Some(error);
+                }
+            },
+            _ = stagger_tick => {
+                dispatch_next(&mut in_flight, &mut dispatched);
+                stagger_tick = Delay::new(stagger).fuse();
+            },
+            _ = deadline_tick => {
+                // Out of wall-clock time. Surface the last real failure if one
+                // landed, else the legs were merely slow: a distinct TimedOut.
+                return match last_error.take() {
+                    Some(error) => Err(RaceFailure::AllFailed(error)),
+                    None => Err(RaceFailure::TimedOut),
+                };
             }
         }
     }
@@ -289,5 +378,118 @@ mod tests {
             Err(RaceFailure::AllFailed(last)) => assert_eq!(last, "last"),
             _ => panic!("expected AllFailed with the last error"),
         }
+    }
+
+    /// The walk reaches a chunk whose closest few entry points miss: the legs
+    /// before the holder fail, and the walk refills to the next-closest until the
+    /// holder serves it, well within the budget.
+    #[tokio::test]
+    async fn walk_reaches_a_holder_past_missing_close_peers() {
+        // Candidates 0..10 in proximity order; the first four miss, the fifth
+        // serves. A bound of 3 would have failed here.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let outcome = race_walk(
+            0..10u32,
+            8,
+            Duration::from_secs(30),
+            RETRIEVAL_STAGGER,
+            |i| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async move { if i < 4 { Err("miss") } else { Ok(i) } }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome.ok(),
+            Some(4),
+            "the fifth candidate serves the chunk"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            5,
+            "exactly the five legs up to and including the holder were dispatched"
+        );
+    }
+
+    /// An all-miss walk gives up after exactly `budget` legs, never the whole
+    /// pool: the bound caps paid coverage attempts even when far more candidates
+    /// are available.
+    #[tokio::test]
+    async fn walk_spends_exactly_the_budget_then_fails() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let outcome = race_walk(
+            0..100u32,
+            6,
+            Duration::from_secs(30),
+            RETRIEVAL_STAGGER,
+            |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async move { Err::<u32, _>("miss") }
+            },
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(RaceFailure::AllFailed("miss"))));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            6,
+            "the budget caps dispatched legs at 6 of the 100 available"
+        );
+    }
+
+    /// A walk whose legs all merely withhold (never an explicit failure) is
+    /// bounded by the wall clock, surfacing TimedOut rather than hanging.
+    #[tokio::test]
+    async fn walk_deadline_bounds_withholding_legs() {
+        let start = Instant::now();
+        // Every leg withholds for far longer than the deadline; none ever errors.
+        let outcome = race_walk(
+            0..8u32,
+            8,
+            Duration::from_millis(300),
+            Duration::from_millis(50),
+            |_| async {
+                Delay::new(Duration::from_secs(30)).await;
+                Ok::<u32, &str>(0)
+            },
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(outcome, Err(RaceFailure::TimedOut)),
+            "withholding legs surface TimedOut"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the deadline bounded the walk ({elapsed:?})"
+        );
+    }
+
+    /// An empty pool and a zero budget both attempt nothing.
+    #[tokio::test]
+    async fn walk_with_nothing_to_try_yields_no_candidates() {
+        let empty = race_walk(
+            Vec::<u32>::new(),
+            8,
+            Duration::from_secs(1),
+            RETRIEVAL_STAGGER,
+            |_| async { Ok::<u32, &str>(0) },
+        )
+        .await;
+        assert!(matches!(empty, Err(RaceFailure::NoCandidates)));
+
+        let zero_budget = race_walk(
+            0..4u32,
+            0,
+            Duration::from_secs(1),
+            RETRIEVAL_STAGGER,
+            |_| async { Ok::<u32, &str>(0) },
+        )
+        .await;
+        assert!(matches!(zero_budget, Err(RaceFailure::NoCandidates)));
     }
 }

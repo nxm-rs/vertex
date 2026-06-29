@@ -214,6 +214,13 @@ impl BrowserChunkProvider {
                     last_failure = Some(e);
                     wave += 1;
                 }
+                // `race_candidates` carries no wall-clock deadline, so this is
+                // unreachable here; advance to the next wave for forward
+                // compatibility rather than abandoning the walk.
+                Err(RaceFailure::TimedOut) => {
+                    attempted += wave_size;
+                    wave += 1;
+                }
             }
         }
 
