@@ -47,7 +47,22 @@ use futures_timer::Delay;
 /// remote answers is paid for in accounting units, so further candidates only
 /// start while no response has arrived. A failed attempt starts the next
 /// candidate immediately instead of waiting out the stagger.
-pub const RETRIEVAL_STAGGER: Duration = Duration::from_millis(500);
+///
+/// The value sits comfortably above a typical live-network retrieval round
+/// trip, which spans several forwarding hops and runs in the hundreds of
+/// milliseconds. A stagger below that round trip dispatches the second
+/// candidate before the first leg has had a chance to answer, so both entry
+/// points forward and deliver the same chunk and both legs are metered: a near
+/// twofold over-fetch on the bulk path. Pacing the second leg past the round
+/// trip keeps the race single-leg whenever the head is merely in flight, and
+/// reserves the fan-out for a head that is genuinely slow or withholding. The
+/// failover cost is that a withholding head is now overtaken after this stagger
+/// rather than within a few hundred milliseconds; that is acceptable because the
+/// stagger stays far below the per-request `retrieval_timeout`, the failed-leg
+/// path still starts the next candidate immediately on an explicit error, and
+/// the difficult-chunk walk's wall-clock deadline still admits its full leg
+/// budget at this pace.
+pub const RETRIEVAL_STAGGER: Duration = Duration::from_millis(1200);
 
 /// Outcome of a candidate race that produced no success.
 #[derive(Debug)]
