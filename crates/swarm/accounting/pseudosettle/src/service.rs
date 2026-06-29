@@ -17,6 +17,16 @@ use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::error::PseudosettleSettlementError;
 
+/// Clock-skew tolerance, in seconds, for trusting a creditor's ack timestamp as
+/// our next-settle reference. An ack within this window below our clock (and not
+/// in the future) is trusted; anything outside falls back to our clock. 60s
+/// covers honest peer/NTP skew while denying two attacks: future-freeze, where a
+/// timestamp ahead of our clock pushes the gate beyond reach and stalls our
+/// settling until the creditor drops us; and rewind-spam, where an ever-older
+/// reported timestamp rewinds the gate to induce settle spam (countered by
+/// keeping the stored reference monotonic non-decreasing).
+const CLOCK_SKEW_WINDOW_SECS: u64 = 60;
+
 /// Commands from the handle to the service.
 pub enum PseudosettleCommand {
     /// Request settlement with a peer.
@@ -52,8 +62,14 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     refresh_rate: Au,
     /// Track pending outbound settlements (waiting for ack).
     pending: HashMap<OverlayAddress, PendingSettlement>,
-    /// Track last settlement time per peer (for rate limiting).
+    /// Our own clock at the last inbound credit per peer; the creditor-side
+    /// reference read by the inbound rate gate and `calculate_acceptable`.
     last_settlement: HashMap<OverlayAddress, u64>,
+    /// Creditor's clamped, monotonic ack timestamp per peer; paces our next
+    /// OUTBOUND settle so we do not re-send before the creditor can forgive
+    /// again. Distinct from `last_settlement`, which is our own clock for the
+    /// INBOUND creditor allowance.
+    last_settle_ack: HashMap<OverlayAddress, u64>,
     /// First time we started accounting for a peer's inbound settlements.
     ///
     /// The time-based allowance accrues from this point, never from the Unix
@@ -82,6 +98,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             refresh_rate,
             pending: HashMap::new(),
             last_settlement: HashMap::new(),
+            last_settle_ack: HashMap::new(),
             first_seen: HashMap::new(),
             reporter: None,
         }
@@ -149,14 +166,16 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 // Check rate limiting
                 let now = current_timestamp();
-                if let Some(&last) = self.last_settlement.get(&peer)
+                if let Some(&last) = self.last_settle_ack.get(&peer)
                     && now <= last
                 {
                     let _ = response_tx.send(Err(PseudosettleSettlementError::TooSoon));
                     return;
                 }
 
-                // Store the offer and response channel for when we get the ack
+                // The next-settle reference is set from the creditor's ack in
+                // the `Sent` handler; `pending` already serialises concurrent
+                // settles to one peer.
                 self.pending.insert(
                     peer,
                     PendingSettlement {
@@ -164,7 +183,6 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                         response_tx,
                     },
                 );
-                self.last_settlement.insert(peer, now);
 
                 debug!(%peer, %amount, "Sending pseudosettle request");
 
@@ -207,6 +225,23 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     // Credit our balance (we paid, debt reduced)
                     let handle = self.accounting.for_peer(peer);
                     handle.record(accepted, Direction::Upload);
+
+                    // Pace the next outbound settle off the creditor's clock:
+                    // it refreshes our allowance against the timestamp it
+                    // reports here, so gating on that stops us re-sending before
+                    // it has anything to forgive. The timestamp is clamped to
+                    // our clock and kept monotonic to deny two attacks (see
+                    // CLOCK_SKEW_WINDOW_SECS).
+                    let now = current_timestamp();
+                    let window = now.saturating_sub(CLOCK_SKEW_WINDOW_SECS)..=now;
+                    let effective = u64::try_from(ack.timestamp)
+                        .ok()
+                        .filter(|t| window.contains(t))
+                        .unwrap_or(now);
+                    self.last_settle_ack
+                        .entry(peer)
+                        .and_modify(|prev| *prev = (*prev).max(effective))
+                        .or_insert(effective);
 
                     let _ = pending.response_tx.send(Ok(accepted));
                 } else {
@@ -416,6 +451,179 @@ mod tests {
             accepted: Au::from_amount(amount),
             timestamp: ack_timestamp(),
         }
+    }
+
+    // A distinct deterministic peer per `n`, since `test_peer` always returns
+    // the same address and these tests gate several peers independently.
+    fn peer_n(n: u8) -> OverlayAddress {
+        OverlayAddress::from([n; 32])
+    }
+
+    // A service whose outbound command channel stays open, so a settle that
+    // passes the rate gate actually emits a `SendPseudosettle` instead of
+    // failing with a dropped-receiver network error.
+    fn build_service_with_rx() -> (TestService, mpsc::UnboundedReceiver<ClientCommand>) {
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (_evt_tx, event_rx) = mpsc::unbounded_channel();
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
+        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let svc = PseudosettleService::new(
+            command_rx,
+            event_rx,
+            client_tx,
+            accounting,
+            Au::from_amount(4_500_000),
+        );
+        (svc, client_rx)
+    }
+
+    // Deliver a creditor ack carrying `timestamp` (Unix seconds) for a settle we
+    // had pending. Returns once the `Sent` handler has updated the rate gate.
+    async fn receive_ack(svc: &mut TestService, peer: OverlayAddress, timestamp: i64) {
+        let _rx = insert_pending(svc, peer, Au::from_amount(100));
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PseudosettleAck {
+                accepted: Au::from_amount(1),
+                timestamp,
+            },
+        })
+        .await;
+    }
+
+    // Attempt an outbound settle and report whether the rate gate allowed it.
+    // `true` means the settle was sent (entry pending an ack, command emitted);
+    // `false` means it was refused as `TooSoon`. The pending entry is cleared so
+    // a follow-up settle is not rejected as `SettlementInProgress`.
+    async fn settle_allowed(
+        svc: &mut TestService,
+        client_rx: &mut mpsc::UnboundedReceiver<ClientCommand>,
+        peer: OverlayAddress,
+    ) -> bool {
+        let (response_tx, mut response_rx) = oneshot::channel();
+        svc.handle_command(PseudosettleCommand::Settle {
+            peer,
+            amount: Au::from_amount(1),
+            response_tx,
+        })
+        .await;
+        match response_rx.try_recv() {
+            Ok(Err(PseudosettleSettlementError::TooSoon)) => false,
+            Err(oneshot::error::TryRecvError::Empty) => {
+                // Passed the gate: a command was emitted and the settle now
+                // awaits its ack. Reset so the next settle starts fresh.
+                assert!(matches!(
+                    client_rx.try_recv(),
+                    Ok(ClientCommand::SendPseudosettle { .. })
+                ));
+                svc.pending.remove(&peer);
+                true
+            }
+            other => panic!("unexpected settle outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn legit_ack_timestamp_gates_next_settle() {
+        let (mut svc, mut rx) = build_service_with_rx();
+
+        // A creditor ack one second in the past: the ack timestamp itself (not
+        // our send clock) becomes the reference, and enough wall-clock has
+        // elapsed, so the next settle is sent.
+        let peer = peer_n(1);
+        let now = current_timestamp();
+        receive_ack(&mut svc, peer, now as i64 - 1).await;
+        assert_eq!(*svc.last_settle_ack.get(&peer).unwrap(), now - 1);
+        assert!(settle_allowed(&mut svc, &mut rx, peer).await);
+
+        // A reference that has not yet elapsed (the creditor's clock at or
+        // ahead of ours) holds the next settle off as `TooSoon`. The
+        // future-clamp test proves a peer cannot push the reference past our
+        // clock through the ack; here the gate itself is exercised.
+        let peer2 = peer_n(2);
+        svc.last_settle_ack.insert(peer2, current_timestamp() + 1);
+        assert!(!settle_allowed(&mut svc, &mut rx, peer2).await);
+    }
+
+    #[tokio::test]
+    async fn future_ack_timestamp_does_not_freeze_settling() {
+        let (mut svc, mut rx) = build_service_with_rx();
+        let peer = test_peer();
+
+        // A creditor reports a timestamp far in the future. Stored verbatim it
+        // would push the gate beyond reach and freeze our settling; the clamp
+        // pins the reference to our own clock instead.
+        let before = current_timestamp();
+        receive_ack(&mut svc, peer, before as i64 + 10_000).await;
+        let after = current_timestamp();
+
+        let stored = *svc.last_settle_ack.get(&peer).unwrap();
+        assert!(
+            (before..=after).contains(&stored),
+            "future ack timestamp must be clamped to our clock, got {stored}"
+        );
+
+        // Because the reference is our clock (not the future), one second of
+        // real elapsed time unblocks the next settle. Emulate that second
+        // elapsing by reading the gate against a reference one second old.
+        svc.last_settle_ack.insert(peer, stored.saturating_sub(1));
+        assert!(settle_allowed(&mut svc, &mut rx, peer).await);
+    }
+
+    #[tokio::test]
+    async fn garbage_ack_timestamp_falls_back_to_now() {
+        let (mut svc, _rx) = build_service_with_rx();
+        let before = current_timestamp();
+
+        // A nanoseconds-scale value (our own outbound ack has a known nanos
+        // bug, and a hostile peer can send anything): far past `now`, rejected.
+        let nanos = peer_n(1);
+        receive_ack(&mut svc, nanos, 1_700_000_000_000_000_000).await;
+
+        // A negative timestamp falls back to `now`.
+        let negative = peer_n(2);
+        receive_ack(&mut svc, negative, -5).await;
+
+        // Zero falls back to `now`.
+        let zero = peer_n(3);
+        receive_ack(&mut svc, zero, 0).await;
+
+        // Each garbage value paces normally: the reference is our own clock at
+        // ingestion, never the attacker-supplied number.
+        let after = current_timestamp();
+        for peer in [nanos, negative, zero] {
+            let stored = *svc.last_settle_ack.get(&peer).unwrap();
+            assert!(
+                (before..=after).contains(&stored),
+                "garbage ack timestamp must fall back to our clock, got {stored}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ack_timestamp_reference_is_monotonic() {
+        let (mut svc, _rx) = build_service_with_rx();
+        let peer = test_peer();
+
+        // A recent ack sets the reference.
+        let now = current_timestamp();
+        receive_ack(&mut svc, peer, now as i64).await;
+        assert_eq!(*svc.last_settle_ack.get(&peer).unwrap(), now);
+
+        // A later ack reporting an older timestamp must not rewind the gate,
+        // which would otherwise let a creditor induce settle spam.
+        receive_ack(&mut svc, peer, now as i64 - 5).await;
+        assert_eq!(*svc.last_settle_ack.get(&peer).unwrap(), now);
+    }
+
+    #[tokio::test]
+    async fn first_contact_settle_is_allowed() {
+        let (mut svc, mut rx) = build_service_with_rx();
+        let peer = test_peer();
+
+        // No prior ack: nothing in the rate gate, so the first settle is sent.
+        assert!(!svc.last_settle_ack.contains_key(&peer));
+        assert!(settle_allowed(&mut svc, &mut rx, peer).await);
     }
 
     #[tokio::test]
