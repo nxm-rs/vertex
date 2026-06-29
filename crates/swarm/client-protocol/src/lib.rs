@@ -432,6 +432,12 @@ pub enum PseudosettleEvent {
         /// Request ID for sending ack.
         request_id: u64,
     },
+    /// An outbound pseudosettle substream failed or the peer disconnected before
+    /// an ack arrived; any pending settle for this peer must be released.
+    Failed {
+        /// The peer whose pending settle can no longer complete.
+        peer: OverlayAddress,
+    },
 }
 
 /// Events extracted from [`ClientEvent`] and routed to the swap settlement service.
@@ -453,5 +459,11 @@ pub enum SwapEvent {
         cheque: SignedCheque,
         /// The peer's advertised exchange rate, from the headers exchange.
         peer_rate: U256,
+    },
+    /// An outbound swap substream failed or the peer disconnected before the
+    /// cheque-sent ack arrived; any pending settle for this peer must be released.
+    Failed {
+        /// The peer whose pending settle can no longer complete.
+        peer: OverlayAddress,
     },
 }

@@ -272,6 +272,19 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle ack");
                 }
             }
+            PseudosettleEvent::Failed { peer } => {
+                // The substream died or the peer disconnected before acking, so
+                // resolve the pending settle with an error rather than leaking it.
+                if let Some(pending) = self.pending.remove(&peer) {
+                    debug!(%peer, "Pseudosettle substream failed; releasing pending settle");
+                    let _ =
+                        pending
+                            .response_tx
+                            .send(Err(PseudosettleSettlementError::NetworkError(
+                                "substream failed".into(),
+                            )));
+                }
+            }
         }
     }
 
@@ -557,6 +570,32 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(100));
         let handle = svc.accounting.for_peer(peer);
         assert_eq!(handle.balance(), Au::from_amount(100));
+    }
+
+    #[tokio::test]
+    async fn failed_event_releases_pending_settle() {
+        let mut svc = build_service();
+        let peer = test_peer();
+
+        // A settle is pending its ack when the substream dies.
+        let mut rx = insert_pending(&mut svc, peer, Au::from_amount(100));
+        svc.handle_event(PseudosettleEvent::Failed { peer }).await;
+
+        // The caller is released with an error rather than left hanging.
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Err(PseudosettleSettlementError::NetworkError(_))
+        ));
+        // The pending entry is cleared so a later settle starts fresh.
+        assert!(!svc.pending.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn failed_event_for_unknown_peer_is_noop() {
+        let mut svc = build_service();
+        // No pending settle for this peer: the failure is simply ignored.
+        svc.handle_event(PseudosettleEvent::Failed { peer: test_peer() })
+            .await;
     }
 
     #[tokio::test]
