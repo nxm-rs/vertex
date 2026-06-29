@@ -743,7 +743,7 @@ mod tests {
         use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
         use tokio::sync::mpsc;
         use vertex_swarm_api::{
-            AdmissionControl, BandwidthReserve, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+            AdmissionControl, BandwidthDebit, SwarmBandwidthAccounting, SwarmPeerBandwidth,
             SwarmPricing,
         };
         use vertex_swarm_node::{
@@ -772,7 +772,7 @@ mod tests {
             Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
         let handle = ClientHandle::new(tx).with_origin_gate(
             Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone() as Arc<dyn BandwidthReserve>,
+            accounting.bandwidth().clone() as Arc<dyn BandwidthDebit>,
             accounting.bandwidth().clone() as Arc<dyn AdmissionControl>,
             settlement,
         );

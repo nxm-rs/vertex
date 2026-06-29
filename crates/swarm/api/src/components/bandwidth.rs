@@ -187,6 +187,11 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
 pub trait BandwidthDebit: Send + Sync {
     /// Debit `peer` by `price` for a received chunk, committing immediately.
     fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()>;
+
+    /// Credit back a receive debit committed at dispatch. Inverse of the
+    /// dispatch commit: the balance moves back, the reservation is already
+    /// cleared. Pure ledger op, never peer scoring.
+    fn refund_received(&self, peer: OverlayAddress, price: Au);
 }
 
 impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
@@ -194,56 +199,9 @@ impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
         self.prepare_receive(peer, price, originated)
             .map(Commit::apply)
     }
-}
 
-/// Object-safe held receive reservation: reserve at dispatch, commit on
-/// delivery, release on drop.
-///
-/// The origin retrieval and pushsync legs reserve the price before sending and
-/// carry the hold across the in-flight leg behind a trait object (the dispatch
-/// site cannot name the concrete `ReceiveAction`). Calling [`apply`](Self::apply)
-/// commits the debit; dropping the box releases the reservation, so any
-/// non-delivery exit (failure, timeout, a dropped request future) never leaks.
-pub trait HeldReceive: Send {
-    /// Commit the reserved receive debit.
-    fn apply(self: Box<Self>);
-}
-
-impl<T: Commit + 'static> HeldReceive for T {
-    fn apply(self: Box<Self>) {
-        Commit::apply(*self);
-    }
-}
-
-/// Object-safe reserve-at-dispatch for callers that hold accounting behind a
-/// trait object.
-///
-/// Reserves the receive leg and returns the hold to carry across the in-flight
-/// leg. An `Err` is the band refusing at the disconnect line (the same hard gate
-/// [`SwarmBandwidthAccounting::prepare_receive`] applies): sending would cross
-/// the creditor's line, so the caller routes elsewhere.
-pub trait BandwidthReserve: Send + Sync {
-    /// Reserve `price` for an in-flight receive leg from `peer`. Apply the
-    /// returned hold on delivery; drop it to release.
-    fn reserve_received(
-        &self,
-        peer: OverlayAddress,
-        price: Au,
-        originated: bool,
-    ) -> SwarmResult<Box<dyn HeldReceive>>;
-}
-
-impl<B: SwarmBandwidthAccounting> BandwidthReserve for B
-where
-    B::ReceiveAction: 'static,
-{
-    fn reserve_received(
-        &self,
-        peer: OverlayAddress,
-        price: Au,
-        originated: bool,
-    ) -> SwarmResult<Box<dyn HeldReceive>> {
-        Ok(Box::new(self.prepare_receive(peer, price, originated)?))
+    fn refund_received(&self, peer: OverlayAddress, price: Au) {
+        self.for_peer(peer).record(price, Direction::Upload);
     }
 }
 

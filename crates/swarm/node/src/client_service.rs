@@ -8,8 +8,8 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Admission, AdmissionControl, Au, BandwidthReserve, HeldReceive, PeerReporter, ReportSource,
-    SwarmLocalStore, SwarmPricing, SwarmScoringEvent,
+    Admission, AdmissionControl, Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore,
+    SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
@@ -36,23 +36,24 @@ pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 #[derive(Clone)]
 pub struct ClientHandle {
     command_tx: mpsc::Sender<ClientCommand>,
-    /// When set, an origin request reserves its price at dispatch, gates on the
-    /// admission band, and commits the reserved debit on delivery. Absent on the
-    /// lightweight launcher, where origin dispatch neither reserves nor gates.
+    /// When set, an origin request gates on the admission band and books its
+    /// price the moment it dispatches, refunding only when the request provably
+    /// reached no charge. Absent on the lightweight launcher, where origin
+    /// dispatch neither books nor gates.
     origin: Option<OriginGate>,
 }
 
-/// Reserve-at-dispatch and the admission band for origin requests.
+/// Book-at-send and the admission band for origin requests.
 ///
 /// All four read the one shared accounting the selector uses, so the dispatch
-/// gate, the candidate selector, and the in-flight reservation agree on one
-/// ledger. The settlement trigger is the selector's, so settles dedup across
-/// both paths. The band is the synchronous pacing brake: an over-threshold
-/// projected debt settles or refuses before any bytes leave.
+/// gate, the candidate selector, and the committed debit agree on one ledger.
+/// The settlement trigger is the selector's, so settles dedup across both
+/// paths. The band is the synchronous pacing brake: an over-threshold projected
+/// debt settles or refuses before any bytes leave.
 #[derive(Clone)]
 struct OriginGate {
     pricing: Arc<dyn SwarmPricing>,
-    reserve: Arc<dyn BandwidthReserve>,
+    debit: Arc<dyn BandwidthDebit>,
     admission: Arc<dyn AdmissionControl>,
     settlement: Arc<dyn SettlementTrigger>,
 }
@@ -66,10 +67,10 @@ impl ClientHandle {
         }
     }
 
-    /// Attach the origin credit gate so an own-request dispatch reserves its
-    /// price, bands the request, and commits the debit on delivery.
+    /// Attach the origin credit gate so an own-request dispatch bands the
+    /// request and books its price at the moment it dispatches.
     ///
-    /// `pricing`, `reserve`, and `admission` must read the one shared accounting
+    /// `pricing`, `debit`, and `admission` must read the one shared accounting
     /// the selector uses, and `settlement` must be the selector's so the
     /// in-flight settle dedup is shared. Relay legs (`originated == false`) are
     /// accounted by the forwarder and bypass this gate.
@@ -77,34 +78,41 @@ impl ClientHandle {
     pub fn with_origin_gate(
         mut self,
         pricing: Arc<dyn SwarmPricing>,
-        reserve: Arc<dyn BandwidthReserve>,
+        debit: Arc<dyn BandwidthDebit>,
         admission: Arc<dyn AdmissionControl>,
         settlement: Arc<dyn SettlementTrigger>,
     ) -> Self {
         self.origin = Some(OriginGate {
             pricing,
-            reserve,
+            debit,
             admission,
             settlement,
         });
         self
     }
 
-    /// Gate and reserve an origin request before dispatch.
+    /// Gate an origin request and book its price at dispatch.
     ///
-    /// Returns the hold to carry across the in-flight leg (`Ok(Some(_))`), or
-    /// `Ok(None)` for a relay leg or when no origin gate is attached. An
-    /// [`Admit`](Admission::Admit) band reserves and sends; a
+    /// Returns the committed price for a possible later refund (`Ok(Some(_))`),
+    /// or `Ok(None)` for a relay leg or when no origin gate is attached. An
+    /// [`Admit`](Admission::Admit) band books and sends; a
     /// [`SettleAndAdmit`](Admission::SettleAndAdmit) triggers a settle and sends
     /// anyway (the band keeps us under the disconnect line whichever order the
     /// storer applies them); a [`Refuse`](Admission::Refuse) at the disconnect
     /// line triggers a settle and refuses, so the caller routes elsewhere.
+    ///
+    /// Booking happens the moment the request dispatches, before any await, and
+    /// is refunded only when the request provably reaches no charge. Every chunk
+    /// the server serves thus corresponds to a request we already committed, so
+    /// our debt-view stays at or above the server's and our band refuses before
+    /// the server's disconnect line. A losing race leg dropped mid-flight cannot
+    /// un-book, because the commit already happened synchronously here.
     fn reserve_origin(
         &self,
         peer: OverlayAddress,
         address: &ChunkAddress,
         originated: bool,
-    ) -> Result<Option<Box<dyn HeldReceive>>, ChunkTransferError> {
+    ) -> Result<Option<Au>, ChunkTransferError> {
         let Some(gate) = &self.origin else {
             return Ok(None);
         };
@@ -125,15 +133,24 @@ impl ClientHandle {
             }
         }
 
-        // The reserve shares the admit boundary, so it refuses at the disconnect
+        // The debit shares the admit boundary, so it refuses at the disconnect
         // line too; a concurrent burst that crossed it between the band check and
-        // here surfaces as a refusal, handled identically.
-        match gate.reserve.reserve_received(peer, price, true) {
-            Ok(held) => Ok(Some(held)),
+        // here surfaces as a refusal, handled identically. The commit lands
+        // immediately at dispatch.
+        match gate.debit.debit_received(peer, price, true) {
+            Ok(()) => Ok(Some(price)),
             Err(_) => {
                 gate.settlement.trigger_settlement(peer);
                 Err(ChunkTransferError::Refused)
             }
+        }
+    }
+
+    /// Refund a dispatch-committed origin debit. A no-op for a relay leg or when
+    /// no origin gate is attached. Pure ledger op, never peer scoring.
+    fn refund_origin(&self, peer: OverlayAddress, committed: Option<Au>) {
+        if let (Some(gate), Some(price)) = (&self.origin, committed) {
+            gate.debit.refund_received(peer, price);
         }
     }
 
@@ -164,25 +181,29 @@ impl ClientHandle {
         address: ChunkAddress,
         originated: bool,
     ) -> Result<RetrievalResult, ChunkTransferError> {
-        // Reserve the origin debit and gate on the band before sending. The hold
-        // rides this future: applied on delivery, released on any other exit
-        // (failure, cancel, a dropped losing race leg).
-        let reservation = self.reserve_origin(peer, &address, originated)?;
+        // Gate on the band and book the price at dispatch.
+        let committed = self.reserve_origin(peer, &address, originated)?;
 
         let (tx, rx) = oneshot::channel();
 
-        self.send_command(ClientCommand::RetrieveChunk {
+        if let Err(e) = self.send_command(ClientCommand::RetrieveChunk {
             peer,
             address,
             response: tx,
             originated,
-        })?;
+        }) {
+            // Never reached the wire, so nothing was charged: refund.
+            self.refund_origin(peer, committed);
+            return Err(e);
+        }
 
-        let result = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
-        if result.is_ok()
-            && let Some(held) = reservation
+        // A dropped response oneshot is a mid-flight teardown (`Cancelled`), not a
+        // confirmed absence, so the dispatch commit stays like any lost delivery.
+        let result = rx.await.unwrap_or(Err(ChunkTransferError::Cancelled));
+        if let Err(e) = &result
+            && e.is_confirmed_absent()
         {
-            held.apply();
+            self.refund_origin(peer, committed);
         }
         result
     }
@@ -201,26 +222,27 @@ impl ClientHandle {
     ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
 
-        // Pushsync reserves the origin debit and gates like retrieval. A
-        // `SettleAndAdmit` peer is still sent to (closeness preserved); only a
-        // `Refuse` at the disconnect line refuses here.
-        let reservation = self.reserve_origin(peer, &address, originated)?;
+        // Pushsync gates and books at dispatch like retrieval.
+        let committed = self.reserve_origin(peer, &address, originated)?;
 
         let (tx, rx) = oneshot::channel();
 
-        self.send_command(ClientCommand::PushChunk {
+        if let Err(e) = self.send_command(ClientCommand::PushChunk {
             peer,
             address,
             chunk,
             response: tx,
             originated,
-        })?;
+        }) {
+            self.refund_origin(peer, committed);
+            return Err(e);
+        }
 
-        let result = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
-        if result.is_ok()
-            && let Some(held) = reservation
+        let result = rx.await.unwrap_or(Err(ChunkTransferError::Cancelled));
+        if let Err(e) = &result
+            && e.is_confirmed_absent()
         {
-            held.apply();
+            self.refund_origin(peer, committed);
         }
         result
     }
@@ -825,7 +847,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let handle = ClientHandle::new(tx).with_origin_gate(
             Arc::new(FixedPeerPricer(price)) as Arc<dyn SwarmPricing>,
-            accounting.clone() as Arc<dyn BandwidthReserve>,
+            accounting.clone() as Arc<dyn BandwidthDebit>,
             accounting.clone() as Arc<dyn AdmissionControl>,
             settlement.clone() as Arc<dyn SettlementTrigger>,
         );
@@ -833,7 +855,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn origin_dispatch_reserves_then_applies_on_delivery() {
+    async fn origin_dispatch_books_immediately_and_keeps_it_on_delivery() {
         let (handle, accounting, settlement, mut rx) = gated_handle(100);
         let peer = peer(1);
 
@@ -846,8 +868,9 @@ mod tests {
             }
         });
 
-        // The dispatched command means the reservation is held: the price is
-        // reserved and the committed balance is still zero.
+        // Book-at-send: the moment the command dispatches the debit is committed,
+        // so the balance is already debited and nothing is left reserved (this is
+        // the distinguishing behaviour from the old reserve-only-at-dispatch).
         let response = match rx.recv().await.expect("dispatched") {
             ClientCommand::RetrieveChunk {
                 peer: p, response, ..
@@ -857,10 +880,10 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         };
-        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
-        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
 
-        // Delivery applies the reservation: debited once, reserve cleared.
+        // Delivery keeps the dispatch commit: still debited once.
         response
             .send(Ok(RetrievalResult {
                 chunk: content_chunk(),
@@ -876,8 +899,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn origin_dispatch_releases_reservation_on_failure() {
-        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+    async fn origin_dispatch_keeps_the_commit_on_lost_delivery() {
+        // Book-at-send: a `Remote` failure (the substream returned a result, but
+        // not a delivery) may have moved bytes the server charged for, so the
+        // dispatch commit stays. The path fires no settle and no scoring: an
+        // in-band admit needs no settle, and the handle holds no peer reporter, so
+        // a reset driven by our own debt never docks the server.
+        let (handle, accounting, settlement, mut rx) = gated_handle(100);
         let peer = peer(2);
 
         let task = tokio::spawn({
@@ -892,9 +920,10 @@ mod tests {
             ClientCommand::RetrieveChunk { response, .. } => response,
             other => panic!("unexpected command: {other:?}"),
         };
-        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+        // Already committed at dispatch.
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
 
-        // A remote failure releases the reservation, leaving the balance untouched.
         response
             .send(Err(ChunkTransferError::Remote))
             .expect("receiver alive");
@@ -902,15 +931,16 @@ mod tests {
             task.await.unwrap(),
             Err(ChunkTransferError::Remote)
         ));
-        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
         assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert!(settlement.triggered.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn origin_dispatch_releases_reservation_on_dropped_response() {
+    async fn origin_dispatch_keeps_the_commit_on_cancelled() {
         // The cancel path: the response oneshot is dropped without an answer, so
-        // the request returns `Cancelled` and the held reservation releases. No
-        // leak, no debit.
+        // the request returns `Cancelled`. This is a mid-flight teardown, not a
+        // confirmed absence, so the dispatch commit stays (bytes may have flowed).
         let (handle, accounting, _settlement, mut rx) = gated_handle(100);
         let peer = peer(3);
 
@@ -926,7 +956,7 @@ mod tests {
             ClientCommand::RetrieveChunk { response, .. } => response,
             other => panic!("unexpected command: {other:?}"),
         };
-        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
 
         drop(response);
         assert!(matches!(
@@ -934,7 +964,73 @@ mod tests {
             Err(ChunkTransferError::Cancelled)
         ));
         assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_refunds_on_confirmed_absence() {
+        // A peer that answers with an explicit not-found delivery did not charge,
+        // so the dispatch commit is refunded and the balance returns to its
+        // pre-dispatch value.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(9);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        // Committed at dispatch, then refunded on the confirmed absence.
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+
+        response
+            .send(Err(ChunkTransferError::NotFound(ChunkAddress::zero())))
+            .expect("receiver alive");
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ChunkTransferError::NotFound(_))
+        ));
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_refunds_when_peer_unreached() {
+        // `NotConnected` means the request never reached a peer, so nothing was
+        // charged and the dispatch commit is refunded.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(10);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+
+        response
+            .send(Err(ChunkTransferError::NotConnected))
+            .expect("receiver alive");
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ChunkTransferError::NotConnected)
+        ));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
     }
 
     #[tokio::test]
@@ -1029,8 +1125,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn origin_push_reserves_then_releases_on_failure() {
-        // Pushsync reserves at dispatch like retrieval and releases on failure.
+    async fn origin_push_keeps_the_commit_on_lost_delivery() {
+        // Pushsync books at dispatch like retrieval: an explicit storer rejection
+        // (`Remote`) is indistinguishable from a post-charge reset, so the
+        // dispatch commit stays.
         let (handle, accounting, _settlement, mut rx) = gated_handle(100);
         let peer = peer(7);
         let stamped = test_stamped_chunk();
@@ -1043,12 +1141,150 @@ mod tests {
             ClientCommand::PushChunk { response, .. } => response,
             other => panic!("unexpected command: {other:?}"),
         };
-        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::from_amount(100));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
 
         response.send(Err(ChunkTransferError::Remote)).ok();
         let _ = task.await;
         assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+    }
+
+    #[tokio::test]
+    async fn origin_push_refunds_when_peer_unreached() {
+        // A push that never reached a peer (`NotConnected`) charged nothing, so
+        // the dispatch commit is refunded.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(11);
+        let stamped = test_stamped_chunk();
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.push_chunk(peer, stamped, true).await }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::PushChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+
+        response.send(Err(ChunkTransferError::NotConnected)).ok();
+        let _ = task.await;
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn origin_dispatch_refunds_on_send_failure() {
+        // The command never reaches the wire (the channel is closed), so nothing
+        // was charged: the dispatch commit is refunded and the balance returns to
+        // its pre-dispatch value.
+        let (handle, accounting, _settlement, rx) = gated_handle(100);
+        let peer = peer(12);
+
+        // Close the command channel so `send_command` returns `ChannelClosed`.
+        drop(rx);
+
+        let outcome = handle
+            .retrieve_chunk(peer, ChunkAddress::zero(), true)
+            .await;
+        assert!(matches!(outcome, Err(ChunkTransferError::ChannelClosed)));
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::ZERO);
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn dropped_race_loser_keeps_the_dispatch_commit() {
+        // The key guarantee over commit-on-failure: a losing race leg's future is
+        // dropped mid-await (its result never arrives), yet the debit stays
+        // committed because the commit happened synchronously at dispatch. Under
+        // the old reserve-only design the hold would drop un-applied and release,
+        // letting our view fall below the server's. Here the balance stays
+        // debited.
+        let (handle, accounting, _settlement, mut rx) = gated_handle(100);
+        let peer = peer(13);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        // Drain the command so the dispatch (and its commit) has happened, then
+        // hold the response so the future is parked awaiting it.
+        let _response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+
+        // Drop the in-flight future mid-await (the race loser).
+        task.abort();
+        let _ = task.await;
+
+        // The commit is retained: dropping the future cannot un-book it.
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn commit_and_refund_are_ledger_only() {
+        // The origin gate carries no peer reporter, so neither the dispatch commit
+        // nor a refund can feed scoring; the only observable side-channel is the
+        // settle trigger, which an in-band admit never fires. One delivery (commit
+        // kept) and one confirmed absence (refund) leave the settle recorder
+        // empty.
+        let (handle, accounting, settlement, mut rx) = gated_handle(100);
+
+        // A delivered request keeps its commit, with no settle.
+        let kept = peer(14);
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(kept, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        response
+            .send(Ok(RetrievalResult {
+                chunk: content_chunk(),
+                stamp: None,
+                peer: kept,
+            }))
+            .expect("receiver alive");
+        task.await.unwrap().expect("delivery ok");
+        assert_eq!(Ledger::balance(&*accounting, &kept), Au::new(-100));
+
+        // A confirmed absence refunds, also with no settle.
+        let refunded = peer(15);
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(refunded, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        response
+            .send(Err(ChunkTransferError::NotFound(ChunkAddress::zero())))
+            .expect("receiver alive");
+        let _ = task.await;
+        assert_eq!(Ledger::balance(&*accounting, &refunded), Au::ZERO);
+
+        assert!(
+            settlement.triggered.lock().unwrap().is_empty(),
+            "in-band commit and refund trigger no settle and no scoring"
+        );
     }
 
     #[tokio::test]

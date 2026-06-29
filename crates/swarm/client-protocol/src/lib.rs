@@ -117,6 +117,25 @@ impl ChunkTransferError {
             Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
         }
     }
+
+    /// Whether a dispatch-committed origin debit must be refunded.
+    ///
+    /// True only when the responder provably did not charge: a peer that
+    /// answered with an explicit not-found / error delivery, or a request that
+    /// never reached a connected peer. Every other post-dispatch outcome (reset,
+    /// timeout, cancel, local protocol error) may have moved bytes and charged,
+    /// so the debit stays committed to keep our debt-view at or above the server's.
+    pub fn is_confirmed_absent(&self) -> bool {
+        match self {
+            Self::NotFound(_) | Self::NotConnected => true,
+            Self::ChannelClosed
+            | Self::Cancelled
+            | Self::TimedOut
+            | Self::Protocol(_)
+            | Self::Remote
+            | Self::Refused => false,
+        }
+    }
 }
 
 /// Why a retrieval or pushsync request failed, classified for peer scoring.

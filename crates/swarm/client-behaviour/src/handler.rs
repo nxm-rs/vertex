@@ -672,9 +672,11 @@ impl ClientHandler {
         let overlay = self.overlay();
         match delivery {
             vertex_swarm_net_retrieval::Delivery::Error => {
-                // Remote reported a failure (empty data): a plain protocol
-                // failure. Malformed chunks never reach this arm; they fail
-                // reconstruction at decode and surface as a dial upgrade error.
+                // Explicit error delivery: the peer signalled absence before
+                // charging, the one retrieval outcome that provably moved no
+                // bytes, so surface `NotFound` to release the origin reservation.
+                // Malformed chunks never reach here; they fail decode and surface
+                // as a dial upgrade error.
                 debug!(?overlay, %address, "Retrieval failed");
                 if let Some(overlay) = overlay {
                     self.push_event(HandlerEvent::RetrievalFailed {
@@ -684,7 +686,7 @@ impl ClientHandler {
                         kind: FailureKind::Protocol,
                     });
                 }
-                let _ = response.send(Err(ChunkTransferError::Remote));
+                let _ = response.send(Err(ChunkTransferError::NotFound(address)));
             }
             vertex_swarm_net_retrieval::Delivery::Chunk { chunk, stamp } => {
                 let chunk = *chunk;
