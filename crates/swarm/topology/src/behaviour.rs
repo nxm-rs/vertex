@@ -2,7 +2,6 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::IpAddr,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -268,12 +267,6 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// address). Populated at `ConnectionEstablished`, consumed at handshake
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
-
-    /// Remote IP of each established connection. Populated at
-    /// `ConnectionEstablished`, read at handshake completion so the peer
-    /// manager can associate the confirmed overlay with the IP the
-    /// connection actually came from, and cleared at `ConnectionClosed`.
-    pub(crate) connection_remote_ips: HashMap<ConnectionId, IpAddr>,
 
     /// Receiver for the peer lifecycle event stream from PeerManager.
     ///
@@ -1326,7 +1319,6 @@ mod tests {
                 SwarmNodeType::Client,
                 ConnectionDirection::Inbound,
                 TrustLevel::Normal,
-                None,
             );
             (overlay, peer_id)
         }

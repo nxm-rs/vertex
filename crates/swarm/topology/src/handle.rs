@@ -569,7 +569,6 @@ mod tests {
                 node_type,
                 ConnectionDirection::Outbound,
                 TrustLevel::Normal,
-                None,
             );
             let overlay = test_overlay(n);
             SwarmRouting::connected(&*self.routing, overlay);

@@ -548,7 +548,6 @@ mod tests {
             SwarmNodeType::Storer,
             ConnectionDirection::Outbound,
             vertex_swarm_peer_manager::TrustLevel::Normal,
-            None,
         );
         metrics.record_event(&TopologyEvent::PeerReady {
             overlay,
