@@ -29,6 +29,7 @@ use futures::FutureExt;
 use futures::future::Shared;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
+use rustc_hash::FxBuildHasher;
 use tokio::sync::oneshot;
 use tracing::debug;
 use vertex_swarm_api::{
@@ -44,6 +45,10 @@ use vertex_tasks::time::Instant;
 /// completes (the settle's [`InFlightGuard`] fires it on drop), so a waiter can
 /// re-evaluate admission as soon as the network settle acks.
 type SettleCompletion = Shared<oneshot::Receiver<()>>;
+
+/// Per-peer in-flight settle map. Overlay keys are uniformly random, so a fast
+/// non-DoS hasher keeps the settle-trigger dedup off SipHash.
+type InFlightMap = HashMap<OverlayAddress, SettleCompletion, FxBuildHasher>;
 
 /// Source of live peer scores for candidate selection.
 ///
@@ -94,7 +99,7 @@ pub trait SettlementTrigger: Send + Sync {
 /// waiter await that ack.
 pub struct AccountingSettlement<B> {
     bandwidth: B,
-    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
+    in_flight: Arc<Mutex<InFlightMap>>,
 }
 
 impl<B> AccountingSettlement<B> {
@@ -102,7 +107,7 @@ impl<B> AccountingSettlement<B> {
     pub fn new(bandwidth: B) -> Self {
         Self {
             bandwidth,
-            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(InFlightMap::default())),
         }
     }
 }
@@ -111,7 +116,7 @@ impl<B> AccountingSettlement<B> {
 /// panic or cancellation of the settle future cannot pin the peer (which would
 /// starve its settlement) and any waiter on the settle is woken either way.
 struct InFlightGuard {
-    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
+    in_flight: Arc<Mutex<InFlightMap>>,
     peer: OverlayAddress,
     done: Option<oneshot::Sender<()>>,
 }
@@ -140,15 +145,18 @@ where
         };
         // Skip if a settle to this peer is already running; the entry is cleared
         // when the spawned settle completes, so the next trigger can start a fresh
-        // one.
-        let (done, completion) = oneshot::channel();
-        {
+        // one. The common steady-state path re-triggers a peer whose settle is
+        // still in flight, so the dedup check happens before the oneshot/Shared
+        // allocation: a hit returns on a bare map probe with nothing allocated.
+        let done = {
             let mut in_flight = self.in_flight.lock();
             if in_flight.contains_key(&peer) {
                 return;
             }
+            let (done, completion) = oneshot::channel();
             in_flight.insert(peer, completion.shared());
-        }
+            done
+        };
         let handle = self.bandwidth.for_peer(peer);
         let guard = InFlightGuard {
             in_flight: Arc::clone(&self.in_flight),
@@ -231,16 +239,20 @@ impl PeerSelector {
     ) -> Vec<OverlayAddress> {
         // One admission band per candidate drives both the hard-skip (a refused
         // peer leaves `ordered`) and the settle trigger (anything not plainly
-        // admitted).
-        let admit = |peer: &OverlayAddress| {
-            self.admission
-                .admit(peer, self.pricing.peer_price(peer, chunk))
-        };
+        // admitted). The band is read once per candidate (a single ledger lock and
+        // key hash via `admit`) and reused for both, so the hot path never bands a
+        // peer twice.
+        let ranked = rank_candidates(
+            &candidates,
+            |peer| self.scores.peer_score(peer),
+            |peer| {
+                self.admission
+                    .admit(peer, self.pricing.peer_price(peer, chunk))
+            },
+        );
 
-        let ranked = rank_candidates(&candidates, |peer| self.scores.peer_score(peer), admit);
-
-        for peer in &candidates {
-            if !matches!(admit(peer), Admission::Admit) {
+        for (peer, band) in candidates.iter().zip(&ranked.bands) {
+            if !matches!(band, Admission::Admit) {
                 self.settlement.trigger_settlement(*peer);
             }
         }
@@ -292,6 +304,10 @@ impl PeerSelector {
 struct RankedCandidates {
     /// Candidates to attempt, best first. Never includes a refused peer.
     ordered: Vec<OverlayAddress>,
+    /// The admission band of each input candidate, in input order. Returned so
+    /// the caller can drive the settle pass off the same single band read per
+    /// candidate rather than re-banding.
+    bands: Vec<Admission>,
 }
 
 /// Rank proximity-ordered `candidates` by the admission band and score.
@@ -301,7 +317,8 @@ struct RankedCandidates {
 /// Warned peers (score at or below [`DEFAULT_PEER_WARN_THRESHOLD`]) are excluded
 /// among the admissible. If every admissible candidate is warned, those warned
 /// peers are returned in proximity order so a degraded request can still go out;
-/// a refused peer is never resurrected this way.
+/// a refused peer is never resurrected this way. `admit` is invoked exactly once
+/// per candidate and the bands are returned for reuse.
 fn rank_candidates(
     candidates: &[OverlayAddress],
     score: impl Fn(&OverlayAddress) -> Option<f64>,
@@ -309,9 +326,12 @@ fn rank_candidates(
 ) -> RankedCandidates {
     let mut ordered = Vec::with_capacity(candidates.len());
     let mut warned = Vec::new();
+    let mut bands = Vec::with_capacity(candidates.len());
 
     for peer in candidates {
-        if matches!(admit(peer), Admission::Refuse) {
+        let band = admit(peer);
+        bands.push(band);
+        if matches!(band, Admission::Refuse) {
             continue;
         }
         if score(peer).is_some_and(|s| s <= DEFAULT_PEER_WARN_THRESHOLD) {
@@ -328,7 +348,7 @@ fn rank_candidates(
         ordered = warned;
     }
 
-    RankedCandidates { ordered }
+    RankedCandidates { ordered, bands }
 }
 
 #[cfg(test)]
@@ -998,7 +1018,7 @@ mod tests {
         // The guard removes the peer in Drop, which runs on normal completion,
         // unwind (a panicking settle), and cancellation alike, so a settle that
         // never completes cleanly cannot pin the peer and starve its settlement.
-        let in_flight = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let in_flight = Arc::new(parking_lot::Mutex::new(InFlightMap::default()));
         let (done, completion) = oneshot::channel();
         in_flight.lock().insert(peer(1), completion.shared());
         {
