@@ -1,38 +1,49 @@
-//! Score- and affordability-aware peer selection for retrieval and pushsync.
+//! Score- and credit-aware peer selection for retrieval and pushsync.
 //!
 //! Topology returns candidate storers in proximity order. [`PeerSelector`]
 //! reorders them with two additional signals before a request goes out:
 //!
-//! - Peers whose score is in the warned range are excluded, so a peer that is
-//!   being scored down is not asked again while it misbehaves.
-//! - Peers we cannot afford (the per-chunk debit would cross their disconnect
-//!   threshold) rank behind affordable ones.
+//! - A peer the admission band refuses (the per-chunk debit would cross its
+//!   disconnect line) is hard-skipped, so the request routes to the next-closest
+//!   affordable peer while a background settle drains the skipped one.
+//! - Peers whose score is in the warned range are excluded among the admissible,
+//!   so a peer that is being scored down is not asked again while it misbehaves.
 //!
-//! Proximity stays the primary key within each group. When every candidate is
-//! warned or unaffordable, the original proximity order is used unchanged:
-//! degraded service beats failing the request outright. When a request is
-//! blocked on balance (no affordable candidate at all), a best-effort
-//! settlement is triggered for the unaffordable candidates so they become
-//! usable again; the settlement providers themselves decide whether any
-//! payment is actually due.
+//! Proximity stays the primary key. If every admissible candidate is warned, the
+//! warned peers are returned in proximity order so a degraded request can still
+//! go out; a refused peer is never resurrected this way. Every candidate not
+//! plainly admitted is settled (a peer in the tolerance band to stay there, a
+//! refused peer to drain back under its line); the settlement providers
+//! themselves decide whether any payment is actually due.
 //!
 //! The price consulted per candidate is [`SwarmPricing::peer_price`], the same
 //! per-peer chunk price the accounting layer debits when the request is
 //! served.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::FutureExt;
+use futures::future::Shared;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
+use tokio::sync::oneshot;
 use tracing::debug;
 use vertex_swarm_api::{
-    AdmissionControl, DEFAULT_PEER_WARN_THRESHOLD, SwarmBandwidthAccounting, SwarmIdentity,
-    SwarmPeerBandwidth, SwarmPricing,
+    Admission, AdmissionControl, DEFAULT_PEER_WARN_THRESHOLD, SwarmBandwidthAccounting,
+    SwarmIdentity, SwarmPeerBandwidth, SwarmPricing,
 };
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::TaskExecutor;
+use vertex_tasks::time::Instant;
+
+/// A shareable handle that resolves when an in-flight settle for a peer
+/// completes (the settle's [`InFlightGuard`] fires it on drop), so a waiter can
+/// re-evaluate admission as soon as the network settle acks.
+type SettleCompletion = Shared<oneshot::Receiver<()>>;
 
 /// Source of live peer scores for candidate selection.
 ///
@@ -50,7 +61,7 @@ impl<I: SwarmIdentity> PeerScores for TopologyHandle<I> {
     }
 }
 
-/// Best-effort settlement trigger for requests blocked on balance.
+/// Best-effort settlement trigger for a peer whose debt has reached the band.
 ///
 /// Implemented over bandwidth accounting (see [`AccountingSettlement`]) and by
 /// test mocks.
@@ -58,6 +69,16 @@ impl<I: SwarmIdentity> PeerScores for TopologyHandle<I> {
 pub trait SettlementTrigger: Send + Sync {
     /// Start settlement with `peer` without waiting for the outcome.
     fn trigger_settlement(&self, peer: OverlayAddress);
+
+    /// Resolve once any in-flight settle for the subset of `peers` currently
+    /// settling has completed, yielding whether one was actually awaited.
+    ///
+    /// Returns `true` after awaiting a real in-flight settle completion (paced by
+    /// network RTT), `false` immediately when none of `peers` is in flight. The
+    /// `bool` keeps the future `Send` and lets a gated-set wait loop both pace on
+    /// the settle ack and detect when no progress is possible (nothing draining
+    /// debt), so it returns rather than spinning to the deadline.
+    fn settled(&self, peers: &[OverlayAddress]) -> Pin<Box<dyn Future<Output = bool> + Send + '_>>;
 }
 
 /// [`SettlementTrigger`] over a bandwidth accounting instance.
@@ -66,13 +87,14 @@ pub trait SettlementTrigger: Send + Sync {
 /// selection never blocks on settlement I/O. Failures are logged at debug
 /// level; the next request retries naturally.
 ///
-/// A shared in-flight set keeps at most one settle per peer running at a time:
+/// A shared in-flight map keeps at most one settle per peer running at a time:
 /// the second trigger for a peer with a settle still outstanding is dropped, so
-/// the set is both the dedup and the per-peer rate limit (the next settle cannot
-/// start until the prior one is acked).
+/// the map is both the dedup and the per-peer rate limit (the next settle cannot
+/// start until the prior one is acked). The stored [`SettleCompletion`] lets a
+/// waiter await that ack.
 pub struct AccountingSettlement<B> {
     bandwidth: B,
-    in_flight: Arc<Mutex<HashSet<OverlayAddress>>>,
+    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
 }
 
 impl<B> AccountingSettlement<B> {
@@ -80,21 +102,29 @@ impl<B> AccountingSettlement<B> {
     pub fn new(bandwidth: B) -> Self {
         Self {
             bandwidth,
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
 
-/// Removes a peer from the in-flight set on drop, so a panic or cancellation of
-/// the settle future cannot pin the peer and starve its settlement.
+/// Removes a peer from the in-flight map on drop and fires its completion, so a
+/// panic or cancellation of the settle future cannot pin the peer (which would
+/// starve its settlement) and any waiter on the settle is woken either way.
 struct InFlightGuard {
-    in_flight: Arc<Mutex<HashSet<OverlayAddress>>>,
+    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
     peer: OverlayAddress,
+    done: Option<oneshot::Sender<()>>,
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         self.in_flight.lock().remove(&self.peer);
+        // Fulfil the completion; dropping the sender would also resolve the
+        // shared receiver, so a waiter is woken on completion, cancellation, and
+        // panic alike.
+        if let Some(done) = self.done.take() {
+            let _ = done.send(());
+        }
     }
 }
 
@@ -111,13 +141,19 @@ where
         // Skip if a settle to this peer is already running; the entry is cleared
         // when the spawned settle completes, so the next trigger can start a fresh
         // one.
-        if !self.in_flight.lock().insert(peer) {
-            return;
+        let (done, completion) = oneshot::channel();
+        {
+            let mut in_flight = self.in_flight.lock();
+            if in_flight.contains_key(&peer) {
+                return;
+            }
+            in_flight.insert(peer, completion.shared());
         }
         let handle = self.bandwidth.for_peer(peer);
         let guard = InFlightGuard {
             in_flight: Arc::clone(&self.in_flight),
             peer,
+            done: Some(done),
         };
         executor.spawn(async move {
             let _guard = guard;
@@ -126,13 +162,32 @@ where
             }
         });
     }
+
+    fn settled(&self, peers: &[OverlayAddress]) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        let waiters: Vec<SettleCompletion> = {
+            let in_flight = self.in_flight.lock();
+            peers
+                .iter()
+                .filter_map(|peer| in_flight.get(peer).cloned())
+                .collect()
+        };
+        Box::pin(async move {
+            if waiters.is_empty() {
+                return false;
+            }
+            // The first completion is enough to re-evaluate admission.
+            let _ = futures::future::select_all(waiters).await;
+            true
+        })
+    }
 }
 
-/// Reorders proximity-ordered candidates by score and affordability.
+/// Reorders proximity-ordered candidates by the admission band and score.
 ///
 /// Built by the node assembly from the topology handle (scores), bandwidth
-/// accounting (affordability and settlement), and the pricer (per-peer chunk
-/// price). Consumed by the retrieval and pushsync candidate-selection paths.
+/// accounting (the admission band and settlement), and the pricer (per-peer
+/// chunk price). Consumed by the retrieval and pushsync candidate-selection
+/// paths.
 pub struct PeerSelector {
     scores: Arc<dyn PeerScores>,
     admission: Arc<dyn AdmissionControl>,
@@ -158,102 +213,122 @@ impl PeerSelector {
 
     /// Order `candidates` (in proximity order) for a request on `chunk`.
     ///
-    /// Applies the ranking described at the module level. Triggers best-effort
-    /// settlement for any candidate whose debt has reached the early-payment
-    /// trigger, so the peer's view of our debt drops before it reaches the
-    /// disconnect threshold. When the request is blocked on balance (candidates
-    /// exist but none is affordable), the unaffordable candidates are settled too,
-    /// so a debt that built without crossing the early trigger is still settled
-    /// before the request gives up on the peer. A single pass triggers each peer
-    /// at most once; the in-flight set dedups across repeated calls.
+    /// Applies the ranking described at the module level: a [`Refuse`] candidate
+    /// is hard-skipped (sending would cross its disconnect line), warned peers are
+    /// excluded, and the rest keep proximity order. Every candidate not plainly
+    /// [`Admit`]ted is settled (a [`SettleAndAdmit`] peer to stay in the band, a
+    /// refused peer to drain back under its line), so its view of our debt drops.
+    /// A single pass triggers each peer at most once; the in-flight set dedups
+    /// across repeated calls.
+    ///
+    /// [`Refuse`]: Admission::Refuse
+    /// [`Admit`]: Admission::Admit
+    /// [`SettleAndAdmit`]: Admission::SettleAndAdmit
     pub fn order(
         &self,
         candidates: Vec<OverlayAddress>,
         chunk: &ChunkAddress,
     ) -> Vec<OverlayAddress> {
-        // One admission band per candidate drives both the affordability ranking
-        // (`admits`) and the proactive settle trigger (`settles`).
+        // One admission band per candidate drives both the hard-skip (a refused
+        // peer leaves `ordered`) and the settle trigger (anything not plainly
+        // admitted).
         let admit = |peer: &OverlayAddress| {
             self.admission
                 .admit(peer, self.pricing.peer_price(peer, chunk))
         };
 
-        let ranked = rank_candidates(
-            &candidates,
-            |peer| self.scores.peer_score(peer),
-            |peer| admit(peer).admits(),
-        );
+        let ranked = rank_candidates(&candidates, |peer| self.scores.peer_score(peer), admit);
 
-        let blocked = ranked.blocked_on_balance();
         for peer in &candidates {
-            if admit(peer).settles() || (blocked && ranked.unaffordable.contains(peer)) {
+            if !matches!(admit(peer), Admission::Admit) {
                 self.settlement.trigger_settlement(*peer);
             }
         }
 
         ranked.ordered
     }
+
+    /// Order `candidates`, settling and awaiting a fully gated close set until a
+    /// peer becomes admissible or the wait is exhausted.
+    ///
+    /// The first [`order`](Self::order) is the fast path: a non-empty result
+    /// returns at once. Only when every candidate is gated (the result is empty)
+    /// does the loop wait: each gated `order` already triggered a settle per
+    /// peer, so it awaits those settles completing (paced by network RTT, no
+    /// timer) and re-orders. The bound is `deadline`, the request's retrieval
+    /// lifetime, so accounting-timing back-pressure blocks within the request.
+    /// The loop is progress-aware: if no settle is in flight to drain debt
+    /// ([`settled`](SettlementTrigger::settled) returns `false`) it returns an
+    /// empty result at once rather than spinning, since no re-order can change.
+    /// Each awaited settle is RTT-paced, so the loop cannot busy-spin. An empty
+    /// result leaves the caller to surface its generic transient failure; an
+    /// accounting concern never reaches the consumer. The wait is `Send` on every
+    /// platform: awaiting a settle completion and reading [`Instant`] are both
+    /// `Send`.
+    pub async fn order_or_wait(
+        &self,
+        candidates: Vec<OverlayAddress>,
+        chunk: &ChunkAddress,
+        deadline: Instant,
+    ) -> Vec<OverlayAddress> {
+        loop {
+            let ordered = self.order(candidates.clone(), chunk);
+            if !ordered.is_empty() {
+                return ordered;
+            }
+            if Instant::now() >= deadline {
+                return Vec::new();
+            }
+            // No in-flight settle means nothing is draining debt, so no re-order
+            // can admit a peer: give up now rather than spin to the deadline.
+            if !self.settlement.settled(&candidates).await {
+                return Vec::new();
+            }
+        }
+    }
 }
 
 /// Outcome of ranking a candidate set.
 struct RankedCandidates {
-    /// Candidates to attempt, best first.
+    /// Candidates to attempt, best first. Never includes a refused peer.
     ordered: Vec<OverlayAddress>,
-    /// How many of `ordered` passed the affordability check.
-    affordable: usize,
-    /// Candidates that failed the affordability check, in proximity order.
-    unaffordable: Vec<OverlayAddress>,
 }
 
-impl RankedCandidates {
-    /// True when candidates exist but none is currently affordable.
-    fn blocked_on_balance(&self) -> bool {
-        self.affordable == 0 && !self.unaffordable.is_empty()
-    }
-}
-
-/// Rank proximity-ordered `candidates` by score and affordability.
+/// Rank proximity-ordered `candidates` by the admission band and score.
 ///
-/// Warned peers (score at or below [`DEFAULT_PEER_WARN_THRESHOLD`]) are
-/// excluded. Affordable peers keep their proximity order and rank before
-/// unaffordable ones, which also keep theirs. If every candidate is warned,
-/// the original proximity order is returned unchanged.
+/// A [`Refuse`](Admission::Refuse) candidate is hard-skipped:
+/// sending would cross its disconnect line, so it never appears in `ordered`.
+/// Warned peers (score at or below [`DEFAULT_PEER_WARN_THRESHOLD`]) are excluded
+/// among the admissible. If every admissible candidate is warned, those warned
+/// peers are returned in proximity order so a degraded request can still go out;
+/// a refused peer is never resurrected this way.
 fn rank_candidates(
     candidates: &[OverlayAddress],
     score: impl Fn(&OverlayAddress) -> Option<f64>,
-    can_afford: impl Fn(&OverlayAddress) -> bool,
+    admit: impl Fn(&OverlayAddress) -> Admission,
 ) -> RankedCandidates {
     let mut ordered = Vec::with_capacity(candidates.len());
-    let mut unaffordable = Vec::new();
+    let mut warned = Vec::new();
 
     for peer in candidates {
-        if score(peer).is_some_and(|s| s <= DEFAULT_PEER_WARN_THRESHOLD) {
+        if matches!(admit(peer), Admission::Refuse) {
             continue;
         }
-        if can_afford(peer) {
-            ordered.push(*peer);
-        } else {
-            unaffordable.push(*peer);
+        if score(peer).is_some_and(|s| s <= DEFAULT_PEER_WARN_THRESHOLD) {
+            warned.push(*peer);
+            continue;
         }
+        ordered.push(*peer);
     }
 
-    if ordered.is_empty() && unaffordable.is_empty() {
-        // Every candidate is warned. Fall back to plain proximity order so a
-        // degraded request can still be attempted.
-        return RankedCandidates {
-            ordered: candidates.to_vec(),
-            affordable: 0,
-            unaffordable: Vec::new(),
-        };
+    if ordered.is_empty() {
+        // Every admissible candidate is warned (or there are none). Fall back to
+        // the warned admissible peers so a degraded request can still be
+        // attempted; refused peers stay excluded.
+        ordered = warned;
     }
 
-    let affordable = ordered.len();
-    ordered.extend_from_slice(&unaffordable);
-    RankedCandidates {
-        ordered,
-        affordable,
-        unaffordable,
-    }
+    RankedCandidates { ordered }
 }
 
 #[cfg(test)]
@@ -357,6 +432,15 @@ mod tests {
         fn trigger_settlement(&self, peer: OverlayAddress) {
             self.triggered.lock().unwrap().push(peer);
         }
+
+        /// Records triggers but tracks no in-flight settle, so it reports `false`
+        /// (nothing awaited), modelling the no-progress case.
+        fn settled(
+            &self,
+            _peers: &[OverlayAddress],
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            Box::pin(std::future::ready(false))
+        }
     }
 
     fn warned(peers: &[OverlayAddress]) -> impl Fn(&OverlayAddress) -> Option<f64> + '_ {
@@ -369,68 +453,79 @@ mod tests {
         }
     }
 
-    fn unaffordable(peers: &[OverlayAddress]) -> impl Fn(&OverlayAddress) -> bool + '_ {
-        move |p| !peers.contains(p)
+    /// Listed peers refuse at the disconnect line; everyone else admits.
+    fn refusing(peers: &[OverlayAddress]) -> impl Fn(&OverlayAddress) -> Admission + '_ {
+        move |p| {
+            if peers.contains(p) {
+                Admission::Refuse
+            } else {
+                Admission::Admit
+            }
+        }
     }
 
     #[test]
-    fn healthy_affordable_candidates_keep_proximity_order() {
+    fn healthy_admitted_candidates_keep_proximity_order() {
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(&candidates, warned(&[]), unaffordable(&[]));
+        let ranked = rank_candidates(&candidates, warned(&[]), refusing(&[]));
         assert_eq!(ranked.ordered, candidates);
-        assert_eq!(ranked.affordable, 3);
-        assert!(ranked.unaffordable.is_empty());
-        assert!(!ranked.blocked_on_balance());
     }
 
     #[test]
     fn warned_peer_is_excluded() {
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(&candidates, warned(&[peer(2)]), unaffordable(&[]));
+        let ranked = rank_candidates(&candidates, warned(&[peer(2)]), refusing(&[]));
         assert_eq!(ranked.ordered, vec![peer(1), peer(3)]);
     }
 
     #[test]
     fn unknown_peer_is_not_treated_as_warned() {
         let candidates = vec![peer(1), peer(2)];
-        let ranked = rank_candidates(&candidates, |_| None, unaffordable(&[]));
+        let ranked = rank_candidates(&candidates, |_| None, refusing(&[]));
         assert_eq!(ranked.ordered, candidates);
     }
 
     #[test]
-    fn unaffordable_peer_is_deprioritized() {
+    fn refused_peer_is_hard_skipped() {
+        // A refused peer is excluded entirely, not deprioritized: sending would
+        // cross its disconnect line.
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(&candidates, warned(&[]), unaffordable(&[peer(1)]));
-        assert_eq!(ranked.ordered, vec![peer(2), peer(3), peer(1)]);
-        assert_eq!(ranked.affordable, 2);
-        assert!(!ranked.blocked_on_balance());
+        let ranked = rank_candidates(&candidates, warned(&[]), refusing(&[peer(1)]));
+        assert_eq!(ranked.ordered, vec![peer(2), peer(3)]);
     }
 
     #[test]
-    fn all_unaffordable_falls_back_to_proximity_order() {
+    fn all_refused_yields_no_candidates() {
+        // Every candidate would cross its disconnect line, so none is sendable.
         let candidates = vec![peer(1), peer(2), peer(3)];
         let ranked = rank_candidates(
             &candidates,
             warned(&[]),
-            unaffordable(&[peer(1), peer(2), peer(3)]),
+            refusing(&[peer(1), peer(2), peer(3)]),
         );
-        assert_eq!(ranked.ordered, candidates);
-        assert!(ranked.blocked_on_balance());
+        assert!(ranked.ordered.is_empty());
     }
 
     #[test]
     fn all_warned_falls_back_to_proximity_order() {
         let candidates = vec![peer(1), peer(2)];
-        let ranked = rank_candidates(&candidates, warned(&[peer(1), peer(2)]), unaffordable(&[]));
+        let ranked = rank_candidates(&candidates, warned(&[peer(1), peer(2)]), refusing(&[]));
         assert_eq!(ranked.ordered, candidates);
-        assert!(!ranked.blocked_on_balance());
+    }
+
+    #[test]
+    fn refused_peer_is_not_resurrected_by_the_warned_fallback() {
+        // peer(1) is refused and peer(2) is warned: the fallback returns the
+        // warned admissible peer, never the refused one.
+        let candidates = vec![peer(1), peer(2)];
+        let ranked = rank_candidates(&candidates, warned(&[peer(2)]), refusing(&[peer(1)]));
+        assert_eq!(ranked.ordered, vec![peer(2)]);
     }
 
     #[test]
     fn empty_candidates_stay_empty() {
-        let ranked = rank_candidates(&[], warned(&[]), unaffordable(&[]));
+        let ranked = rank_candidates(&[], warned(&[]), refusing(&[]));
         assert!(ranked.ordered.is_empty());
-        assert!(!ranked.blocked_on_balance());
     }
 
     fn selector(
@@ -463,17 +558,24 @@ mod tests {
     }
 
     #[test]
-    fn selector_orders_and_skips_settlement_when_affordable_exists() {
+    fn selector_hard_skips_a_refused_peer_and_settles_it() {
+        // peer(1) is refused at the disconnect line: it is excluded from the
+        // ordered list (retrieval routes to peer(2)) and a settle is triggered so
+        // it drains back under its line.
         let settlement = Arc::new(RecordingSettlement::default());
         let sel = selector(HashMap::new(), vec![peer(1)], Arc::clone(&settlement));
 
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
-        assert_eq!(ordered, vec![peer(2), peer(1)]);
-        assert!(settlement.triggered.lock().unwrap().is_empty());
+        assert_eq!(ordered, vec![peer(2)], "the refused peer is hard-skipped");
+        assert_eq!(
+            *settlement.triggered.lock().unwrap(),
+            vec![peer(1)],
+            "the refused peer is settled so it drains"
+        );
     }
 
     #[test]
-    fn selector_triggers_settlement_when_blocked_on_balance() {
+    fn selector_settles_every_refused_candidate() {
         let settlement = Arc::new(RecordingSettlement::default());
         let sel = selector(
             HashMap::new(),
@@ -482,7 +584,7 @@ mod tests {
         );
 
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
-        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        assert!(ordered.is_empty(), "all refused, nothing sendable");
         assert_eq!(
             *settlement.triggered.lock().unwrap(),
             vec![peer(1), peer(2)]
@@ -500,6 +602,27 @@ mod tests {
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
         assert_eq!(ordered, vec![peer(1), peer(2)]);
         assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer(1)]);
+    }
+
+    #[test]
+    fn selector_keeps_a_settle_and_admit_peer_but_skips_a_refused_one() {
+        // Pushsync closeness: a peer in the tolerance band stays in the ordered
+        // list (and is settled in parallel), while only a peer refused at the
+        // disconnect line is dropped. peer(1) is in the band, peer(2) refuses.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector_with_settle_due(vec![peer(2)], vec![peer(1)], Arc::clone(&settlement));
+
+        let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
+        assert_eq!(
+            ordered,
+            vec![peer(1)],
+            "the band peer is kept (closeness preserved), the refused peer skipped"
+        );
+        assert_eq!(
+            *settlement.triggered.lock().unwrap(),
+            vec![peer(1), peer(2)],
+            "both the band peer and the refused peer settle"
+        );
     }
 
     #[test]
@@ -522,6 +645,180 @@ mod tests {
 
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
         assert_eq!(ordered, vec![peer(2)]);
+    }
+
+    /// A ledger gated by a shared flag: while gated every peer refuses; once the
+    /// flag clears every peer admits. Models a settle draining a peer's debt.
+    struct FlipLedger(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Ledger for FlipLedger {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
+            Au::from_amount(1000)
+        }
+        fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
+            if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                Au::ZERO
+            } else {
+                Au::from_amount(1000)
+            }
+        }
+        fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(1000)
+        }
+    }
+
+    /// A settlement whose `settled` clears the shared gate and resolves at once,
+    /// modelling a completed settle that drains the peer's debt.
+    struct FlipSettlement(Arc<std::sync::atomic::AtomicBool>);
+
+    impl SettlementTrigger for FlipSettlement {
+        fn trigger_settlement(&self, _peer: OverlayAddress) {}
+        fn settled(
+            &self,
+            _peers: &[OverlayAddress],
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            // Models an in-flight settle that completes and drains the debt:
+            // reports `true` (a real completion was awaited).
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(std::future::ready(true))
+        }
+    }
+
+    /// A ledger that always refuses every peer at the unit price, modelling a
+    /// close set that stays fully gated for the whole wait.
+    struct AlwaysGatedLedger;
+
+    impl Ledger for AlwaysGatedLedger {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
+            Au::ZERO
+        }
+        fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(1000)
+        }
+    }
+
+    /// A settlement whose `settled` reports an in-flight completion that never
+    /// drains debt, RTT-paced by a short sleep so the wait loop cannot busy-spin.
+    struct StallSettlement;
+
+    impl SettlementTrigger for StallSettlement {
+        fn trigger_settlement(&self, _peer: OverlayAddress) {}
+        fn settled(
+            &self,
+            _peers: &[OverlayAddress],
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                true
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn order_or_wait_returns_a_peer_once_a_settle_makes_it_admissible() {
+        // Every peer is gated on the first order; the awaited settle drains one
+        // (the flag flips) and the re-order returns the now-admissible peers.
+        let gated = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sel = PeerSelector::new(
+            Arc::new(FixedScores(HashMap::new())),
+            Arc::new(FlipLedger(Arc::clone(&gated))),
+            Arc::new(UnitPricer),
+            Arc::new(FlipSettlement(Arc::clone(&gated))),
+        );
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let ordered = sel
+            .order_or_wait(vec![peer(1), peer(2)], &ChunkAddress::zero(), deadline)
+            .await;
+        assert_eq!(ordered, vec![peer(1), peer(2)], "recovers after the settle");
+    }
+
+    #[tokio::test]
+    async fn order_or_wait_returns_empty_at_the_deadline_when_settles_never_drain() {
+        // Every order stays empty and each awaited (in-flight) settle resolves
+        // without draining debt: the loop runs to `deadline` and then returns
+        // empty, never hanging, so the caller raises its generic transient
+        // failure. A short deadline keeps the test fast.
+        let sel = PeerSelector::new(
+            Arc::new(FixedScores(HashMap::new())),
+            Arc::new(AlwaysGatedLedger),
+            Arc::new(UnitPricer),
+            Arc::new(StallSettlement),
+        );
+
+        let wait = std::time::Duration::from_millis(120);
+        let started = Instant::now();
+        let deadline = started + wait;
+        let ordered = sel
+            .order_or_wait(vec![peer(1), peer(2)], &ChunkAddress::zero(), deadline)
+            .await;
+        let elapsed = started.elapsed();
+        assert!(ordered.is_empty(), "still gated at the deadline");
+        assert!(
+            elapsed >= wait,
+            "the in-flight wait runs to the deadline, not short of it"
+        );
+        assert!(
+            elapsed < wait + std::time::Duration::from_secs(2),
+            "the wait terminates at the deadline and does not hang"
+        );
+    }
+
+    #[tokio::test]
+    async fn order_or_wait_returns_empty_promptly_when_no_settle_is_in_flight() {
+        // Every order stays empty and no settle is in flight to drain debt
+        // (`settled` reports `false`): no re-order can ever admit a peer, so the
+        // loop returns at once rather than spinning to a far-off deadline.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector(
+            HashMap::new(),
+            vec![peer(1), peer(2)],
+            Arc::clone(&settlement),
+        );
+
+        let started = Instant::now();
+        let deadline = started + std::time::Duration::from_secs(30);
+        let ordered = sel
+            .order_or_wait(vec![peer(1), peer(2)], &ChunkAddress::zero(), deadline)
+            .await;
+        assert!(ordered.is_empty(), "no peer is admissible");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the no-progress guard returns promptly, well before the deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn order_or_wait_returns_the_first_order_without_awaiting_a_settle() {
+        // An admissible close set returns on the first order: no settle is
+        // triggered and the settle wait is never entered.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector(HashMap::new(), Vec::new(), Arc::clone(&settlement));
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let ordered = sel
+            .order_or_wait(vec![peer(1), peer(2)], &ChunkAddress::zero(), deadline)
+            .await;
+        assert_eq!(ordered, vec![peer(1), peer(2)], "fast path");
+        assert!(
+            settlement.triggered.lock().unwrap().is_empty(),
+            "no settle on the fast path"
+        );
     }
 
     // Dedup of `AccountingSettlement` over a mock bandwidth accounting whose
@@ -681,21 +978,59 @@ mod tests {
     }
 
     #[test]
+    fn settled_resolves_when_the_in_flight_settle_completes() {
+        // A waiter on a peer's in-flight settle resolves once that settle acks,
+        // which is what paces the gated-set wait loop.
+        settlement_runtime().block_on(async {
+            let for_peer_calls = Arc::new(AtomicUsize::new(0));
+            let started = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(Notify::new());
+            let bandwidth = Arc::new(MockBandwidth {
+                for_peer_calls,
+                started: Arc::clone(&started),
+                finished,
+                gate: Arc::clone(&gate),
+            });
+            let trigger = AccountingSettlement::new(bandwidth);
+
+            // No settle in flight: the waiter resolves immediately.
+            trigger.settled(&[peer(1)]).await;
+
+            // Start a settle that parks on the gate, then take a waiter on it.
+            trigger.trigger_settlement(peer(1));
+            while started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            let waiter = trigger.settled(&[peer(1)]);
+
+            // Release the parked settle; the guard fires the completion on drop,
+            // so the waiter resolves. A bounded timeout proves it does not hang.
+            gate.notify_one();
+            vertex_tasks::time::timeout(std::time::Duration::from_secs(5), waiter)
+                .await
+                .expect("settled resolves once the in-flight settle completes");
+        });
+    }
+
+    #[test]
     fn in_flight_guard_clears_the_peer_on_drop() {
         // The guard removes the peer in Drop, which runs on normal completion,
         // unwind (a panicking settle), and cancellation alike, so a settle that
         // never completes cleanly cannot pin the peer and starve its settlement.
-        let in_flight = Arc::new(parking_lot::Mutex::new(HashSet::new()));
-        in_flight.lock().insert(peer(1));
+        let in_flight = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let (done, completion) = oneshot::channel();
+        in_flight.lock().insert(peer(1), completion.shared());
         {
             let _guard = InFlightGuard {
                 in_flight: Arc::clone(&in_flight),
                 peer: peer(1),
+                done: Some(done),
             };
-            assert!(in_flight.lock().contains(&peer(1)));
+            assert!(in_flight.lock().contains_key(&peer(1)));
         }
         assert!(
-            !in_flight.lock().contains(&peer(1)),
+            !in_flight.lock().contains_key(&peer(1)),
             "the guard must clear the peer when dropped"
         );
     }
