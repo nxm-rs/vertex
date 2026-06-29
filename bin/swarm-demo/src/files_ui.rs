@@ -4,9 +4,19 @@ use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Blob, BlobPropertyBag, Document, Event, HtmlAnchorElement, HtmlInputElement, Url};
+use web_sys::{Blob, Document, Event, HtmlInputElement};
 
 use crate::SwarmClient;
+use crate::client::DownloadSink;
+
+#[wasm_bindgen]
+extern "C" {
+    /// Build a browser download sink for `filename` (see `download-sink.js`).
+    /// Must be called inside the click gesture so the File System Access picker,
+    /// when present, is allowed to open. `size_hint` may be `NaN` if unknown.
+    #[wasm_bindgen(js_namespace = window, js_name = createDownloadSink, catch)]
+    async fn create_download_sink(filename: &str, size_hint: f64) -> Result<JsValue, JsValue>;
+}
 
 const FILES_ROOT_ID: &str = "files";
 const BATCH_ID: &str = "batch-id";
@@ -16,6 +26,9 @@ const FILE_INPUT_ID: &str = "file-input";
 const UPLOAD_STATUS_ID: &str = "upload-status";
 const REF_INPUT_ID: &str = "ref-input";
 const FILES_LOG_ID: &str = "files-log";
+const DOWNLOAD_PROGRESS_ID: &str = "dl-progress";
+const DOWNLOAD_BAR_ID: &str = "dl-bar-fill";
+const DOWNLOAD_PROGRESS_TEXT_ID: &str = "dl-progress-text";
 
 fn document() -> Document {
     web_sys::window()
@@ -56,6 +69,9 @@ pub fn mount(client: SwarmClient) {
            placeholder=\"0x… (manifest root or file reference)\" size=\"68\" /></label>\
            <button id=\"download-btn\">download</button>\
            <button id=\"ls-btn\">list manifest</button></p>\
+         <div id=\"{DOWNLOAD_PROGRESS_ID}\" class=\"dl-progress\" hidden>\
+           <div class=\"dl-bar\"><div class=\"dl-bar-fill\" id=\"{DOWNLOAD_BAR_ID}\"></div></div>\
+           <span id=\"{DOWNLOAD_PROGRESS_TEXT_ID}\" class=\"dl-progress-text\"></span></div>\
          <div id=\"{FILES_LOG_ID}\" class=\"log\"></div>"
     );
 
@@ -165,7 +181,8 @@ fn wire_upload(client: SwarmClient) {
     cb.forget();
 }
 
-/// Wire the download button: reassemble the reference and save it.
+/// Wire the download button: open a streaming sink in-gesture, then stream the
+/// reference's file straight to disk with a live progress bar.
 fn wire_download(client: SwarmClient) {
     let Some(btn) = document().get_element_by_id("download-btn") else {
         return;
@@ -181,20 +198,89 @@ fn wire_download(client: SwarmClient) {
                 log_line("download: enter a reference");
                 return;
             }
-            log_line(&format!("download {reference}…"));
-            match client.download_file(reference.clone()).await {
-                Ok(bytes) => {
-                    log_line(&format!("downloaded {} bytes", bytes.len()));
-                    trigger_save(&bytes, "swarm-download.bin");
+
+            // The total is unknown until the joiner opens; pass NaN and let the
+            // sink switch from a bare byte count to a fraction via `setTotal`.
+            let filename = "swarm-download.bin";
+            install_progress_hook();
+            let sink_val = match create_download_sink(filename, f64::NAN).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log_line(&format!("download: could not start save: {e:?}"));
+                    return;
                 }
+            };
+            let sink: DownloadSink = sink_val.unchecked_into();
+
+            show_progress(true);
+            log_line(&format!("download {reference}…"));
+            match client.stream_to_sink(reference.clone(), sink).await {
+                Ok(()) => log_line("download complete"),
                 Err(e) => log_line(&format!("download failed: {e:?}")),
             }
+            show_progress(false);
         });
     });
 
     btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
         .expect("add click listener");
     cb.forget();
+}
+
+/// Install the `window.__swarmDownloadProgress(written, total)` hook the sink
+/// calls per write, rendering it into the progress bar. Idempotent.
+fn install_progress_hook() {
+    let window = web_sys::window().expect("window");
+    if js_sys::Reflect::get(&window, &JsValue::from_str("__swarmDownloadProgress"))
+        .map(|v| v.is_function())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let cb = Closure::<dyn FnMut(f64, f64)>::new(|written: f64, total: f64| {
+        render_progress(written, total);
+    });
+    let _ = js_sys::Reflect::set(
+        &window,
+        &JsValue::from_str("__swarmDownloadProgress"),
+        cb.as_ref().unchecked_ref(),
+    );
+    // The hook lives for the page session.
+    cb.forget();
+}
+
+/// Render `written`/`total` bytes into the progress bar and label.
+fn render_progress(written: f64, total: f64) {
+    let doc = document();
+    let pct = if total.is_finite() && total > 0.0 {
+        (written / total * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    if let Some(bar) = doc.get_element_by_id(DOWNLOAD_BAR_ID)
+        && let Some(el) = bar.dyn_ref::<web_sys::HtmlElement>()
+    {
+        el.style().set_property("width", &format!("{pct:.1}%")).ok();
+    }
+    let label = if total.is_finite() && total > 0.0 {
+        format!("{} / {} bytes ({pct:.0}%)", written as u64, total as u64)
+    } else {
+        format!("{} bytes", written as u64)
+    };
+    set_text(DOWNLOAD_PROGRESS_TEXT_ID, &label);
+}
+
+/// Show or hide the progress widget, resetting it when shown.
+fn show_progress(visible: bool) {
+    let doc = document();
+    if let Some(el) = doc.get_element_by_id(DOWNLOAD_PROGRESS_ID) {
+        if visible {
+            el.remove_attribute("hidden").ok();
+            render_progress(0.0, f64::NAN);
+        } else {
+            el.set_attribute("hidden", "").ok();
+        }
+    }
 }
 
 /// Wire the list-manifest button.
@@ -239,31 +325,4 @@ fn wire_ls(client: SwarmClient) {
     btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
         .expect("add click listener");
     cb.forget();
-}
-
-/// Trigger a browser file save of `bytes` via a synthetic anchor click.
-fn trigger_save(bytes: &[u8], filename: &str) {
-    let array = Uint8Array::from(bytes);
-    let parts = js_sys::Array::new();
-    parts.push(&array.buffer());
-    let opts = BlobPropertyBag::new();
-    opts.set_type("application/octet-stream");
-    let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&parts, &opts) else {
-        log_line("save failed: could not build blob");
-        return;
-    };
-    let Ok(url) = Url::create_object_url_with_blob(&blob) else {
-        log_line("save failed: could not create object url");
-        return;
-    };
-
-    let doc = document();
-    if let Ok(anchor) = doc.create_element("a") {
-        if let Ok(anchor) = anchor.dyn_into::<HtmlAnchorElement>() {
-            anchor.set_href(&url);
-            anchor.set_download(filename);
-            anchor.click();
-        }
-    }
-    let _ = Url::revoke_object_url(&url);
 }
