@@ -11,6 +11,7 @@ use futures::StreamExt;
 use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
+use nectar_primitives::file::WriteAt;
 use nectar_primitives::store::ChunkStoreError;
 use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
 use vertex_swarm_api::SwarmChunkProvider;
@@ -22,9 +23,9 @@ use super::net_get::NetworkChunkGet;
 
 #[wasm_bindgen]
 extern "C" {
-    /// A browser download sink (see `assets/download-sink.js`): ordered segment
-    /// writes with backpressure, streamed to disk via the File System Access API
-    /// or a service worker. The Rust side never inspects the chosen path.
+    /// A browser download sink (see `assets/download-sink.js`): an OPFS-worker
+    /// sink that accepts out-of-order positional writes, or an ordered sink
+    /// (File System Access or a service worker). `seekable` distinguishes them.
     #[wasm_bindgen(js_name = DownloadSink)]
     pub type DownloadSink;
 
@@ -32,9 +33,26 @@ extern "C" {
     #[wasm_bindgen(method, js_name = setTotal)]
     fn set_total(this: &DownloadSink, total: f64);
 
+    /// Whether the sink accepts positional `write_at`, so leaves may be written
+    /// out of order; an ordered sink must instead be fed in file order.
+    #[wasm_bindgen(method, getter)]
+    fn seekable(this: &DownloadSink) -> bool;
+
     /// Write one ordered segment; resolves when the sink can accept more.
     #[wasm_bindgen(method, catch)]
     async fn write(this: &DownloadSink, chunk: Uint8Array) -> Result<JsValue, JsValue>;
+
+    /// Pre-size a seekable sink so every in-range `write_at` lands.
+    #[wasm_bindgen(method, catch, js_name = setLen)]
+    async fn set_len(this: &DownloadSink, len: f64) -> Result<JsValue, JsValue>;
+
+    /// Write `chunk` at absolute byte `offset` (seekable sinks only).
+    #[wasm_bindgen(method, catch, js_name = writeAt)]
+    async fn write_at(
+        this: &DownloadSink,
+        offset: f64,
+        chunk: Uint8Array,
+    ) -> Result<JsValue, JsValue>;
 
     /// Finish the download, flushing and closing the underlying stream.
     #[wasm_bindgen(method, catch)]
@@ -43,6 +61,46 @@ extern "C" {
     /// Cancel the download with a human-readable reason.
     #[wasm_bindgen(method)]
     fn abort(this: &DownloadSink, reason: &str);
+}
+
+/// Error from a browser sink operation, carrying the JS message as a string.
+#[derive(Debug)]
+struct SinkError(String);
+
+impl std::fmt::Display for SinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SinkError {}
+
+/// Adapts a seekable browser [`DownloadSink`] as a nectar [`WriteAt`], so the
+/// joiner writes each leaf at its offset out of order, straight to the OPFS
+/// worker. Wasm-only: the sink futures are `!Send`, which the demo never needs.
+struct JsWriteSink<'a> {
+    sink: &'a DownloadSink,
+}
+
+impl WriteAt for JsWriteSink<'_> {
+    type Error = SinkError;
+
+    async fn write_at(&self, offset: u64, buf: &[u8]) -> Result<(), SinkError> {
+        let view = Uint8Array::from(buf);
+        self.sink
+            .write_at(offset as f64, view)
+            .await
+            .map(|_| ())
+            .map_err(|e| SinkError(format!("write_at: {e:?}")))
+    }
+
+    async fn set_len(&self, len: u64) -> Result<(), SinkError> {
+        self.sink
+            .set_len(len as f64)
+            .await
+            .map(|_| ())
+            .map_err(|e| SinkError(format!("set_len: {e:?}")))
+    }
 }
 
 /// Maximum prefetch round trips before giving up on a manifest op.
@@ -89,10 +147,11 @@ pub async fn stream_reference(
     stream_file(file_root, provider, cache, sink).await
 }
 
-/// Stream the file at `file_root` to `sink` in order, driving the joiner over
-/// the network getter. A bounded window pipelines chunk fetches at the configured
-/// width while emitting in file order; each segment is dropped after its write
-/// resolves, so peak wasm buffering is the window, not the file size.
+/// Stream the file at `file_root` to `sink`, driving the joiner over the network
+/// getter at full width. A seekable sink (the OPFS worker) takes positional
+/// writes so leaves land out of order as they resolve; an ordered sink takes a
+/// windowed in-order stream. Either way peak wasm buffering is bounded by the
+/// in-flight width, not the file size.
 pub async fn stream_file(
     file_root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
@@ -113,10 +172,21 @@ pub async fn stream_file(
         return finish(sink).await;
     }
 
-    // The sink is a sequential disk stream (File System Access append or a
-    // service-worker download body), so delivery must stay in file order. The
-    // windowed reader fetches the tree at full width but reorders to in-order
-    // emission, bounding held leaf bodies to the window.
+    if sink.seekable() {
+        // Out-of-order positional writes: the joiner writes each leaf at its
+        // offset the moment it resolves, off the fetch thread, so a slow chunk
+        // never gates the writes already in hand.
+        if let Err(e) = joiner.download_into(JsWriteSink { sink }).await {
+            sink.abort(&format!("download: {e}"));
+            return Err(JsValue::from_str(&format!("download: {e}")));
+        }
+        return finish(sink).await;
+    }
+
+    // Ordered fallback: a sequential disk stream (File System Access append or a
+    // service-worker download body) must be fed in file order. The windowed
+    // reader fetches the tree at full width but reorders to in-order emission,
+    // bounding held leaf bodies to the window.
     let mut reader = joiner.into_windowed_reader(STREAM_WINDOW);
     let stream = reader.stream();
     futures::pin_mut!(stream);
