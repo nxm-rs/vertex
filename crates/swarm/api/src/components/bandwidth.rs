@@ -89,26 +89,29 @@ pub trait SwarmAccountingConfig: Send + Sync {
     }
 }
 
-/// A reserved accounting action awaiting commit or release.
+/// A reserved receive leg awaiting commit or release.
 ///
-/// `prepare_receive`/`prepare_provide` return an action that has already
-/// reserved balance. Calling [`apply`](Self::apply) commits the reservation
-/// (the balance change takes effect); dropping the action without applying
-/// releases the reservation. This is the two-leg-relay seam: a forwarder holds
-/// both legs' actions and applies them only when the relay succeeds, so a failed
-/// relay releases every reservation on drop and never leaks.
-pub trait AccountingAction: Send {
+/// `prepare_receive` returns a reservation that has already reserved balance.
+/// Calling [`apply`](Self::apply) commits it (the balance change takes effect);
+/// dropping it without applying releases the reservation. The receive leg is
+/// committed by value the moment the chunk is in hand, so it needs no object-safe
+/// path.
+pub trait Commit: Send {
     /// Commit the reserved balance change.
     fn apply(self)
     where
         Self: Sized;
+}
 
-    /// Commit the reserved balance change through a boxed action.
-    ///
-    /// The object-safe counterpart of [`apply`](Self::apply): a forwarder hands
-    /// an un-applied provide action to the wire-write site as a
-    /// `Box<dyn AccountingAction>` and commits it only once the bytes are on the
-    /// wire. Dropping the box instead releases the reservation.
+/// A reserved provide leg whose commit is deferred to a later wire write.
+///
+/// The forwarder hands an un-applied provide reservation to the wire-write site
+/// as a `Box<dyn CommitOnWrite>` and commits it only once the bytes are on the
+/// wire; dropping the box instead releases the reservation. Object-safe so
+/// `ForwardedChunk`/`ForwardedReceipt` can hold it without naming the concrete
+/// reservation type.
+pub trait CommitOnWrite: Send {
+    /// Commit the reserved balance change through a boxed reservation.
     fn apply_boxed(self: Box<Self>);
 }
 
@@ -140,11 +143,12 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
     /// The per-peer accounting handle type.
     type Peer: SwarmPeerBandwidth;
 
-    /// Action for receiving service (balance decreases).
-    type ReceiveAction: AccountingAction;
+    /// Reservation for receiving service (balance decreases), committed by value.
+    type ReceiveAction: Commit;
 
-    /// Action for providing service (balance increases).
-    type ProvideAction: AccountingAction;
+    /// Reservation for providing service (balance increases), committed on the
+    /// deferred wire write.
+    type ProvideAction: CommitOnWrite;
 
     /// Get the node's identity.
     fn identity(&self) -> &Self::Identity;
@@ -188,7 +192,7 @@ pub trait BandwidthDebit: Send + Sync {
 impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
     fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()> {
         self.prepare_receive(peer, price, originated)
-            .map(AccountingAction::apply)
+            .map(Commit::apply)
     }
 }
 

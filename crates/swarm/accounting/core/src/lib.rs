@@ -8,14 +8,14 @@
 //! - [`Accounting`] - Per-peer balance factory with settlement delegation
 //! - [`AccountingBuilder`] - Builder for constructing accounting with pricing
 //! - [`AccountingPeerHandle`] - Handle for recording bandwidth per peer
-//! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
+//! - [`Reservation`] - Typed receive/provide reservation legs
 //! - [`NoSettlement`] - No-op settlement provider
 //!
 //! Settlement providers (`PseudosettleProvider`, `SwapProvider`) are in sibling crates.
 //!
-//! [`Accounting`] also implements the `PeerAffordability` query surface (from
-//! `vertex-swarm-api`), so peer selection can consume accounting state without
-//! depending on this crate's internals.
+//! [`Accounting`] also implements the `Ledger` and `AdmissionControl` surfaces
+//! (from `vertex-swarm-api`), so peer selection and pacing can consume accounting
+//! state without depending on this crate's internals.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -31,7 +31,7 @@ mod noop;
 mod settlement;
 
 pub use accounting::{
-    Accounting, AccountingError, AccountingPeerHandle, PeerState, ProvideAction, ReceiveAction,
+    Accounting, AccountingError, AccountingPeerHandle, PeerState, Provide, Receive, Reservation,
 };
 pub use args::BandwidthArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};

@@ -29,7 +29,7 @@ use futures::future::BoxFuture;
 use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    AccountingAction, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
+    Commit, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
     SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_client_behaviour::{
@@ -71,8 +71,10 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// (`prepare_receive_chunk(closer)`) so it earns the price spread between the
 /// two. Both actions reserve on creation; on a successful relay both are applied,
 /// committing the balance changes. On any failure both actions are dropped, which
-/// releases the reservations (`ReceiveAction`/`ProvideAction` release on drop),
-/// so a failed forward never leaks an accounting reservation.
+/// releases the reservations (the receive/provide [`Reservation`] legs release on
+/// drop), so a failed forward never leaks an accounting reservation.
+///
+/// [`Reservation`]: vertex_swarm_accounting::Reservation
 pub(crate) struct NetworkForwarder<T, A> {
     /// Our own overlay: excluded from candidates and used as the
     /// strictly-closer reference for the loop bound alongside the requester.

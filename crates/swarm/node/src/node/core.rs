@@ -150,16 +150,16 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // service, and settlement services.
     let accounting: SharedAccounting = Arc::new(accounting);
 
-    // One affordability query and settlement trigger shared by the selector and
-    // the client service, so the service settles after an own delivery even though
-    // it never runs the selector, and both paths share the trigger's in-flight
-    // dedup set.
-    let affordability = accounting.bandwidth().clone();
+    // One admission band and settlement trigger shared by the selector and the
+    // client service, so the service settles after an own delivery even though it
+    // never runs the selector, and both paths share the trigger's in-flight dedup
+    // set.
+    let admission = accounting.bandwidth().clone();
     let settlement_trigger = Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
 
     let selector = Arc::new(PeerSelector::new(
         Arc::new(topology.clone()),
-        affordability.clone(),
+        admission.clone(),
         Arc::new(accounting.pricing().clone()),
         settlement_trigger.clone(),
     ));
@@ -188,7 +188,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
             Arc::new(accounting.pricing().clone()),
             accounting.bandwidth().clone(),
         )
-        .with_settlement(affordability, settlement_trigger);
+        .with_settlement(admission, settlement_trigger);
 
     ClientCore {
         accounting,

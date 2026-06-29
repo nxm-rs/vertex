@@ -42,21 +42,17 @@ impl SwarmPeerBandwidth for NoPeerBandwidth {
     }
 }
 
-/// No-op receive action (does nothing on apply).
+/// No-op receive reservation (does nothing on apply).
 pub struct NoReceiveAction;
 
-/// No-op provide action (does nothing on apply).
+/// No-op provide reservation (does nothing on apply).
 pub struct NoProvideAction;
 
-impl vertex_swarm_api::AccountingAction for NoReceiveAction {
+impl vertex_swarm_api::Commit for NoReceiveAction {
     fn apply(self) {}
-
-    fn apply_boxed(self: Box<Self>) {}
 }
 
-impl vertex_swarm_api::AccountingAction for NoProvideAction {
-    fn apply(self) {}
-
+impl vertex_swarm_api::CommitOnWrite for NoProvideAction {
     fn apply_boxed(self: Box<Self>) {}
 }
 

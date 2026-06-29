@@ -8,7 +8,7 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Au, BandwidthDebit, PeerAffordability, PeerReporter, ReportSource, SwarmLocalStore,
+    AdmissionControl, Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore,
     SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
@@ -177,7 +177,7 @@ struct OriginAccounting {
 /// debit, the selector, and the throttle use, and the trigger shares its
 /// in-flight set with the selector so overlapping settles are deduped.
 struct ClientSettlement {
-    affordability: Arc<dyn PeerAffordability>,
+    admission: Arc<dyn AdmissionControl>,
     trigger: Arc<dyn SettlementTrigger>,
 }
 
@@ -289,21 +289,18 @@ impl ClientService {
     /// Attach debtor-initiated settlement so each own-request delivery that
     /// leaves us past the early-payment trigger settles the serving peer.
     ///
-    /// `affordability` and `trigger` must read the same shared accounting the
-    /// origin debit uses, and `trigger` must be the selector's so the in-flight
-    /// dedup is shared. The selector drives settlement on the candidate-selection
-    /// path; the shared retrieval path never runs the selector, so without this a
-    /// client's debt only ever climbs until peers drop it.
+    /// `admission` and `trigger` must read the same shared accounting the origin
+    /// debit uses, and `trigger` must be the selector's so the in-flight dedup is
+    /// shared. The selector drives settlement on the candidate-selection path; the
+    /// shared retrieval path never runs the selector, so without this a client's
+    /// debt only ever climbs until peers drop it.
     #[must_use]
     pub fn with_settlement(
         mut self,
-        affordability: Arc<dyn PeerAffordability>,
+        admission: Arc<dyn AdmissionControl>,
         trigger: Arc<dyn SettlementTrigger>,
     ) -> Self {
-        self.settlement = Some(ClientSettlement {
-            affordability,
-            trigger,
-        });
+        self.settlement = Some(ClientSettlement { admission, trigger });
         self
     }
 
@@ -329,17 +326,18 @@ impl ClientService {
     }
 
     /// Settle the serving peer when the own-request debit just committed has
-    /// pushed our debt to the early-payment trigger. A no-op without settlement.
+    /// pushed our debt past the payment threshold. A no-op without settlement.
     ///
     /// The trigger self-gates (a settle already in flight to this peer is skipped)
-    /// and `should_settle` gates on the debt, so polling every in-debt delivery is
-    /// cheap. The accepted amount is credited back by the pseudosettle service on
-    /// the ack.
+    /// and `admit(..).settles()` gates on the committed-plus-reserved debt at a
+    /// zero incremental price (the debit already landed), so polling every in-debt
+    /// delivery is cheap. The accepted amount is credited back by the pseudosettle
+    /// service on the ack.
     fn settle_origin(&self, peer: &OverlayAddress) {
         let Some(settlement) = &self.settlement else {
             return;
         };
-        if settlement.affordability.should_settle(peer) {
+        if settlement.admission.admit(peer, Au::ZERO).settles() {
             settlement.trigger.trigger_settlement(*peer);
         }
     }
@@ -936,20 +934,29 @@ mod tests {
         DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
     };
     use vertex_swarm_api::{
-        Au, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPricing,
-        SwarmResult,
+        Au, Ledger, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPricing, SwarmResult,
+        Threshold,
     };
     use vertex_swarm_test_utils::MockIdentity;
 
-    /// A fixed per-peer allowance, in AU, for the throttle's allowance signal.
+    /// A fixed per-peer headroom, in AU, for the throttle's allowance signal.
     /// Also serves as a no-op [`SwarmBandwidthAccounting`] half of the mock.
     #[derive(Clone)]
     struct FixedAllowance(u64);
-    impl PeerAffordability for FixedAllowance {
-        fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
-            price.as_amount() <= self.0
+    impl Ledger for FixedAllowance {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
         }
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
+            Au::from_amount(self.0)
+        }
+        fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+        fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
             Au::from_amount(self.0)
         }
     }

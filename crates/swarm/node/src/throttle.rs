@@ -10,7 +10,7 @@
 //! [`SelfThrottle`] paces our own outbound rate to stay under that allowance. It
 //! is the single seam both protocols share: one [`SelfRateLimiter`] keyed by the
 //! peer's overlay, fed by one per-peer allowance signal
-//! ([`PeerAffordability::allowance_remaining`], built once in the accounting
+//! ([`Ledger::headroom`], built once in the accounting
 //! layer), so the two protocols cannot each pace against a private, divergent
 //! view of the same allowance.
 //!
@@ -29,7 +29,7 @@
 //! # Bucket capacity and the payment-threshold ceiling
 //!
 //! A peer's bucket capacity is its live headroom toward the *payment* threshold
-//! ([`PeerAffordability::allowance_to_payment_threshold`]), scaled by a
+//! ([`Ledger::headroom`] toward the payment threshold), scaled by a
 //! configurable safety margin (`throttle_allowance_percent`, default 85%). Two
 //! consequences:
 //!
@@ -70,7 +70,7 @@ use parking_lot::Mutex;
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    PeerAffordability, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing,
+    AdmissionControl, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing, Threshold,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -136,7 +136,7 @@ pub struct SelfThrottle {
     limiter: Mutex<SelfRateLimiter<OverlayAddress>>,
     /// The per-peer allowance signal, built once in the accounting layer. Both
     /// protocols resize their shared bucket from this same source.
-    allowance: Arc<dyn PeerAffordability>,
+    allowance: Arc<dyn AdmissionControl>,
     /// The chunk pricer, the same instance the accounting layer debits through.
     /// The per-request cost is `peer_price(peer, address)`, so the throttle
     /// charges exactly what the remote meters for the transfer.
@@ -156,7 +156,7 @@ impl SelfThrottle {
     ///
     /// Everything the throttle paces against comes from these two: the per-peer
     /// allowance signal is `accounting.bandwidth()` (which implements
-    /// [`PeerAffordability`]), the chunk pricer (the same one the accounting
+    /// [`AdmissionControl`]), the chunk pricer (the same one the accounting
     /// layer debits through) is `accounting.pricing()`, the pseudosettle
     /// forgiveness rate (`refresh_rate` AU per second) and the safety-margin
     /// percent of the payment-threshold headroom the bucket is sized to are both
@@ -168,10 +168,10 @@ impl SelfThrottle {
     pub fn new<A>(accounting: &A, config: &DefaultBandwidthConfig) -> Self
     where
         A: SwarmClientAccounting,
-        A::Bandwidth: PeerAffordability + Clone + 'static,
+        A::Bandwidth: AdmissionControl + Clone + 'static,
         A::Pricing: Clone + 'static,
     {
-        let allowance: Arc<dyn PeerAffordability> = Arc::new(accounting.bandwidth().clone());
+        let allowance: Arc<dyn AdmissionControl> = Arc::new(accounting.bandwidth().clone());
         let pricing: Arc<dyn SwarmPricing> = Arc::new(accounting.pricing().clone());
         let refresh_rate = SwarmAccountingConfig::refresh_rate(config)
             .as_amount()
@@ -205,7 +205,7 @@ impl SelfThrottle {
     fn sync_quota(&self, peer: &OverlayAddress) {
         let allowance = self
             .allowance
-            .allowance_to_payment_threshold(peer)
+            .headroom(peer, Threshold::Payment)
             .as_amount();
         // Consume only `allowance_percent` of the headroom, leaving a margin
         // below the settlement trigger. The percent is in 1..=100, so the scaled
@@ -249,7 +249,7 @@ impl SelfThrottle {
     ///
     /// The allowance is read (polled) at each iteration rather than subscribed
     /// to: the bucket is resized on every acquire from the live
-    /// [`PeerAffordability`] signal, so a between-request allowance change is
+    /// [`Ledger`] signal, so a between-request allowance change is
     /// picked up at the next request that paces against the peer. A change while
     /// no request is in flight needs no resize because nothing is being admitted.
     ///
@@ -326,7 +326,7 @@ fn saturating_u32(amount: u64) -> u32 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use vertex_swarm_api::Au;
+    use vertex_swarm_api::{Au, Ledger};
 
     fn peer(n: u8) -> OverlayAddress {
         OverlayAddress::from([n; 32])
@@ -349,11 +349,20 @@ mod tests {
         }
     }
 
-    impl PeerAffordability for DynamicAllowance {
-        fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
-            price.as_amount() <= self.0.load(Ordering::SeqCst)
+    impl Ledger for DynamicAllowance {
+        fn balance(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
         }
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+        fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
+        }
+        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
+            Au::from_amount(self.0.load(Ordering::SeqCst))
+        }
+        fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(self.0.load(Ordering::SeqCst))
+        }
+        fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
             Au::from_amount(self.0.load(Ordering::SeqCst))
         }
     }
@@ -379,22 +388,27 @@ mod tests {
 
     /// Bandwidth side of the test [`SwarmClientAccounting`] mock.
     ///
-    /// Wraps the chosen affordability signal and delegates [`PeerAffordability`]
-    /// to it; the [`SwarmBandwidthAccounting`] surface the trait requires is a
-    /// no-op since the throttle reads only `bandwidth()` (for affordability) and
-    /// `pricing()`.
+    /// Wraps the chosen allowance signal and delegates [`Ledger`] to it; the
+    /// [`SwarmBandwidthAccounting`] surface the trait requires is a no-op since
+    /// the throttle reads only `bandwidth()` (for the headroom) and `pricing()`.
     #[derive(Clone)]
-    struct MockBandwidth(Arc<dyn PeerAffordability>);
+    struct MockBandwidth(Arc<dyn AdmissionControl>);
 
-    impl PeerAffordability for MockBandwidth {
-        fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool {
-            self.0.can_afford(overlay, price)
+    impl Ledger for MockBandwidth {
+        fn balance(&self, overlay: &OverlayAddress) -> Au {
+            self.0.balance(overlay)
         }
-        fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au {
-            self.0.allowance_remaining(overlay)
+        fn reserved(&self, overlay: &OverlayAddress) -> Au {
+            self.0.reserved(overlay)
         }
-        fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
-            self.0.allowance_to_payment_threshold(overlay)
+        fn headroom(&self, overlay: &OverlayAddress, to: Threshold) -> Au {
+            self.0.headroom(overlay, to)
+        }
+        fn disconnect_line(&self, overlay: &OverlayAddress) -> Au {
+            self.0.disconnect_line(overlay)
+        }
+        fn settle_trigger(&self, overlay: &OverlayAddress) -> Au {
+            self.0.settle_trigger(overlay)
         }
     }
 
@@ -458,7 +472,7 @@ mod tests {
     /// and margin percent, bundling them through the same accounting-object and
     /// config-reference path the production ctor takes.
     fn build_throttle(
-        allowance: Arc<dyn PeerAffordability>,
+        allowance: Arc<dyn AdmissionControl>,
         pricing: Arc<dyn SwarmPricing>,
         refresh_rate: u64,
         allowance_percent: u8,
@@ -482,7 +496,7 @@ mod tests {
         SelfThrottle::new(&accounting, &config)
     }
 
-    fn throttle(allowance: Arc<dyn PeerAffordability>) -> SelfThrottle {
+    fn throttle(allowance: Arc<dyn AdmissionControl>) -> SelfThrottle {
         // refresh_rate 10 AU/sec; the pricer meters every request at COST AU, so
         // a bucket of N AU admits floor(N / COST) requests. The margin percent is
         // 100 here so the bucket equals the full payment-threshold headroom and
@@ -671,14 +685,23 @@ mod tests {
             disconnect: u64,
             payment: u64,
         }
-        impl PeerAffordability for SplitHeadroom {
-            fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
-                price.as_amount() <= self.disconnect
+        impl Ledger for SplitHeadroom {
+            fn balance(&self, _overlay: &OverlayAddress) -> Au {
+                Au::ZERO
             }
-            fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+            fn reserved(&self, _overlay: &OverlayAddress) -> Au {
+                Au::ZERO
+            }
+            fn headroom(&self, _overlay: &OverlayAddress, to: Threshold) -> Au {
+                match to {
+                    Threshold::Disconnect => Au::from_amount(self.disconnect),
+                    Threshold::Payment => Au::from_amount(self.payment),
+                }
+            }
+            fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
                 Au::from_amount(self.disconnect)
             }
-            fn allowance_to_payment_threshold(&self, _overlay: &OverlayAddress) -> Au {
+            fn settle_trigger(&self, _overlay: &OverlayAddress) -> Au {
                 Au::from_amount(self.payment)
             }
         }

@@ -340,6 +340,95 @@ impl TryFrom<Au> for U256 {
     }
 }
 
+/// A non-negative debt in accounting units.
+///
+/// Opaque newtype over `u64` with a private field: a signed balance can never be
+/// fed in, so the sign error that compared a negative balance against a positive
+/// threshold is unrepresentable. Two named constructors because admission and
+/// settlement measure different things; the only crossings back to [`Au`] are the
+/// total [`From<Debt>`](From) and the [`exceeds`](Self::exceeds) comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Debt(u64);
+
+impl Debt {
+    /// The zero debt.
+    pub const ZERO: Debt = Debt(0);
+
+    /// Committed debt: `max(0, -balance)`, what we have actually committed to
+    /// owing. Settlement uses this; a cheque is real money, so it must never pay
+    /// for in-flight reservations that can still drop.
+    #[must_use]
+    pub fn committed(balance: Au) -> Debt {
+        Debt(balance.saturating_neg().as_amount())
+    }
+
+    /// Projected debt: `max(0, reserved + price - balance)`, what we would owe
+    /// including the pending reservation and this request. Admission uses this.
+    #[must_use]
+    pub fn project(balance: Au, reserved: Au, price: Au) -> Debt {
+        Debt(
+            reserved
+                .saturating_add(price)
+                .saturating_sub(balance)
+                .as_amount(),
+        )
+    }
+
+    /// Reduce the debt by a settled amount, saturating at zero.
+    #[must_use]
+    pub fn saturating_sub(self, settled: Au) -> Debt {
+        Debt(self.0.saturating_sub(settled.as_amount()))
+    }
+
+    /// `true` when the debt is strictly greater than `threshold`.
+    #[must_use]
+    pub fn exceeds(self, threshold: Au) -> bool {
+        self.0 > threshold.as_amount()
+    }
+}
+
+impl From<Debt> for Au {
+    fn from(debt: Debt) -> Au {
+        Au::from_amount(debt.0)
+    }
+}
+
+/// The admission band decision for a priced request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum Admission {
+    /// Serve the request; debt stays below the payment threshold.
+    Admit,
+    /// Serve the request and trigger a settlement; debt is past the payment
+    /// threshold but below the disconnect line.
+    SettleAndAdmit,
+    /// Refuse the request; debt would cross the disconnect line.
+    Refuse,
+}
+
+impl Admission {
+    /// `true` unless the request is refused.
+    #[must_use]
+    pub fn admits(self) -> bool {
+        !matches!(self, Admission::Refuse)
+    }
+
+    /// `true` when a settlement should be triggered.
+    #[must_use]
+    pub fn settles(self) -> bool {
+        matches!(self, Admission::SettleAndAdmit)
+    }
+}
+
+/// Which per-peer threshold a headroom or band decision measures against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Threshold {
+    /// The settlement trigger.
+    Payment,
+    /// The disconnect line.
+    Disconnect,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +573,67 @@ mod tests {
         let neg = Au::new(-1);
         assert_eq!(U256::try_from(neg), Err(AuConversionError::Negative(neg)));
         assert_eq!(U256::try_from(Au::ZERO).unwrap(), U256::ZERO);
+    }
+
+    /// Expected committed debt: `max(0, -balance)` with the same `i64`-saturating
+    /// negation [`Au`] performs, so `-i64::MIN` lands at `i64::MAX`.
+    fn expected_committed(balance: i64) -> u64 {
+        let neg = balance.saturating_neg();
+        if neg < 0 { 0 } else { neg as u64 }
+    }
+
+    /// Expected projected debt: `max(0, reserved + price - balance)`, computed
+    /// through the same `Au::from_amount`/saturating-`i64` chain.
+    fn expected_project(balance: i64, reserved: u64, price: u64) -> u64 {
+        let clamp = |v: u64| {
+            if v > i64::MAX as u64 {
+                i64::MAX
+            } else {
+                v as i64
+            }
+        };
+        let diff = clamp(reserved)
+            .saturating_add(clamp(price))
+            .saturating_sub(balance);
+        if diff < 0 { 0 } else { diff as u64 }
+    }
+
+    #[test]
+    fn debt_constructors_are_non_negative_and_match_the_formulas() {
+        let balances = [i64::MIN, -1_000_000, -1, 0, 1, 1_000_000, i64::MAX];
+        let amounts = [0u64, 1, 8, 1_000_000, i64::MAX as u64, u64::MAX];
+        for &balance in &balances {
+            let b = Au::new(balance);
+            assert_eq!(
+                Debt::committed(b),
+                Debt(expected_committed(balance)),
+                "committed mismatch for balance {balance}"
+            );
+            for &reserved in &amounts {
+                for &price in &amounts {
+                    let debt = Debt::project(b, Au::from_amount(reserved), Au::from_amount(price));
+                    assert_eq!(
+                        debt,
+                        Debt(expected_project(balance, reserved, price)),
+                        "project mismatch for ({balance}, {reserved}, {price})"
+                    );
+                    // Non-negativity is type-enforced: From<Debt> is total and
+                    // never negative.
+                    assert!(!Au::from(debt).is_negative());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn debt_saturating_sub_and_exceeds() {
+        let debt = Debt::committed(Au::new(-1_000));
+        assert_eq!(debt, Debt(1_000));
+        assert_eq!(debt.saturating_sub(Au::from_amount(400)), Debt(600));
+        // Settling more than owed floors at zero, never wraps.
+        assert_eq!(debt.saturating_sub(Au::from_amount(5_000)), Debt::ZERO);
+        assert!(debt.exceeds(Au::from_amount(999)));
+        assert!(!debt.exceeds(Au::from_amount(1_000)));
+        assert!(!Debt::ZERO.exceeds(Au::ZERO));
     }
 }
