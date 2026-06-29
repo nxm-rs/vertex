@@ -415,6 +415,24 @@ impl ClientBehaviour {
                 protocol,
                 error,
             } => {
+                // A dead settlement substream must release the service's pending
+                // settle, else the settle oneshot leaks and the caller hangs past
+                // its deadline.
+                if let Some(peer) = overlay
+                    && protocol == "pseudosettle"
+                    && let Some(tx) = &self.pseudosettle_event_tx
+                    && tx.send(PseudosettleEvent::Failed { peer }).is_err()
+                {
+                    warn!(%peer, "Pseudosettle event channel closed");
+                }
+                #[cfg(feature = "swap")]
+                if let Some(peer) = overlay
+                    && protocol == "swap"
+                    && let Some(tx) = &self.swap_event_tx
+                    && tx.send(SwapEvent::Failed { peer }).is_err()
+                {
+                    warn!(%peer, "Swap event channel closed");
+                }
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ProtocolError {
                         peer: overlay,
@@ -539,6 +557,21 @@ impl NetworkBehaviour for ClientBehaviour {
         {
             self.overlay_peers.remove(&overlay);
             debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
+            // A full disconnect may never surface as a substream error, so
+            // release any pending settle for this peer here too.
+            if let Some(tx) = &self.pseudosettle_event_tx
+                && tx
+                    .send(PseudosettleEvent::Failed { peer: overlay })
+                    .is_err()
+            {
+                warn!(%overlay, "Pseudosettle event channel closed");
+            }
+            #[cfg(feature = "swap")]
+            if let Some(tx) = &self.swap_event_tx
+                && tx.send(SwapEvent::Failed { peer: overlay }).is_err()
+            {
+                warn!(%overlay, "Swap event channel closed");
+            }
             self.pending_events
                 .push_back(ToSwarm::GenerateEvent(ClientEvent::PeerDisconnected {
                     peer_id: info.peer_id,
@@ -585,5 +618,104 @@ fn domain_ack(ack: PaymentAck) -> PseudosettleAck {
     PseudosettleAck {
         accepted: Au::saturating_from_u256(ack.amount),
         timestamp: ack.timestamp,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::PeerId;
+    use vertex_swarm_api::{ChunkAddress, SwarmResult};
+    use vertex_swarm_primitives::CachedChunk;
+    use vertex_swarm_test_utils::test_peer;
+
+    use super::*;
+    use crate::forward::StubForwarder;
+
+    struct NoopStore;
+
+    impl SwarmLocalStore for NoopStore {
+        fn put(&self, _chunk: CachedChunk) -> SwarmResult<()> {
+            Ok(())
+        }
+        fn get(&self, _address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>> {
+            Ok(None)
+        }
+        fn contains(&self, _address: &ChunkAddress) -> bool {
+            false
+        }
+        fn remove(&self, _address: &ChunkAddress) -> SwarmResult<()> {
+            Ok(())
+        }
+    }
+
+    fn build_behaviour() -> ClientBehaviour {
+        ClientBehaviour::new(
+            Config::default(),
+            Arc::new(NoopStore),
+            Arc::new(StubForwarder),
+        )
+    }
+
+    #[test]
+    fn pseudosettle_substream_error_routes_failed() {
+        let mut behaviour = build_behaviour();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        behaviour.route_pseudosettle_events(tx);
+
+        let peer = test_peer();
+        behaviour.on_handler_event(
+            PeerId::random(),
+            HandlerEvent::Error {
+                overlay: Some(peer),
+                protocol: "pseudosettle",
+                error: "substream timed out".into(),
+            },
+        );
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PseudosettleEvent::Failed { peer: p }) if p == peer
+        ));
+    }
+
+    #[test]
+    fn non_settlement_error_does_not_route_failed() {
+        let mut behaviour = build_behaviour();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        behaviour.route_pseudosettle_events(tx);
+
+        behaviour.on_handler_event(
+            PeerId::random(),
+            HandlerEvent::Error {
+                overlay: Some(test_peer()),
+                protocol: "pricing",
+                error: "boom".into(),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(feature = "swap")]
+    #[test]
+    fn swap_substream_error_routes_failed() {
+        let mut behaviour = build_behaviour();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        behaviour.route_swap_events(tx);
+
+        let peer = test_peer();
+        behaviour.on_handler_event(
+            PeerId::random(),
+            HandlerEvent::Error {
+                overlay: Some(peer),
+                protocol: "swap",
+                error: "substream timed out".into(),
+            },
+        );
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SwapEvent::Failed { peer: p }) if p == peer
+        ));
     }
 }

@@ -351,6 +351,22 @@ where
                     }
                 }
             }
+            SwapEvent::Failed { peer } => {
+                // The substream died or the peer disconnected before the
+                // cheque-sent ack, so resolve the pending settle with an error.
+                // The cheque may already be on the wire, so the cumulative payout
+                // is left advanced: a retry issues a higher payout the peer still
+                // credits by delta, whereas rolling back risks a non-increasing
+                // re-issue the peer would reject.
+                if let Some(pending) = self.pending.remove(&peer) {
+                    debug!(%peer, "Swap substream failed; releasing pending settle");
+                    let _ = pending
+                        .response_tx
+                        .send(Err(SwapSettlementError::NetworkError(
+                            "substream failed".into(),
+                        )));
+                }
+            }
         }
     }
 
@@ -884,6 +900,39 @@ mod tests {
         assert!(reporter.reports.lock().unwrap().is_empty());
         let handle = svc.accounting.for_peer(peer);
         assert_eq!(handle.balance(), Au::new(-1_000));
+    }
+
+    #[tokio::test]
+    async fn failed_event_releases_pending_settle() {
+        let mut svc = build_service(PrivateKeySigner::random());
+        let peer = test_peer();
+
+        // A cheque is pending its sent-ack when the substream dies.
+        let (response_tx, mut response_rx) = oneshot::channel();
+        svc.pending.insert(
+            peer,
+            PendingSettlement {
+                amount: Au::from_amount(100),
+                response_tx,
+            },
+        );
+
+        svc.handle_event(SwapEvent::Failed { peer }).await;
+
+        // The caller is released with an error rather than left hanging.
+        assert!(matches!(
+            response_rx.try_recv().unwrap(),
+            Err(SwapSettlementError::NetworkError(_))
+        ));
+        assert!(!svc.pending.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn failed_event_for_unknown_peer_is_noop() {
+        let mut svc = build_service(PrivateKeySigner::random());
+        // No pending settle for this peer: the failure is simply ignored.
+        svc.handle_event(SwapEvent::Failed { peer: test_peer() })
+            .await;
     }
 
     #[test]
