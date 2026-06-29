@@ -766,7 +766,7 @@ mod tests {
         let price = accounting.pricing().peer_price(&overlay, &address);
         assert!(price > Au::ZERO, "the per-chunk price is non-zero");
 
-        // The same gate `assemble_client_core` wires onto the throttled handle.
+        // The same gate `assemble_client_core` wires onto the origin-gated handle.
         let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
         let settlement: Arc<dyn SettlementTrigger> =
             Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));

@@ -336,7 +336,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use vertex_swarm_api::{Au, Ledger, Threshold};
+    use vertex_swarm_api::{Au, Ledger};
 
     use super::*;
 
@@ -376,20 +376,6 @@ mod tests {
 
         fn reserved(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
-        }
-
-        fn headroom(&self, overlay: &OverlayAddress, to: Threshold) -> Au {
-            // Unit price is 1; a zero headroom refuses, a wide headroom admits.
-            if self.unaffordable.contains(overlay) {
-                Au::ZERO
-            } else if self.settle_due.contains(overlay) {
-                match to {
-                    Threshold::Disconnect => Au::from_amount(1000),
-                    Threshold::Payment => Au::ZERO,
-                }
-            } else {
-                Au::from_amount(1000)
-            }
         }
 
         fn disconnect_line(&self, overlay: &OverlayAddress) -> Au {
@@ -658,9 +644,6 @@ mod tests {
         fn reserved(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
         }
-        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
-            Au::from_amount(1000)
-        }
         fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
             if self.0.load(std::sync::atomic::Ordering::SeqCst) {
                 Au::ZERO
@@ -699,9 +682,6 @@ mod tests {
             Au::ZERO
         }
         fn reserved(&self, _overlay: &OverlayAddress) -> Au {
-            Au::ZERO
-        }
-        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
             Au::ZERO
         }
         fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {

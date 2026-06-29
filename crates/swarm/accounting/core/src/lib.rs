@@ -36,7 +36,7 @@ pub use accounting::{
 pub use args::BandwidthArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
 pub use client_accounting::ClientAccounting;
-pub use config::{BandwidthConfig, BandwidthConfigError, DefaultBandwidthConfig};
+pub use config::{BandwidthConfig, DefaultBandwidthConfig};
 pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;
 pub use vertex_swarm_accounting_pricing::{FixedPricer, FixedPricingConfig, NoPricer};

@@ -36,7 +36,7 @@ mod spec;
 mod swarm;
 mod types;
 
-pub use self::accounting::{Admission, Au, AuConversionError, Debt, Threshold};
+pub use self::accounting::{Admission, Au, AuConversionError, Debt};
 pub use self::components::{
     BandwidthDebit, BandwidthReserve, BinCursorStore, BinScanItem, BootnodeComponents,
     ClientComponents, Commit, CommitOnWrite, Direction, HasChunkClient, HasIdentity, HasReserve,

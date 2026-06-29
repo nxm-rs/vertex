@@ -27,7 +27,7 @@ The overrun bug was having only the first and not the second.
 
 Bound concurrent outbound retrieval substreams per peer with a non-blocking permit. When a peer is at its cap the scheduler SKIPS it and dispatches the chunk to the next-closest live peer that has a free slot, rather than blocking on the head peer (which would be head-of-line blocking and defeat the staggered race). The permit rides the request future and releases on drop, including a cancelled race leg. Candidate selection widens from the closest few to the closest connected peers in proximity order, filtered to those with a free slot, then fed to the existing staggered race. If every close candidate is at its cap, the dispatch falls through to the staggered race against whatever peers exist rather than erroring (degraded service beats failure).
 
-The cap is a non-economic concern, composed after economic selection. The explicit dispatch ordering is: selector decides who is eligible (proximity, not warned, affordable), skip-busy decides who has a slot, throttle paces the chosen request. The substream cap must never be merged with the affordability or debt signals.
+The cap is a non-economic concern, composed after economic selection. The explicit dispatch ordering is: selector decides who is eligible (proximity, not warned, affordable), skip-busy decides who has a slot, the origin credit gate bands the chosen request. The substream cap must never be merged with the affordability or debt signals.
 
 ## Cap policy: uniform now, fork-gated later
 

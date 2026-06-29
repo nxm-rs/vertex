@@ -420,15 +420,6 @@ impl Admission {
     }
 }
 
-/// Which per-peer threshold a headroom or band decision measures against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Threshold {
-    /// The settlement trigger.
-    Payment,
-    /// The disconnect line.
-    Disconnect,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

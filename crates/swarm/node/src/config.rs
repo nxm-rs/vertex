@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use vertex_node_api::NodeProtocolConfig;
-use vertex_swarm_accounting::{BandwidthArgs, BandwidthConfigError, DefaultBandwidthConfig};
+use vertex_swarm_accounting::{BandwidthArgs, DefaultBandwidthConfig};
 use vertex_swarm_identity::{Identity, IdentityArgs};
 use vertex_swarm_localstore::{LocalStoreArgs, LocalStoreConfig};
 use vertex_swarm_primitives::SwarmNodeType;
@@ -52,9 +52,9 @@ impl ProtocolConfig {
         self.identity.identity(spec, network_dir, self.node_type)
     }
 
-    /// Create validated bandwidth accounting configuration.
-    pub fn bandwidth_config(&self) -> Result<DefaultBandwidthConfig, BandwidthConfigError> {
-        DefaultBandwidthConfig::try_from(&self.bandwidth)
+    /// Build the bandwidth accounting configuration.
+    pub fn bandwidth_config(&self) -> DefaultBandwidthConfig {
+        DefaultBandwidthConfig::from(&self.bandwidth)
     }
 
     /// Create local store configuration.

@@ -256,8 +256,8 @@ impl ClientLauncher {
 
     /// Set the bandwidth accounting configuration.
     ///
-    /// Drives the pseudosettle allowance, the per-chunk price, and the outbound
-    /// self-throttle sizing. Defaults to [`DefaultBandwidthConfig::default`].
+    /// Drives the pseudosettle allowance, the per-chunk price, and the admission
+    /// band thresholds. Defaults to [`DefaultBandwidthConfig::default`].
     #[must_use]
     pub fn with_bandwidth(mut self, bandwidth: DefaultBandwidthConfig) -> Self {
         self.bandwidth = bandwidth;
@@ -304,8 +304,8 @@ impl ClientLauncher {
     ///
     /// Assembles a [`ClientNode`] over the platform transport (TCP with DNS
     /// natively, secure websockets in the browser), wires the shared client
-    /// core (pseudosettle accounting, candidate selector, outbound throttle,
-    /// and the relay forwarder), spawns the node run loop, the client service,
+    /// core (pseudosettle accounting, candidate selector, the origin-gated
+    /// handle, and the relay forwarder), spawns the node run loop, the client service,
     /// the pseudosettle settlement service, and the peer-manager tick on the
     /// current [`TaskExecutor`], and returns a [`LaunchedClient`]. The node
     /// dials its bootnodes as part of startup; from there the Kademlia routing
@@ -424,7 +424,7 @@ impl ClientLauncher {
 
                 // Forwarding is enabled inside the run task over the shared
                 // accounting the tail builds; the node then moves into the run
-                // loop. The relay legs run over the unthrottled handle.
+                // loop. The relay legs run over the plain (ungated) handle.
                 let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
                     node.enable_forwarding(
                         Arc::new(forward_topology),
@@ -516,7 +516,7 @@ impl LaunchedClient {
         &self.topology
     }
 
-    /// Throttled client handle for chunk retrieval and upload.
+    /// Origin-gated client handle for chunk retrieval and upload.
     pub fn client(&self) -> &ClientHandle {
         &self.client
     }
@@ -527,8 +527,8 @@ impl LaunchedClient {
         &self.chunks
     }
 
-    /// The shared client accounting (selector, throttle, forwarder, service,
-    /// and settlement all read this instance).
+    /// The shared client accounting (selector, forwarder, service, and
+    /// settlement all read this instance).
     pub fn accounting(&self) -> &SharedAccounting {
         &self.accounting
     }

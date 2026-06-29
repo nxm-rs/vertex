@@ -118,7 +118,7 @@ Concretely, `build_node_chain_provider` keeps `Ok(None)` only for a pure light c
 
 ### 2.9 Accounting pluggability: make `A` flow
 
-Locked decision: make the `A` accounting config generic actually flow through to the providers, rather than pinning it in the macro and pretending. `SwarmClientAccounting` has associated types `Bandwidth` / `Pricing` and is `auto_impl(&, Arc)` only (`bandwidth.rs:227-233`), so it is not dyn-compatible without naming the concretes, and `PeerSelector` / `SelfThrottle` / `NetworkForwarder` consume `accounting.bandwidth()` / `pricing()` by concrete associated type on per-message hot paths. So "flow `A`" means keeping it a real generic end to end, not erasing to a trait object.
+Locked decision: make the `A` accounting config generic actually flow through to the providers, rather than pinning it in the macro and pretending. `SwarmClientAccounting` has associated types `Bandwidth` / `Pricing` and is `auto_impl(&, Arc)` only (`bandwidth.rs:227-233`), so it is not dyn-compatible without naming the concretes, and `PeerSelector` / `NetworkForwarder` consume `accounting.bandwidth()` / `pricing()` by concrete associated type on per-message hot paths. So "flow `A`" means keeping it a real generic end to end, not erasing to a trait object.
 
 Blast radius, stated honestly:
 

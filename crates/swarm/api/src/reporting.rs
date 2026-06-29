@@ -18,7 +18,7 @@ use core::time::Duration;
 
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use crate::{Admission, Au, Debt, Threshold};
+use crate::{Admission, Au, Debt};
 
 /// Peer scoring events reported by subsystems.
 ///
@@ -187,15 +187,13 @@ pub trait PeerReporter: Send + Sync {
     fn report_peer(&self, overlay: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource);
 }
 
-/// The per-peer ledger reads admission and pacing consume.
+/// The per-peer ledger reads admission consumes.
 ///
-/// Implemented by bandwidth accounting. `headroom` unifies the two allowance
-/// reads (toward each [`Threshold`]) and is floored at zero for the self-throttle.
-/// The admission boundary in [`AdmissionControl::admit`] reasons in [`Debt`]
-/// against the raw, non-floored thresholds [`disconnect_line`](Self::disconnect_line)
-/// and [`settle_trigger`](Self::settle_trigger): a floored headroom collapses to the
-/// current debt once the debt is over a threshold, which would silently stop banding.
-/// Balances and amounts are in accounting units (AU).
+/// Implemented by bandwidth accounting. The admission boundary in
+/// [`AdmissionControl::admit`] reasons in [`Debt`] against the raw thresholds
+/// [`disconnect_line`](Self::disconnect_line) and
+/// [`settle_trigger`](Self::settle_trigger). Balances and amounts are in
+/// accounting units (AU).
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait Ledger: Send + Sync {
     /// Signed balance: positive means the peer owes us, negative we owe them.
@@ -203,10 +201,6 @@ pub trait Ledger: Send + Sync {
 
     /// The outstanding receive reservation against this peer, in AU.
     fn reserved(&self, peer: &OverlayAddress) -> Au;
-
-    /// Floored allowance toward `to` before our debt reaches that threshold.
-    /// Used only by the self-throttle; admission uses the raw boundaries below.
-    fn headroom(&self, peer: &OverlayAddress, to: Threshold) -> Au;
 
     /// The raw disconnect threshold for `peer`, not floored. A projected debt
     /// strictly past this is refused.
@@ -396,8 +390,8 @@ mod tests {
         }
     }
 
-    /// A ledger with a fixed headroom to both thresholds and a zero balance, so
-    /// admission reduces to `price <= headroom`.
+    /// A ledger with a fixed disconnect and settle line and a zero balance, so
+    /// admission reduces to `price <= line`.
     struct FixedHeadroom(Au);
 
     impl Ledger for FixedHeadroom {
@@ -407,10 +401,6 @@ mod tests {
 
         fn reserved(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
-        }
-
-        fn headroom(&self, _overlay: &OverlayAddress, _to: Threshold) -> Au {
-            self.0
         }
 
         fn disconnect_line(&self, _overlay: &OverlayAddress) -> Au {
@@ -451,9 +441,9 @@ mod tests {
     #[test]
     fn admit_via_arc_auto_impl() {
         // `Ledger` auto-impls through `Arc`, and the blanket `AdmissionControl`
-        // gives the boxed handle the band. A request at the headroom is admitted;
-        // one over it is refused (payment headroom equals disconnect here, so the
-        // band has no settle middle).
+        // gives the boxed handle the band. A request at the line is admitted; one
+        // over it is refused (the settle line equals disconnect here, so the band
+        // has no settle middle).
         let ledger: Arc<dyn AdmissionControl> = Arc::new(FixedHeadroom(Au::from_amount(100)));
         let overlay = OverlayAddress::zero();
         assert_eq!(
