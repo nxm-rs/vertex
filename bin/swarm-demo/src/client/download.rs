@@ -1,9 +1,9 @@
 //! Browser download + manifest-walk flow.
 //!
-//! Manifests are read against the in-memory cache with a network prefetch-retry
-//! loop. File reassembly drives the joiner directly over the network getter: its
+//! Both the manifest walk and file reassembly drive the network getter inline:
+//! mantaray fetches each node it visits via the getter, and the joiner's
 //! pipelined in-flight pool fetches the chunk tree at the configured width and
-//! reorders for delivery, so no separate prefetch pass is needed.
+//! reorders for delivery. Neither needs a separate prefetch pass.
 
 use std::sync::Arc;
 
@@ -12,7 +12,6 @@ use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
 use nectar_primitives::file::WriteAt;
-use nectar_primitives::store::ChunkStoreError;
 use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
 use vertex_swarm_api::SwarmChunkProvider;
 use wasm_bindgen::JsValue;
@@ -102,9 +101,6 @@ impl WriteAt for JsWriteSink<'_> {
             .map_err(|e| SinkError(format!("set_len: {e:?}")))
     }
 }
-
-/// Maximum prefetch round trips before giving up on a manifest op.
-const MAX_PREFETCH_ITERS: usize = 4096;
 
 /// Chunk retrievals kept in flight while the joiner walks a file's chunk tree.
 const DOWNLOAD_CONCURRENCY: usize = 32;
@@ -225,31 +221,21 @@ async fn probe_manifest_entries(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Option<Vec<Entry>>, JsValue> {
-    for _ in 0..MAX_PREFETCH_ITERS {
-        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, cache.clone());
-        match manifest.entries().await {
-            Ok(entries) if !entries.is_empty() => return Ok(Some(entries)),
-            // Parsed as a manifest but empty: treat as "not a usable manifest"
-            // and fall through to a raw file join.
-            Ok(_) => return Ok(None),
-            Err(e) => match missing_address(&e) {
-                // A missing chunk: fetch it and retry the probe.
-                Some(missing) => {
-                    let result = provider
-                        .retrieve_chunk(&missing)
-                        .await
-                        .map_err(|e| JsValue::from_str(&format!("retrieve {missing}: {e}")))?;
-                    cache.insert(result.chunk);
-                }
-                // Any other parse error means the root chunk is a plain file
-                // content chunk, not a mantaray node: not a manifest.
-                None => return Ok(None),
-            },
-        }
+    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
+    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let result = manifest.entries().await;
+    publish(&getter, cache);
+    match result {
+        Ok(entries) if !entries.is_empty() => Ok(Some(entries)),
+        // Parsed as a manifest but empty: treat as "not a usable manifest"
+        // and fall through to a raw file join.
+        Ok(_) => Ok(None),
+        // A store-get failure is a genuine fetch error; surface it.
+        Err(e) if is_store_get(&e) => Err(JsValue::from_str(&format!("manifest probe: {e}"))),
+        // Any other decode error means the root chunk is a plain file content
+        // chunk, not a mantaray node: not a manifest.
+        Err(_) => Ok(None),
     }
-    Err(JsValue::from_str(
-        "manifest probe exceeded prefetch budget; chunk likely unavailable",
-    ))
 }
 
 /// Pick the file root from a manifest's `entries`, preferring `index.html` or `/`.
@@ -319,11 +305,11 @@ pub async fn ls_manifest(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<(String, String)>, JsValue> {
-    let entries = prefetch_then(provider, cache, |c| async move {
-        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c);
-        manifest.entries().await
-    })
-    .await?;
+    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
+    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let result = manifest.entries().await;
+    publish(&getter, cache);
+    let entries = result.map_err(|e| JsValue::from_str(&format!("manifest list: {e}")))?;
 
     Ok(entries
         .iter()
@@ -345,15 +331,12 @@ pub async fn walk(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
-    let path_owned = path.to_string();
-    let entry: Entry = prefetch_then(provider.clone(), cache, |c| {
-        let path = path_owned.clone();
-        async move {
-            let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c);
-            manifest.lookup(&path).await
-        }
-    })
-    .await?;
+    let getter = NetworkChunkGet::new(provider.clone(), cache.snapshot_map());
+    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let result = manifest.lookup(path).await;
+    publish(&getter, cache);
+    let entry: Entry =
+        result.map_err(|e| JsValue::from_str(&format!("manifest lookup '{path}': {e}")))?;
 
     let file_root = entry
         .address()
@@ -363,46 +346,16 @@ pub async fn walk(
     download_file(file_root, provider, cache).await
 }
 
-/// Run a mantaray op against the cache, fetching missing chunks and retrying.
-async fn prefetch_then<T, F, Fut>(
-    provider: Arc<dyn SwarmChunkProvider>,
-    cache: &MemoryCache,
-    mut op: F,
-) -> Result<T, JsValue>
-where
-    F: FnMut(MemoryCache) -> Fut,
-    Fut: std::future::Future<Output = Result<T, MantarayError>>,
-{
-    for _ in 0..MAX_PREFETCH_ITERS {
-        match op(cache.clone()).await {
-            Ok(value) => return Ok(value),
-            Err(e) => {
-                let missing = missing_address(&e).ok_or_else(|| {
-                    JsValue::from_str(&format!("manifest op failed (not a missing chunk): {e}"))
-                })?;
-                // Fetch the missing chunk over the network and cache it, then
-                // retry the whole operation (mantaray will get further this time).
-                let result = provider
-                    .retrieve_chunk(&missing)
-                    .await
-                    .map_err(|e| JsValue::from_str(&format!("retrieve {missing}: {e}")))?;
-                cache.insert(result.chunk);
-            }
-        }
+/// Publish the nodes a manifest walk fetched back into the session cache, so a
+/// later walk or file download reuses them instead of re-fetching.
+fn publish(getter: &NetworkChunkGet, cache: &MemoryCache) {
+    for chunk in getter.cached_chunks() {
+        cache.insert(chunk);
     }
-    Err(JsValue::from_str(
-        "manifest walk exceeded prefetch budget; chunk likely unavailable",
-    ))
 }
 
-/// If `err` is a store-get miss, extract the missing chunk address.
-fn missing_address(err: &MantarayError) -> Option<ChunkAddress> {
-    let MantarayError::StoreGet { source } = err else {
-        return None;
-    };
-    let store_err = source.downcast_ref::<ChunkStoreError>()?;
-    let ChunkStoreError::NotFound(address) = store_err else {
-        return None;
-    };
-    Some(*address)
+/// Whether `err` is a store-get failure, meaning a node could not be fetched.
+/// Any other [`MantarayError`] means the chunk did not decode as a mantaray node.
+fn is_store_get(err: &MantarayError) -> bool {
+    matches!(err, MantarayError::StoreGet { .. })
 }
