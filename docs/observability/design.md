@@ -231,9 +231,7 @@ The full topology family list, including per-bin gauges, dial, lock-contention, 
 | `peer_manager_banned_peers` | Gauge | None |
 | `peer_manager_health` | Gauge | `state` |
 | `peer_manager_score_distribution` | Gauge | `le` |
-| `peer_manager_tracked_ips` | Gauge | None |
 | `peer_manager_reports_total` | Counter | `source`, `event`, `outcome` |
-| `peer_manager_ip_cycling_detections_total` | Counter | None |
 | `peer_manager_admission_rejected_total` | Counter | None |
 | `peer_manager_overlay_mismatch_removed_total` | Counter | None |
 | `peer_manager_gossip_timestamp_rejected_total` | Counter | `reason` |

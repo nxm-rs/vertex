@@ -291,9 +291,7 @@ Hive emits only peer-count and validation families; its exchange metrics are the
 | `peer_manager_banned_peers` | Gauge | | Banned peers |
 | `peer_manager_health` | Gauge | `state` | Peers in each health state |
 | `peer_manager_score_distribution` | Gauge | `le` | Current peer count per score range |
-| `peer_manager_tracked_ips` | Gauge | | Distinct remote IPs tracked for cycling detection |
 | `peer_manager_reports_total` | Counter | `source`, `event`, `outcome` | Score reports processed |
-| `peer_manager_ip_cycling_detections_total` | Counter | | Identity-cycling cap crossings detected |
 | `peer_manager_admission_rejected_total` | Counter | | Discovered peers rejected at admission |
 | `peer_manager_overlay_mismatch_removed_total` | Counter | | Peers removed for overlay mismatch |
 | `peer_manager_gossip_timestamp_rejected_total` | Counter | `reason` | Gossiped records rejected on timestamp check |
