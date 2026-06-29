@@ -8,7 +8,7 @@ use nectar_mantaray::PlainManifest;
 use nectar_postage::Batch;
 use nectar_postage_issuer::{BatchStamper as IssuerStamper, Stamper};
 use nectar_postage_usage::SnapshotIssuer;
-use nectar_primitives::file::sync_split;
+use nectar_primitives::file::split;
 use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE};
 use vertex_swarm_api::{StampedChunk, SwarmChunkProvider, SwarmChunkSender};
 use vertex_swarm_primitives::Stamp;
@@ -39,8 +39,7 @@ pub async fn upload_file(
 
     // 1. Split the file into content chunks. rayon runs inline on wasm
     //    (no `wasm-threads`), so this is single-threaded.
-    let (file_root, store) =
-        sync_split::<DEFAULT_BODY_SIZE>(bytes).map_err(|e| js_err("split", e))?;
+    let (file_root, store) = split::<DEFAULT_BODY_SIZE>(bytes).map_err(|e| js_err("split", e))?;
 
     // Move content chunks into the session cache so they are immediately
     // retrievable and so the manifest save can reference the file root.
@@ -52,8 +51,12 @@ pub async fn upload_file(
     let mut manifest: PlainManifest<MemoryCache> = PlainManifest::new(cache.clone());
     manifest
         .add(filename, file_root)
+        .await
         .map_err(|e| js_err("manifest add", e))?;
-    let manifest_root = manifest.save().map_err(|e| js_err("manifest save", e))?;
+    let manifest_root = manifest
+        .save()
+        .await
+        .map_err(|e| js_err("manifest save", e))?;
 
     // 3. Stamp every chunk in the cache (content + manifest nodes) and push.
     //    Recover the usage snapshot from Swarm (root + committed leaves) so this

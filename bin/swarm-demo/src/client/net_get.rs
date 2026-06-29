@@ -45,7 +45,7 @@ impl ChunkGet<DEFAULT_BODY_SIZE> for NetworkChunkGet {
             .provider
             .retrieve_chunk(address)
             .await
-            .map_err(|e| ChunkStoreError::Other(e.to_string()))?;
+            .map_err(|e| ChunkStoreError::Other(e.to_string().into()))?;
         // Cache the fetched chunk so a re-read (e.g. the joiner revisiting an
         // intermediate node) does not hit the network twice.
         self.local

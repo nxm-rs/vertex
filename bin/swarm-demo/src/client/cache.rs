@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use nectar_primitives::store::{ChunkStoreError, SyncChunkGet, SyncChunkHas, SyncChunkPut};
+use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError};
 use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE};
 
 /// A cheaply-clonable, session-local in-memory chunk store (clones share the map).
@@ -47,26 +47,26 @@ impl MemoryCache {
     }
 }
 
-impl SyncChunkPut<DEFAULT_BODY_SIZE> for MemoryCache {
+impl ChunkPut<DEFAULT_BODY_SIZE> for MemoryCache {
     type Error = ChunkStoreError;
 
-    fn put(&self, chunk: AnyChunk) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: AnyChunk) -> Result<(), Self::Error> {
         self.insert(chunk);
         Ok(())
     }
 }
 
-impl SyncChunkGet<DEFAULT_BODY_SIZE> for MemoryCache {
+impl ChunkGet<DEFAULT_BODY_SIZE> for MemoryCache {
     type Error = ChunkStoreError;
 
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk, Self::Error> {
         self.fetch(address)
             .ok_or_else(|| ChunkStoreError::not_found(address))
     }
 }
 
-impl SyncChunkHas<DEFAULT_BODY_SIZE> for MemoryCache {
-    fn has(&self, address: &ChunkAddress) -> bool {
+impl ChunkHas<DEFAULT_BODY_SIZE> for MemoryCache {
+    async fn has(&self, address: &ChunkAddress) -> bool {
         self.chunks.borrow().contains_key(address)
     }
 }

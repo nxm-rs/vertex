@@ -53,7 +53,7 @@ async fn probe_manifest_entries(
 ) -> Result<Option<Vec<Entry>>, JsValue> {
     for _ in 0..MAX_PREFETCH_ITERS {
         let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, cache.clone());
-        match manifest.entries() {
+        match manifest.entries().await {
             Ok(entries) if !entries.is_empty() => return Ok(Some(entries)),
             // Parsed as a manifest but empty: treat as "not a usable manifest"
             // and fall through to a raw file join.
@@ -125,9 +125,9 @@ pub async fn ls_manifest(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<(String, String)>, JsValue> {
-    let entries = prefetch_then(provider, cache, |c| {
-        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c.clone());
-        manifest.entries()
+    let entries = prefetch_then(provider, cache, |c| async move {
+        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c);
+        manifest.entries().await
     })
     .await?;
 
@@ -153,8 +153,11 @@ pub async fn walk(
 ) -> Result<Vec<u8>, JsValue> {
     let path_owned = path.to_string();
     let entry: Entry = prefetch_then(provider.clone(), cache, |c| {
-        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c.clone());
-        manifest.lookup(&path_owned)
+        let path = path_owned.clone();
+        async move {
+            let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c);
+            manifest.lookup(&path).await
+        }
     })
     .await?;
 
@@ -258,16 +261,17 @@ async fn join_to_bytes(root: ChunkAddress, getter: NetworkChunkGet) -> Result<Ve
 }
 
 /// Run a mantaray op against the cache, fetching missing chunks and retrying.
-async fn prefetch_then<T, F>(
+async fn prefetch_then<T, F, Fut>(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
     mut op: F,
 ) -> Result<T, JsValue>
 where
-    F: FnMut(&MemoryCache) -> Result<T, MantarayError>,
+    F: FnMut(MemoryCache) -> Fut,
+    Fut: std::future::Future<Output = Result<T, MantarayError>>,
 {
     for _ in 0..MAX_PREFETCH_ITERS {
-        match op(cache) {
+        match op(cache.clone()).await {
             Ok(value) => return Ok(value),
             Err(e) => {
                 let missing = missing_address(&e).ok_or_else(|| {
@@ -294,20 +298,8 @@ fn missing_address(err: &MantarayError) -> Option<ChunkAddress> {
         return None;
     };
     let store_err = source.downcast_ref::<ChunkStoreError>()?;
-    let ChunkStoreError::NotFound { address_hex } = store_err else {
+    let ChunkStoreError::NotFound(address) = store_err else {
         return None;
     };
-    parse_address_hex(address_hex)
-}
-
-/// Parse a (possibly `0x`-prefixed) 32-byte hex address.
-fn parse_address_hex(s: &str) -> Option<ChunkAddress> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).ok()?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Some(ChunkAddress::new(arr))
+    Some(*address)
 }
