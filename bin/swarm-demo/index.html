@@ -15,8 +15,11 @@
     <!-- The stream-to-disk service worker must sit at the demo root so it can
          take root scope and control the synthetic download URL. -->
     <link data-trunk rel="copy-file" href="download-sw.js" />
+    <!-- The OPFS download worker sits at the demo root so it loads by a stable
+         same-origin URL; it owns the scratch file's sync access handle. -->
+    <link data-trunk rel="copy-file" href="download-worker.js" />
 
-    <!-- Download sink factory (File System Access fast path + service-worker
+    <!-- Download sink factory (OPFS worker, File System Access, service-worker
          fallback). Loaded as a module so its `createDownloadSink` export is
          registered on `window` before the wasm download path calls it. -->
     <script type="module" src="assets/download-sink.js"></script>
