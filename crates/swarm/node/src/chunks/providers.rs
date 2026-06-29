@@ -1,8 +1,10 @@
 //! RPC provider implementations for Swarm nodes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tracing::warn;
 use vertex_swarm_api::{
@@ -17,8 +19,7 @@ use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::time::{Duration, Instant};
 
 use crate::{
-    ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER, RaceFailure,
-    race_candidates,
+    ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER, RaceFailure, race_walk,
 };
 
 /// Report source for shallow/malformed receipts caught on the origin upload
@@ -28,20 +29,30 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// Pool of closest connected peers scanned for a free retrieval slot before
-/// skip-busy filtering.
+/// Proximity-ordered pool of closest connected peers the retrieval walk draws
+/// from.
 ///
-/// Intentionally wider than [`RETRIEVE_MAX_ATTEMPTS`] so that when address
-/// proximity clusters onto a few close peers and one is at its in-flight cap,
-/// skip-busy still has next-closest alternatives with a free slot rather than
-/// overrunning the hot peer's per-connection substream budget. This is only a
-/// selection pool: the race is bounded separately by [`RETRIEVE_MAX_ATTEMPTS`].
-const RETRIEVE_CANDIDATE_WIDTH: usize = 8;
+/// Wider than [`RETRIEVE_LEG_BUDGET`] so that, after skip-busy removes peers at
+/// their in-flight cap, the walk still has next-closest free-slot entry points to
+/// refill a failed leg with rather than overrunning a hot peer. Retrieval is
+/// forwarding-based, so these are connected peers only; the walk never dials.
+const RETRIEVE_WALK_WIDTH: usize = 32;
 
-/// Maximum retrieval legs raced per chunk, so widening the skip-busy pool
-/// does not amplify paid bandwidth: the wider pool only supplies free-slot
-/// alternatives, the race still meters at most this many legs (the prior bound).
-const RETRIEVE_MAX_ATTEMPTS: usize = 3;
+/// Maximum real retrieval legs the walk dispatches per chunk before giving up.
+///
+/// A chunk whose closest few entry points miss is not absent: each leg is a
+/// distinct peer whose own forwarding chain may still reach the chunk's storers,
+/// so a sparse-bin chunk needs more than the closest few tries. Peers skipped for
+/// back-pressure before dispatch do not count against this budget, so it bounds
+/// only genuine coverage attempts and the metered bandwidth they cost. The
+/// reference node's origin ceiling is 32; this starts conservative and is raised
+/// only on the residual-failure metric below.
+const RETRIEVE_LEG_BUDGET: usize = 8;
+
+/// Wall-clock bound on the whole retrieval walk across its refilled legs, so a
+/// run of slow or withholding entry points cannot hold a download-pipeline slot
+/// indefinitely. Matches the per-request retrieval lifetime.
+const RETRIEVE_WALK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Bound on the settle-and-await for a fully gated close set: the request's own
 /// retrieval lifetime, matching the client-behaviour outbound retrieval timeout.
@@ -116,55 +127,67 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let chunk_address = SwarmAddress::new(address.0.into());
         let closest_peers = self
             .topology
-            .closest_to(&chunk_address, RETRIEVE_CANDIDATE_WIDTH);
+            .closest_to(&chunk_address, RETRIEVE_WALK_WIDTH);
         // Settle-and-await when every close peer is gated, so a fully gated set
         // recovers instead of failing; if still gated at the budget the empty
         // result falls through to the no-connected-peers path below, the same
         // generic transient error a no-peers failure yields.
         let closest_peers = self.select_or_wait(closest_peers, &chunk_address).await;
 
-        // Skip-busy: prefer close peers with a free retrieval slot so a hot peer
-        // at its in-flight cap is skipped at selection time rather than
-        // overrun. When every close candidate is at its cap, fall through to the
+        // Skip-busy: drop peers at their in-flight cap so a hot peer is never
+        // overrun and a busy peer never spends a leg of the difficulty budget
+        // below. When every close candidate is at its cap, fall through to the
         // full list rather than failing the request: degraded service beats
         // failure. The cap is non-economic and composed after the economic
         // selector above; the admission band paces each chosen request below.
-        let mut candidates = skip_busy(closest_peers, self.inflight.as_deref());
-        // Bound the raced legs so the wider skip-busy pool only supplies
-        // free-slot alternatives and never amplifies metered bandwidth: the
-        // survivor list is proximity-ordered and skip-busy preserves order, so
-        // this keeps the closest free-slot peers (or, in the all-busy
-        // fall-through, the closest few, the prior bound).
-        candidates.truncate(RETRIEVE_MAX_ATTEMPTS);
-        let attempts = candidates.len();
+        let candidates = skip_busy(closest_peers, self.inflight.as_deref());
 
-        // Race the candidates with a staggered start, resolving on the first
-        // success, so a withholding head candidate is overtaken by the next one
-        // within the stagger instead of stalling this slot for a full
-        // per-attempt deadline and blocking every later chunk behind it. Each
-        // attempt carries its own pacing (the admission band and affordability
-        // check run inside `retrieve_chunk` before it dispatches), so the
-        // staggered starts preserve the per-peer pacing. The per-peer
-        // in-flight permit is reserved lazily as each leg starts and rides its
-        // request future, releasing the slot on drop including a cancelled
-        // losing leg.
-        match race_candidates(candidates, RETRIEVAL_STAGGER, |peer_overlay| {
-            let permit = self
-                .inflight
-                .as_ref()
-                .and_then(|limiter| limiter.try_acquire(&peer_overlay));
-            // `originated = true`: our own retrieval, so the client service
-            // debits the serving peer on delivery.
-            let request = self
-                .client_handle
-                .retrieve_chunk(peer_overlay, chunk_address, true);
-            async move {
-                let _permit = permit;
-                request.await
-            }
-        })
-        .await
-        {
+        // Walk the proximity-ordered free-slot pool, staggering one leg in at a
+        // time and refilling a failed leg with the next-closest peer. Retrieval
+        // is forwarding-Kademlia with no authoritative negative on the wire: a
+        // failed or slow leg means "this entry point could not serve it", never
+        // "the chunk is absent", so the walk keeps going to the next peer and
+        // only gives up on a real bound (the leg budget, the pool, or the
+        // deadline). Each leg meters one request and reserves the per-peer
+        // in-flight permit that rides its future, released on drop including a
+        // cancelled losing leg, so the walk stays a patient handful of in-flight
+        // legs rather than a wide paid fan-out.
+        let legs = AtomicUsize::new(0);
+        let outcome = race_walk(
+            candidates,
+            RETRIEVE_LEG_BUDGET,
+            RETRIEVE_WALK_DEADLINE,
+            RETRIEVAL_STAGGER,
+            |peer_overlay| {
+                legs.fetch_add(1, Ordering::Relaxed);
+                let permit = self
+                    .inflight
+                    .as_ref()
+                    .and_then(|limiter| limiter.try_acquire(&peer_overlay));
+                // `originated = true`: our own retrieval, so the client service
+                // debits the serving peer on delivery.
+                let request = self
+                    .client_handle
+                    .retrieve_chunk(peer_overlay, chunk_address, true);
+                async move {
+                    let _permit = permit;
+                    request.await
+                }
+            },
+        )
+        .await;
+
+        let legs = legs.load(Ordering::Relaxed);
+        histogram!("retrieval_walk_legs").record(legs as f64);
+        let outcome_label = match &outcome {
+            Ok(_) => "hit",
+            Err(RaceFailure::NoCandidates) => "no_peers",
+            Err(RaceFailure::AllFailed(_)) => "exhausted",
+            Err(RaceFailure::TimedOut) => "timed_out",
+        };
+        counter!("retrieval_walk_total", "outcome" => outcome_label).increment(1);
+
+        match outcome {
             Ok(result) => Ok(ChunkRetrievalResult {
                 chunk: result.chunk,
                 stamp: result.stamp,
@@ -175,9 +198,16 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
             )),
             Err(RaceFailure::AllFailed(e)) => Err(SwarmError::AllPeersFailed {
                 address: *address,
-                attempts,
+                attempts: legs,
                 source: Box::new(e),
             }),
+            // The walk ran out of wall-clock time with legs still slow rather
+            // than failed: a transient condition, surfaced like a no-peers miss
+            // so the consumer re-streams the address rather than treating it as a
+            // hard not-found.
+            Err(RaceFailure::TimedOut) => Err(SwarmError::network_msg(
+                "retrieval walk deadline elapsed before any peer served the chunk",
+            )),
         }
     }
 
@@ -557,7 +587,9 @@ mod tests {
         use nectar_primitives::ContentChunk;
         use tokio::sync::mpsc;
 
-        use super::super::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
+        use crate::race_candidates;
+
+        use super::super::{RETRIEVAL_STAGGER, RaceFailure};
         use super::*;
 
         fn test_chunk() -> nectar_primitives::AnyChunk {
@@ -679,14 +711,19 @@ mod tests {
         use std::time::{Duration, Instant};
 
         use nectar_primitives::ContentChunk;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         use tokio::sync::mpsc;
 
         use crate::{
             ChunkTransferError, ClientCommand, ClientHandle, PeerInflightLimiter, RetrievalResult,
         };
 
+        use crate::race_candidates;
+
         use super::super::{
-            RETRIEVAL_STAGGER, RETRIEVE_MAX_ATTEMPTS, RaceFailure, race_candidates, skip_busy,
+            RETRIEVAL_STAGGER, RETRIEVE_LEG_BUDGET, RETRIEVE_WALK_DEADLINE, RaceFailure, race_walk,
+            skip_busy,
         };
         use super::*;
 
@@ -760,23 +797,45 @@ mod tests {
             );
         }
 
-        #[test]
-        fn skip_busy_pool_is_truncated_to_the_attempts_bound() {
-            // A wide pool of free-slot peers must not race every leg: the
-            // production path truncates the skip-busy survivors to the attempts
-            // bound, so the wider pool only supplies free-slot alternatives
-            // without amplifying metered bandwidth.
-            let limiter = PeerInflightLimiter::new(CAP_ONE);
-            let pool: Vec<SwarmAddress> = (1..=8).map(overlay).collect();
+        #[tokio::test]
+        async fn walk_budget_caps_metered_legs_below_the_free_slot_pool() {
+            // A wide pool of free-slot peers must not meter a leg each: the walk
+            // dispatches at most the leg budget, refilling a failed leg from the
+            // next-closest peer, so the wider pool supplies coverage alternatives
+            // without amplifying paid bandwidth.
+            let (tx, rx) = mpsc::channel::<ClientCommand>(64);
+            drop(rx); // every retrieval fails at once: the walk spends its budget.
+            let handle = ClientHandle::new(tx);
+            let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
 
-            let mut candidates = skip_busy(pool, Some(&limiter));
-            candidates.truncate(RETRIEVE_MAX_ATTEMPTS);
+            let pool: Vec<SwarmAddress> = (1..=16).map(overlay).collect();
+            let candidates = skip_busy(pool, Some(&limiter));
+            assert_eq!(candidates.len(), 16, "all 16 peers have a free slot");
 
-            assert_eq!(candidates.len(), RETRIEVE_MAX_ATTEMPTS);
-            assert_eq!(
+            let legs = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&legs);
+            let outcome = race_walk(
                 candidates,
-                vec![overlay(1), overlay(2), overlay(3)],
-                "the closest attempts-bound free-slot peers are kept in order"
+                RETRIEVE_LEG_BUDGET,
+                RETRIEVE_WALK_DEADLINE,
+                RETRIEVAL_STAGGER,
+                move |peer| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let permit = limiter.try_acquire(&peer);
+                    let handle = handle.clone();
+                    async move {
+                        let _permit = permit;
+                        handle.retrieve_chunk(peer, address(0xaa), true).await
+                    }
+                },
+            )
+            .await;
+
+            assert!(matches!(outcome, Err(RaceFailure::AllFailed(_))));
+            assert_eq!(
+                legs.load(Ordering::SeqCst),
+                RETRIEVE_LEG_BUDGET,
+                "the walk meters at most the leg budget across the wider free-slot pool"
             );
         }
 

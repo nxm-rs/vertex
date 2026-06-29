@@ -54,7 +54,7 @@ pub use protocol::{
 
 pub use inflight::{DEFAULT_PEER_INFLIGHT_CAP, PeerInflightLimiter};
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
-pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
+pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, race_walk};
 
 pub use bootnodes::BootnodeProvider;
 pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
