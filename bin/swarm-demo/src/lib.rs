@@ -141,7 +141,7 @@ impl SwarmDemo {
         out
     }
 
-    /// This node's identity (`overlay`, `peerId`) as a JS object for the globe feed.
+    /// This node's identity (`overlay`, `peerId`) as a JS object for the scanner peer feed.
     #[wasm_bindgen(js_name = self)]
     pub fn self_info(&self) -> JsValue {
         let obj = js_sys::Object::new();
@@ -151,7 +151,7 @@ impl SwarmDemo {
     }
 
     /// Drain peer connect/disconnect triggers and emit periodic score refreshes
-    /// as a JS array for the globe feed.
+    /// as a JS array for the scanner peer feed.
     #[wasm_bindgen(js_name = drainPeerEvents)]
     pub fn drain_peer_events(&self) -> js_sys::Array {
         let out = js_sys::Array::new();
@@ -253,7 +253,7 @@ pub fn main() {
     wasm_bindgen_futures::spawn_local(async {
         match start().await {
             Ok(demo) => {
-                // Publish the handle on `window.__swarmDemo` for the globe
+                // Publish the handle on `window.__swarmDemo` for the scanner
                 // frontend's `?live` peer feed, and keep the client alive for
                 // the page session through that JS-owned reference.
                 publish_handle(demo);
@@ -485,7 +485,7 @@ fn spawn_event_pump(
                     ui::append_event(kind, &escape_html(&detail));
 
                     // Capture peer connect/disconnect as overlay-keyed triggers
-                    // for the globe feed, enriched against the peer manager when
+                    // for the scanner peer feed, enriched against the peer manager when
                     // `drain_peer_events` is called.
                     if let Some(trigger) = peer_trigger(&event) {
                         let mut pbuf = peer_events.borrow_mut();
@@ -508,7 +508,7 @@ fn spawn_event_pump(
     });
 }
 
-/// Map a topology event to a globe peer trigger, if it is one.
+/// Map a topology event to a scanner peer trigger, if it is one.
 fn peer_trigger(event: &TopologyEvent) -> Option<PeerTrigger> {
     match event {
         TopologyEvent::PeerReady {
