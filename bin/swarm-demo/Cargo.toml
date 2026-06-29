@@ -42,9 +42,52 @@ vertex-swarm-localstore = { path = "../../crates/swarm/localstore", features = [
 vertex-storage-indexeddb = { path = "../../crates/storage/indexeddb" }
 vertex-net-dnsaddr-doh = { path = "../../crates/net/dnsaddr-doh" }
 
-# Chequebook address parsing for the optional SWAP config input. Pinned to the
-# workspace version so the `Address` type unifies with the node crate's.
+vertex-swarm-stream = { path = "../../crates/swarm/stream" }
+# Browser clock (web-time) facade for the postage stamp timestamp.
+vertex-util-runtime = { path = "../../crates/util/runtime" }
+
+# The chunk provider/sender trait impls use async_trait, matching the vertex
+# provider crates.
+async-trait = "0.1"
+
+# nectar: file chunking/joining, postage stamping (issuer + usage persistence),
+# and mantaray manifests for the browser upload/download path. Tracks the same
+# nectar source as the parent vertex workspace (`../../Cargo.toml`) so the
+# path-dep vertex crates and the demo resolve a single copy of the shared nectar
+# types (`ChunkAddress`, `Stamp`, `StampedChunk`). Default features only: no
+# `parallel`/`wasm-threads`, keeping the single-threaded wasm profile (the demo
+# never calls `initThreadPool`, so there is no rayon worker pool and no shared
+# memory).
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
+# `local-signer` brings the alloy-signer-local re-export for the in-browser key.
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
+# `issuer` + `seal` give signed content stamps (SnapshotIssuer) and the
+# usage-persistence seal path; default `std` is implied.
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13", features = [
+    "issuer",
+    "seal",
+    "client",
+] }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
+
+# Chequebook address parsing for the optional SWAP config input and chain
+# types/signing for the browser. alloy-sol-types decodes the BatchCreated log
+# (the event ABI is not yet in nectar-contracts; defined locally; see
+# client/chain.rs). alloy-signer-local holds the ephemeral upload key;
+# alloy-signer's SignerSync drives the stamp signatures. Pinned to the workspace
+# version so the `Address` type unifies with the node crate's.
 alloy-primitives = { version = "1.6", default-features = false }
+alloy-sol-types = { version = "1.6", default-features = false }
+alloy-signer = { version = "2.0", default-features = false }
+alloy-signer-local = { version = "2.0", default-features = false }
+
+# Async stream + bytes plumbing for the joiner reassembly path.
+# `alloc` enables the `buffer_unordered`/`FuturesUnordered` stream combinators
+# used to fetch a file's leaf chunks concurrently in the download path.
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+bytes = { version = "1", default-features = false }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
 # The task manager establishes the global executor that the node spawn paths
 # (topology tasks, peer-manager tick, client service) resolve through
 # `TaskExecutor::current`. The demo owns it for the page session.
@@ -66,11 +109,34 @@ web-sys = { version = "0.3", features = [
     "Node",
     "Text",
     "UrlSearchParams",
+    "HtmlInputElement",
+    "HtmlAnchorElement",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    # `fetch`-based JSON-RPC for the gnosis log query (Milestone 4).
+    "Request",
+    "RequestInit",
+    "Response",
+    "Headers",
 ] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 console_error_panic_hook = "0.1"
 tracing = "0.1"
 tracing-wasm = "0.2"
+# Per-target log filtering layered over the tracing-wasm console layer. We use
+# `filter::Targets` (not `EnvFilter`) deliberately: `Targets` needs only `std` +
+# `registry`, both already pulled in transitively by `tracing-wasm`, whereas
+# `EnvFilter` would drag in `regex-automata`/`matchers` and bloat the wasm
+# bundle. `registry` (which implies `std`) also enables per-layer filtering.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "registry",
+] }
 
 # The topology event stream is a tokio broadcast channel; only the sync feature
 # is needed in the browser (no runtime, no net).
