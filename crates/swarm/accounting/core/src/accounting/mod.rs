@@ -363,6 +363,29 @@ mod tests {
     }
 
     #[test]
+    fn test_refund_received_credits_back_a_committed_receive() {
+        // The inverse of the dispatch commit: commit a receive debit, then refund
+        // it and watch the balance return to zero. Reserved stays cleared.
+        use vertex_swarm_api::BandwidthDebit;
+
+        let accounting = test_accounting();
+
+        accounting
+            .prepare_receive(test_peer(), au(1000), true)
+            .expect("within threshold")
+            .apply();
+
+        let handle = accounting.for_peer(test_peer());
+        assert_eq!(handle.balance(), au(-1000));
+        assert_eq!(handle.state.reserved_balance(), au(0));
+
+        accounting.refund_received(test_peer(), au(1000));
+
+        assert_eq!(handle.balance(), au(0));
+        assert_eq!(handle.state.reserved_balance(), au(0));
+    }
+
+    #[test]
     fn test_prepare_receive_dropped() {
         let accounting = test_accounting();
 
