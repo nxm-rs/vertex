@@ -1,11 +1,10 @@
 //! Browser download + manifest-walk flow.
 //!
 //! Manifests are read against the in-memory cache with a network prefetch-retry
-//! loop. File reassembly enumerates the chunk tree, prefetches it breadth-first
-//! with real concurrency (the joiner's own DFS would serialise to ~1 in flight),
-//! then assembles from the warm cache.
+//! loop. File reassembly drives the joiner directly over the network getter: its
+//! pipelined in-flight pool fetches the chunk tree at the configured width and
+//! reorders for delivery, so no separate prefetch pass is needed.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -13,7 +12,7 @@ use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
 use nectar_primitives::store::ChunkStoreError;
-use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
+use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
 use vertex_swarm_api::SwarmChunkProvider;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
@@ -46,14 +45,16 @@ extern "C" {
     fn abort(this: &DownloadSink, reason: &str);
 }
 
-/// Bytes of a single child reference in a plain-mode intermediate node body.
-const REF_SIZE: usize = 32;
-
 /// Maximum prefetch round trips before giving up on a manifest op.
 const MAX_PREFETCH_ITERS: usize = 4096;
 
-/// Chunk retrievals kept in flight while prefetching a file's chunk tree.
+/// Chunk retrievals kept in flight while the joiner walks a file's chunk tree.
 const DOWNLOAD_CONCURRENCY: usize = 32;
+
+/// Leaf bodies held at once while streaming to a sequential sink: in-flight plus
+/// buffered-for-reorder. At least `2 * DOWNLOAD_CONCURRENCY` keeps the pool full
+/// even when the lowest-offset leaf is the straggler the sink is waiting on.
+const STREAM_WINDOW: usize = DOWNLOAD_CONCURRENCY * 2;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
@@ -88,16 +89,16 @@ pub async fn stream_reference(
     stream_file(file_root, provider, cache, sink).await
 }
 
-/// Prefetch the chunk tree at `file_root`, then stream its ordered segments to
-/// `sink`. Each segment is dropped after the write resolves, bounding memory.
+/// Stream the file at `file_root` to `sink` in order, driving the joiner over
+/// the network getter. A bounded window pipelines chunk fetches at the configured
+/// width while emitting in file order; each segment is dropped after its write
+/// resolves, so peak wasm buffering is the window, not the file size.
 pub async fn stream_file(
     file_root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
     sink: &DownloadSink,
 ) -> Result<(), JsValue> {
-    prefetch_tree(file_root, provider.clone(), cache).await?;
-
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
     let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
@@ -112,7 +113,12 @@ pub async fn stream_file(
         return finish(sink).await;
     }
 
-    let stream = joiner.into_stream();
+    // The sink is a sequential disk stream (File System Access append or a
+    // service-worker download body), so delivery must stay in file order. The
+    // windowed reader fetches the tree at full width but reorders to in-order
+    // emission, bounding held leaf bodies to the window.
+    let mut reader = joiner.into_windowed_reader(STREAM_WINDOW);
+    let stream = reader.stream();
     futures::pin_mut!(stream);
     while let Some(segment) = stream.next().await {
         let segment = match segment {
@@ -205,16 +211,36 @@ fn pick_manifest_file(entries: &[Entry]) -> Result<ChunkAddress, JsValue> {
     }
 }
 
-/// Reassemble the file at `file_root`: prefetch its chunk tree, then join from cache.
+/// Reassemble the file at `file_root` into memory, driving the joiner over the
+/// network getter. Leaves are fetched at the configured width and written into a
+/// pre-sized buffer at their offsets as they land, so arrival order does not gate
+/// assembly. Returns the whole file in memory; callers wanting bounded memory for
+/// large files stream to a sink via [`stream_file`] instead.
 pub async fn download_file(
     file_root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
-    prefetch_tree(file_root, provider.clone(), cache).await?;
-
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    join_to_bytes(file_root, getter).await
+    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+        .with_concurrency(DOWNLOAD_CONCURRENCY);
+
+    let size = joiner.size() as usize;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut buf = vec![0u8; size];
+    let stream = joiner.into_offset_stream_chunked();
+    futures::pin_mut!(stream);
+    while let Some(item) = stream.next().await {
+        let (offset, body) = item.map_err(|e| JsValue::from_str(&format!("joiner read: {e}")))?;
+        let start = offset as usize;
+        buf[start..start + body.len()].copy_from_slice(&body);
+    }
+    Ok(buf)
 }
 
 /// List the manifest at `root` as `(path, address_hex)` pairs.
@@ -265,97 +291,6 @@ pub async fn walk(
         .ok_or_else(|| JsValue::from_str(&format!("manifest entry '{path}' has no reference")))?;
 
     download_file(file_root, provider, cache).await
-}
-
-/// Prefetch the chunk tree at `root` into `cache`, breadth-first and concurrent.
-async fn prefetch_tree(
-    root: ChunkAddress,
-    provider: Arc<dyn SwarmChunkProvider>,
-    cache: &MemoryCache,
-) -> Result<(), JsValue> {
-    // Addresses whose chunk we have already fetched (or queued to fetch) this
-    // pass: dedups shared subtrees and guards against a malformed cycle.
-    let mut seen: HashSet<ChunkAddress> = HashSet::new();
-    // The current level to fetch concurrently; starts with just the root.
-    let mut level: Vec<ChunkAddress> = vec![root];
-    seen.insert(root);
-
-    while !level.is_empty() {
-        // Fetch this whole level concurrently, skipping chunks already cached.
-        let fetched: Vec<Result<AnyChunk, JsValue>> = futures::stream::iter(level.into_iter())
-            .map(|addr| {
-                let provider = Arc::clone(&provider);
-                let cached = cache.fetch(&addr);
-                async move {
-                    match cached {
-                        Some(chunk) => Ok(chunk),
-                        None => provider
-                            .retrieve_chunk(&addr)
-                            .await
-                            .map(|r| r.chunk)
-                            .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}"))),
-                    }
-                }
-            })
-            .buffer_unordered(DOWNLOAD_CONCURRENCY)
-            .collect()
-            .await;
-
-        // Insert the fetched chunks and gather the next level (children of the
-        // intermediate nodes). A retrieval error here fails the download.
-        let mut next: Vec<ChunkAddress> = Vec::new();
-        for result in fetched {
-            let chunk = result?;
-            // Intermediate node ⇒ its body is packed child references; a leaf's
-            // span fits one chunk body and ends the branch.
-            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
-                for child in parse_child_refs(chunk.data())? {
-                    if seen.insert(child) {
-                        next.push(child);
-                    }
-                }
-            }
-            cache.insert(chunk);
-        }
-        level = next;
-    }
-
-    Ok(())
-}
-
-/// Parse an intermediate node's body as packed 32-byte child chunk addresses.
-fn parse_child_refs(body: &[u8]) -> Result<Vec<ChunkAddress>, JsValue> {
-    if body.len() % REF_SIZE != 0 {
-        return Err(JsValue::from_str(&format!(
-            "malformed intermediate node: body length {} is not a multiple of {REF_SIZE}",
-            body.len()
-        )));
-    }
-    Ok(body
-        .chunks_exact(REF_SIZE)
-        .map(|r| {
-            let mut arr = [0u8; REF_SIZE];
-            arr.copy_from_slice(r);
-            ChunkAddress::new(arr)
-        })
-        .collect())
-}
-
-/// Reassemble the file at `root` from the warm cache-backed `getter`.
-async fn join_to_bytes(root: ChunkAddress, getter: NetworkChunkGet) -> Result<Vec<u8>, JsValue> {
-    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, root)
-        .await
-        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
-        .with_concurrency(DOWNLOAD_CONCURRENCY);
-
-    if joiner.size() == 0 {
-        return Ok(Vec::new());
-    }
-
-    joiner
-        .read_all()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("joiner read: {e}")))
 }
 
 /// Run a mantaray op against the cache, fetching missing chunks and retrying.
