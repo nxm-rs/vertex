@@ -26,6 +26,17 @@ impl NetworkChunkGet {
             provider,
         }
     }
+
+    /// Every chunk currently held (seed plus fetched), for publishing the nodes
+    /// a manifest walk pulled back into the session cache for reuse.
+    pub fn cached_chunks(&self) -> Vec<AnyChunk> {
+        self.local
+            .lock()
+            .expect("cache mutex")
+            .values()
+            .cloned()
+            .collect()
+    }
 }
 
 impl ChunkGet<DEFAULT_BODY_SIZE> for NetworkChunkGet {
