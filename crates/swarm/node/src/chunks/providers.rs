@@ -76,6 +76,20 @@ const RETRIEVE_WALK_DEADLINE: Duration = Duration::from_secs(30);
 /// settlement RTT and returns at once when no settle is in flight to drain debt.
 const GATE_SETTLE_BUDGET: Duration = Duration::from_secs(30);
 
+/// Wider topology slice the retrieval fallback spills to when the close set is
+/// fully gated.
+///
+/// The closest peers to a chunk carry a download's debt and gate first; a far
+/// larger set of slightly-farther peers still holds forgiveness headroom and
+/// forwards the chunk just the same. Routing a gated chunk there keeps the
+/// pipeline slot moving instead of parking it while the close set's debt drains.
+const RETRIEVE_SPILL_WIDTH: usize = 128;
+
+/// Bound on the settle-and-await once even the wider spill slice is fully gated.
+/// Short because, by then, every nearby peer is at its line and waiting buys
+/// little; failing fast to the consumer to re-stream beats holding the slot.
+const GATE_SPILL_SETTLE_BUDGET: Duration = Duration::from_secs(5);
+
 /// Legs the bin-bucket primary route dispatches before handing off to the
 /// staggered fallback.
 ///
@@ -182,6 +196,40 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             }
             None => candidates,
         }
+    }
+
+    /// Order the close set, spilling to a wider in-headroom slice before blocking
+    /// on a settle drain.
+    ///
+    /// A non-empty band over the close set returns at once (the fast path). When
+    /// every close peer is refused, the closest few have spent their forgiveness
+    /// on this download while a far larger ring of slightly-farther peers still
+    /// carries headroom; banding [`RETRIEVE_SPILL_WIDTH`] peers and routing the
+    /// chunk to an admissible one there forwards it just the same, at one extra
+    /// hop, without parking the pipeline slot for the seconds a close-set debt
+    /// takes to drain. Only when even the wider slice is fully gated does it fall
+    /// back to a bounded [`GATE_SPILL_SETTLE_BUDGET`] settle wait. Disconnect-safe:
+    /// the band still hard-skips every refused peer, so no peer is sent a request
+    /// past its line. With no selector the proximity order is returned unchanged.
+    async fn select_or_spill(
+        &self,
+        candidates: Vec<SwarmAddress>,
+        chunk: &ChunkAddress,
+    ) -> Vec<SwarmAddress> {
+        let Some(selector) = &self.selector else {
+            return candidates;
+        };
+        let ordered = selector.order(candidates, chunk);
+        if !ordered.is_empty() {
+            return ordered;
+        }
+        let wide = self.topology.closest_to(chunk, RETRIEVE_SPILL_WIDTH);
+        let spilled = selector.order(wide.clone(), chunk);
+        if !spilled.is_empty() {
+            return spilled;
+        }
+        let deadline = Instant::now() + GATE_SPILL_SETTLE_BUDGET;
+        selector.order_or_wait(wide, chunk, deadline).await
     }
 
     /// Order `candidates` through the accounting band without awaiting a settle.
@@ -320,11 +368,12 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self
             .topology
             .closest_to(&chunk_address, RETRIEVE_WALK_WIDTH);
-        // Settle-and-await when every close peer is gated, so a fully gated set
-        // recovers instead of failing; if still gated at the budget the empty
-        // result falls through to the no-connected-peers path below, the same
-        // generic transient error a no-peers failure yields.
-        let closest_peers = self.select_or_wait(closest_peers, &chunk_address).await;
+        // Spill to a wider in-headroom slice when every close peer is gated, so a
+        // fully gated close set routes around its spent peers rather than blocking;
+        // if even the wide slice is gated at the short budget the empty result
+        // falls through to the no-connected-peers path below, the same generic
+        // transient error a no-peers failure yields.
+        let closest_peers = self.select_or_spill(closest_peers, &chunk_address).await;
         let (candidates, enforce_cap) = skip_busy(closest_peers, self.inflight.as_deref());
 
         // Pace the staggered fan-out to the live round trip rather than a fixed
