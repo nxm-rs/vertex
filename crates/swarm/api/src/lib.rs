@@ -64,8 +64,8 @@ pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };
 pub use self::reporting::{
-    AdmissionControl, BanCause, DisconnectReason, Ledger, PeerLifecycleEvent, PeerReporter,
-    ReportSource, SwarmScoringEvent,
+    AdmissionControl, BanCause, DisconnectReason, Ledger, LedgerSnapshot, PeerLifecycleEvent,
+    PeerReporter, ReportSource, SwarmScoringEvent,
 };
 pub use self::spec::{
     DEFAULT_SATURATION_PEERS, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser,

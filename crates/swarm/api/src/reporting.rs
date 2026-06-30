@@ -187,6 +187,43 @@ pub trait PeerReporter: Send + Sync {
     fn report_peer(&self, overlay: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource);
 }
 
+/// A consistent snapshot of the per-peer ledger fields an admission band reads.
+///
+/// The four fields are the inputs [`AdmissionControl::admit`] bands over. Read
+/// them together under a ledger's single lock (see [`Ledger::snapshot`]) so a
+/// band decision cannot tear across a concurrent balance update, and so a hot
+/// selection pass pays one lock and one key hash per candidate instead of one
+/// per field.
+#[derive(Debug, Clone, Copy)]
+pub struct LedgerSnapshot {
+    /// Signed balance: positive means the peer owes us, negative we owe them.
+    pub balance: Au,
+    /// The outstanding receive reservation against the peer, in AU.
+    pub reserved: Au,
+    /// The raw disconnect threshold, not floored.
+    pub disconnect_line: Au,
+    /// The raw early-payment settle trigger, not floored at the current debt.
+    pub settle_trigger: Au,
+}
+
+impl LedgerSnapshot {
+    /// Band a priced request from this snapshot.
+    ///
+    /// The same boundary expression as [`AdmissionControl::admit`], evaluated
+    /// once over a consistent read of the four fields.
+    #[must_use]
+    pub fn admit(&self, price: Au) -> Admission {
+        let projected = Debt::project(self.balance, self.reserved, price);
+        if projected.exceeds(self.disconnect_line) {
+            Admission::Refuse
+        } else if projected.exceeds(self.settle_trigger) {
+            Admission::SettleAndAdmit
+        } else {
+            Admission::Admit
+        }
+    }
+}
+
 /// The per-peer ledger reads admission consumes.
 ///
 /// Implemented by bandwidth accounting. The admission boundary in
@@ -210,6 +247,21 @@ pub trait Ledger: Send + Sync {
     /// current debt. A projected debt strictly past this (but within the
     /// disconnect line) settles.
     fn settle_trigger(&self, peer: &OverlayAddress) -> Au;
+
+    /// Read the four admission fields for `peer` together.
+    ///
+    /// The default composes the per-field reads, preserving their exact values.
+    /// An implementation whose fields sit behind one lock (bandwidth accounting)
+    /// overrides this to take that lock and hash the key once, which is what the
+    /// per-candidate selection hot path consumes.
+    fn snapshot(&self, peer: &OverlayAddress) -> LedgerSnapshot {
+        LedgerSnapshot {
+            balance: self.balance(peer),
+            reserved: self.reserved(peer),
+            disconnect_line: self.disconnect_line(peer),
+            settle_trigger: self.settle_trigger(peer),
+        }
+    }
 }
 
 /// The single admission band over a [`Ledger`].
@@ -221,15 +273,11 @@ pub trait Ledger: Send + Sync {
 /// not add a second impl (the blanket already covers all `T: Ledger`).
 pub trait AdmissionControl: Ledger {
     /// Band a priced request for `peer`.
+    ///
+    /// Reads the admission fields through [`Ledger::snapshot`] so the band is
+    /// one consistent observation of the ledger, not four separate reads.
     fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission {
-        let projected = Debt::project(self.balance(peer), self.reserved(peer), price);
-        if projected.exceeds(self.disconnect_line(peer)) {
-            Admission::Refuse
-        } else if projected.exceeds(self.settle_trigger(peer)) {
-            Admission::SettleAndAdmit
-        } else {
-            Admission::Admit
-        }
+        self.snapshot(peer).admit(price)
     }
 }
 

@@ -27,12 +27,13 @@ pub use reservation::{Provide, Receive, Reservation};
 
 use alloc::vec::Vec;
 use parking_lot::RwLock;
+use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    AdmissionControl, Au, Debt, Direction, Ledger, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    AdmissionControl, Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccountingConfig,
+    SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -46,7 +47,9 @@ pub struct Accounting<C, I: SwarmIdentity> {
     config: C,
     identity: I,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
-    peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>>>,
+    // Overlay keys are uniformly random, so a fast non-DoS hasher is safe here
+    // and removes SipHash from the per-candidate selection hot path.
+    peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>, FxBuildHasher>>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -56,7 +59,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             config,
             identity,
             providers: Arc::from(Vec::new()),
-            peers: RwLock::new(HashMap::new()),
+            peers: RwLock::new(HashMap::default()),
         }
     }
 
@@ -73,7 +76,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             config,
             identity,
             providers: Arc::from(providers),
-            peers: RwLock::new(HashMap::new()),
+            peers: RwLock::new(HashMap::default()),
         }
     }
 
@@ -246,6 +249,32 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
         self.config
             .early_payment_trigger()
             .max(self.config.refresh_rate())
+    }
+
+    fn snapshot(&self, peer: &OverlayAddress) -> LedgerSnapshot {
+        // One read lock and one key hash for the three per-peer fields; the
+        // settle trigger is config-derived and needs no lock. The fallback for an
+        // unknown peer matches the per-field reads (fresh zero-balance peer at the
+        // configured disconnect threshold), so a band over this snapshot is
+        // identical to one over four separate reads.
+        let settle_trigger = self
+            .config
+            .early_payment_trigger()
+            .max(self.config.refresh_rate());
+        self.peers.read().get(peer).map_or_else(
+            || LedgerSnapshot {
+                balance: Au::ZERO,
+                reserved: Au::ZERO,
+                disconnect_line: self.config.disconnect_threshold(),
+                settle_trigger,
+            },
+            |state| LedgerSnapshot {
+                balance: state.balance(),
+                reserved: state.reserved_balance(),
+                disconnect_line: state.disconnect_threshold(),
+                settle_trigger,
+            },
+        )
     }
 }
 
