@@ -19,6 +19,7 @@ mod client_service;
 mod inflight;
 mod node;
 mod protocol;
+mod retrieval_latency;
 mod selection;
 mod staggered_race;
 

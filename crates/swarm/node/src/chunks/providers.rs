@@ -18,6 +18,7 @@ use vertex_swarm_topology::TopologyHandle;
 // sleeps are `!Send`, and the gated-set wait awaits a settle completion instead.
 use vertex_tasks::time::{Duration, Instant};
 
+use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
 use crate::{
     ChunkTransferError, ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER,
     RaceFailure, RetrievalResult, race_walk,
@@ -123,6 +124,7 @@ pub struct NetworkChunkProvider<I: SwarmIdentity> {
     topology: TopologyHandle<I>,
     selector: Option<Arc<PeerSelector>>,
     inflight: Option<Arc<PeerInflightLimiter>>,
+    retrieval_latency: Option<Arc<RetrievalLatency>>,
 }
 
 impl<I: SwarmIdentity> NetworkChunkProvider<I> {
@@ -132,7 +134,15 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             topology,
             selector: None,
             inflight: None,
+            retrieval_latency: None,
         }
+    }
+
+    /// Pace the staggered fallback to the live round trip via the shared per-PO
+    /// latency estimate. The same instance the client service records into.
+    pub(crate) fn with_retrieval_latency(mut self, latency: Arc<RetrievalLatency>) -> Self {
+        self.retrieval_latency = Some(latency);
+        self
     }
 
     /// Order retrieval and pushsync candidates with `selector` (score- and
@@ -317,6 +327,21 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self.select_or_wait(closest_peers, &chunk_address).await;
         let (candidates, enforce_cap) = skip_busy(closest_peers, self.inflight.as_deref());
 
+        // Pace the staggered fan-out to the live round trip rather than a fixed
+        // constant. Each candidate's expected latency is read from the per-PO
+        // estimate at its proximity to the chunk (the forwarding distance that
+        // dominates retrieval latency), so a near neighbourhood walks far below
+        // the ceiling and a far one stays at it. Cold buckets fall back to the
+        // constant, so this is never slower, only faster on low-RTT distances.
+        let stagger = match &self.retrieval_latency {
+            Some(latency) => adaptive_stagger(
+                candidates
+                    .iter()
+                    .map(|peer| latency.estimate(chunk_address.proximity(peer).get())),
+            ),
+            None => RETRIEVAL_STAGGER,
+        };
+
         let outcome = self
             .walk_legs(
                 candidates,
@@ -325,7 +350,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                     budget: RETRIEVE_LEG_BUDGET,
                     max_in_flight: RETRIEVE_WALK_MAX_IN_FLIGHT,
                     deadline: RETRIEVE_WALK_DEADLINE,
-                    stagger: RETRIEVAL_STAGGER,
+                    stagger,
                 },
                 enforce_cap,
                 &legs,

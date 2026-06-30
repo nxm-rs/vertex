@@ -48,6 +48,7 @@ use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapServ
 #[cfg(feature = "swap")]
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
+use crate::retrieval_latency::RetrievalLatency;
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
     PeerInflightLimiter, PeerSelector,
@@ -80,6 +81,10 @@ pub struct ClientCore {
     /// Per-peer retrieval in-flight cap shared by the chunk provider (reserves
     /// slots) and the service (forgets a peer on disconnect).
     pub inflight: Arc<PeerInflightLimiter>,
+    /// Per-PO retrieval-latency estimate shared by the service (records) and the
+    /// chunk provider (reads to pace its staggered race). Internal mechanism, so
+    /// crate-visible rather than part of the re-exported surface.
+    pub(crate) retrieval_latency: Arc<RetrievalLatency>,
     /// The origin-gated client handle the provider dispatches through; its
     /// admission band paces each own request before it sends.
     pub origin_handle: ClientHandle,
@@ -181,18 +186,26 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // the service path forgets the same peer the provider reserves against.
     let inflight = Arc::new(PeerInflightLimiter::new(DEFAULT_PEER_INFLIGHT_CAP));
 
+    // Per-PO retrieval-latency estimate shared between the service (records a
+    // completed originated retrieval) and the chunk provider (reads it to pace
+    // the staggered race). One instance so the provider hedges on what the
+    // service has observed.
+    let retrieval_latency = Arc::new(RetrievalLatency::new());
+
     // The service reports through the same peer-manager authority accounting uses
     // and forgets a peer's in-flight slots on disconnect. The origin debit is
     // reserved and committed by the dispatch gate on the origin-gated handle, not
     // by the service.
     let client_service = client_service
         .with_reporter(reporter)
-        .with_inflight_limiter(Arc::clone(&inflight));
+        .with_inflight_limiter(Arc::clone(&inflight))
+        .with_retrieval_latency(Arc::clone(&retrieval_latency));
 
     ClientCore {
         accounting,
         selector,
         inflight,
+        retrieval_latency,
         origin_handle,
         topology,
         client_service,
@@ -733,7 +746,8 @@ where
 
     let chunk_provider = NetworkChunkProvider::new(core.origin_handle.clone(), topology.clone())
         .with_selector(Arc::clone(&core.selector))
-        .with_inflight_limiter(Arc::clone(&core.inflight));
+        .with_inflight_limiter(Arc::clone(&core.inflight))
+        .with_retrieval_latency(Arc::clone(&core.retrieval_latency));
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     executor.spawn_service("swarm.client_service", core.client_service);

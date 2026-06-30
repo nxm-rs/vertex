@@ -19,6 +19,7 @@ use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::inflight::PeerInflightLimiter;
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
+use crate::retrieval_latency::RetrievalLatency;
 use crate::selection::SettlementTrigger;
 
 const RETRIEVAL_SOURCE: ReportSource = ReportSource::Protocol("retrieval");
@@ -261,6 +262,9 @@ pub struct ClientService {
     /// Per-peer retrieval in-flight limiter shared with the chunk provider;
     /// the peer entry is forgotten on disconnect.
     inflight: Option<Arc<PeerInflightLimiter>>,
+    /// Per-PO retrieval-latency estimate shared with the chunk provider; a
+    /// completed originated retrieval is recorded here keyed by its proximity.
+    retrieval_latency: Option<Arc<RetrievalLatency>>,
 }
 
 impl ClientService {
@@ -278,6 +282,7 @@ impl ClientService {
             reporter: None,
             store: None,
             inflight: None,
+            retrieval_latency: None,
         };
 
         (service, event_tx, handle)
@@ -297,6 +302,7 @@ impl ClientService {
             reporter: None,
             store: None,
             inflight: None,
+            retrieval_latency: None,
         };
 
         (service, handle)
@@ -331,6 +337,17 @@ impl ClientService {
     #[must_use]
     pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
         self.inflight = Some(inflight);
+        self
+    }
+
+    /// Attach the per-PO retrieval-latency estimate so a completed originated
+    /// retrieval feeds the hedge the chunk provider paces its race with.
+    ///
+    /// Must be the same [`RetrievalLatency`] the chunk provider reads via
+    /// `NetworkChunkProvider::with_retrieval_latency`.
+    #[must_use]
+    pub(crate) fn with_retrieval_latency(mut self, latency: Arc<RetrievalLatency>) -> Self {
+        self.retrieval_latency = Some(latency);
         self
     }
 
@@ -398,7 +415,7 @@ impl ClientService {
                 chunk,
                 stamp,
                 latency,
-                originated: _,
+                originated,
             } => {
                 // The requester is resolved by the handler; this event exists for
                 // scoring and caching. Content chunks are cached by address
@@ -407,6 +424,13 @@ impl ClientService {
                 // is accounted by the forwarder. Cache and scoring apply to every
                 // delivery.
                 debug!(%peer, %address, ?latency, "Chunk received");
+                // Feed the per-PO latency estimate so the chunk provider can pace
+                // its staggered race to the forwarding distance. Only originated
+                // retrievals: a relay leg's latency is the requester's chain, not
+                // ours. Keyed by PO(serving_peer, chunk), the forwarding distance.
+                if originated && let Some(latency_estimate) = &self.retrieval_latency {
+                    latency_estimate.record(address.proximity(&peer).get(), latency);
+                }
                 if let Some(store) = &self.store
                     && chunk.is_content()
                 {
