@@ -689,12 +689,16 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     }
 
     /// Top `count` connected peers closest to `address` by proximity.
+    ///
+    /// Reads the generation-cached membership snapshot (one `Arc` clone on the
+    /// hot path, no per-bin relock and no fresh membership `Vec`), then scores
+    /// each peer against `address` and partitions the top-k. The snapshot's bin
+    /// order matches a full membership walk, so the selection is unchanged.
     pub(crate) fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
         let mut peers_with_distance: Vec<_> = self
             .connected_peers
-            .all_peers()
-            .into_iter()
-            .map(|peer| {
+            .iter_by_proximity()
+            .map(|(_, peer)| {
                 let proximity = address.proximity(&peer);
                 (peer, proximity)
             })

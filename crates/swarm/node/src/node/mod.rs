@@ -48,3 +48,12 @@ pub use launch::LauncherSwapConfig;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+
+/// Upper bound on queued items drained from a single channel per central-loop
+/// wake, after the first item the `select!` already delivered. Bounding the
+/// burst keeps the swarm poll from being starved: once the budget is spent the
+/// loop returns to `select!`, which polls the swarm again before the next drain.
+/// A bulk download fans many retrieval legs, settles, and acks into the command
+/// channel at once, so admitting a burst per wake (rather than one per full
+/// select pass) keeps the single central task from serialising on wake latency.
+pub(crate) const CHANNEL_DRAIN_BUDGET: usize = 32;
