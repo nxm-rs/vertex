@@ -38,12 +38,36 @@ use vertex_swarm_api::{
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::TaskExecutor;
-use vertex_tasks::time::Instant;
+use vertex_tasks::time::{Duration, Instant};
 
 /// A shareable handle that resolves when an in-flight settle for a peer
 /// completes (the settle's [`InFlightGuard`] fires it on drop), so a waiter can
 /// re-evaluate admission as soon as the network settle acks.
 type SettleCompletion = Shared<oneshot::Receiver<()>>;
+
+/// Minimum wall-clock gap between settle attempts to one peer.
+///
+/// The creditor's pseudosettle rate gate works in whole Unix seconds: a settle
+/// offered in the same second as the last accepted one is answered with a
+/// zero-amount ack (nothing new to forgive yet). With no debtor-side gap a gated
+/// retrieval re-triggers a settle on every banded request, each spawning a task
+/// that the creditor instantly no-ops, spinning the single poll thread. Holding a
+/// peer off for one second after an attempt collapses that spin to the rate the
+/// creditor would actually accept, while a genuinely-needed settle still fires
+/// once the interval passes.
+const MIN_SETTLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Per-peer settlement slot in the dedup map: a settle is running, or one
+/// finished recently and the peer is cooling down.
+enum SettleSlot {
+    /// A settle is in flight; its completion lets a waiter await the ack and a
+    /// concurrent trigger dedup against it.
+    InFlight(SettleCompletion),
+    /// The last settle to this peer finished at this instant. A fresh trigger is
+    /// suppressed until [`MIN_SETTLE_INTERVAL`] elapses, so the no-op re-trigger
+    /// spin cannot form. Pruned lazily when a new settle starts.
+    Cooldown(Instant),
+}
 
 /// Source of live peer scores for candidate selection.
 ///
@@ -90,35 +114,50 @@ pub trait SettlementTrigger: Send + Sync {
 /// A shared in-flight map keeps at most one settle per peer running at a time:
 /// the second trigger for a peer with a settle still outstanding is dropped, so
 /// the map is both the dedup and the per-peer rate limit (the next settle cannot
-/// start until the prior one is acked). The stored [`SettleCompletion`] lets a
-/// waiter await that ack.
+/// start until the prior one is acked). When a settle finishes the entry is left
+/// as a [`SettleSlot::Cooldown`] for [`MIN_SETTLE_INTERVAL`], so a flood of gated
+/// requests cannot re-trigger a no-op settle the creditor would just reject. The
+/// stored [`SettleCompletion`] lets a waiter await the ack.
 pub struct AccountingSettlement<B> {
     bandwidth: B,
-    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
+    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleSlot>>>,
+    min_settle_interval: Duration,
 }
 
 impl<B> AccountingSettlement<B> {
-    /// Trigger settlement through `bandwidth`.
+    /// Trigger settlement through `bandwidth`, holding a peer off for
+    /// [`MIN_SETTLE_INTERVAL`] between attempts.
     pub fn new(bandwidth: B) -> Self {
+        Self::with_min_settle_interval(bandwidth, MIN_SETTLE_INTERVAL)
+    }
+
+    /// Construct with an explicit inter-attempt gap. A zero gap disables the
+    /// cooldown, restoring the bare in-flight dedup (used by tests that exercise
+    /// the dedup in isolation).
+    pub fn with_min_settle_interval(bandwidth: B, min_settle_interval: Duration) -> Self {
         Self {
             bandwidth,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
+            min_settle_interval,
         }
     }
 }
 
-/// Removes a peer from the in-flight map on drop and fires its completion, so a
-/// panic or cancellation of the settle future cannot pin the peer (which would
-/// starve its settlement) and any waiter on the settle is woken either way.
+/// Replaces the peer's in-flight entry with a cooldown on drop and fires its
+/// completion, so a panic or cancellation of the settle future cannot pin the
+/// peer (which would starve its settlement) and any waiter on the settle is woken
+/// either way. The cooldown timestamp paces the next attempt.
 struct InFlightGuard {
-    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleCompletion>>>,
+    in_flight: Arc<Mutex<HashMap<OverlayAddress, SettleSlot>>>,
     peer: OverlayAddress,
     done: Option<oneshot::Sender<()>>,
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        self.in_flight.lock().remove(&self.peer);
+        self.in_flight
+            .lock()
+            .insert(self.peer, SettleSlot::Cooldown(Instant::now()));
         // Fulfil the completion; dropping the sender would also resolve the
         // shared receiver, so a waiter is woken on completion, cancellation, and
         // panic alike.
@@ -138,16 +177,26 @@ where
             debug!(%peer, "no task executor; settlement not triggered");
             return;
         };
-        // Skip if a settle to this peer is already running; the entry is cleared
-        // when the spawned settle completes, so the next trigger can start a fresh
-        // one.
+        // Skip if a settle to this peer is already running, or if one finished
+        // within the inter-attempt gap: the creditor would only no-op a settle
+        // offered that soon, so re-triggering it just spins. A new settle starts
+        // only when the slot is absent or its cooldown has elapsed.
         let (done, completion) = oneshot::channel();
         {
             let mut in_flight = self.in_flight.lock();
-            if in_flight.contains_key(&peer) {
-                return;
+            match in_flight.get(&peer) {
+                Some(SettleSlot::InFlight(_)) => return,
+                Some(SettleSlot::Cooldown(at)) if at.elapsed() < self.min_settle_interval => return,
+                _ => {}
             }
-            in_flight.insert(peer, completion.shared());
+            // Starting a settle is the rare path (at most once per peer per gap),
+            // so drop other peers' expired cooldowns here to bound the map rather
+            // than on every trigger.
+            in_flight.retain(|_, slot| match slot {
+                SettleSlot::InFlight(_) => true,
+                SettleSlot::Cooldown(at) => at.elapsed() < self.min_settle_interval,
+            });
+            in_flight.insert(peer, SettleSlot::InFlight(completion.shared()));
         }
         let handle = self.bandwidth.for_peer(peer);
         let guard = InFlightGuard {
@@ -168,7 +217,10 @@ where
             let in_flight = self.in_flight.lock();
             peers
                 .iter()
-                .filter_map(|peer| in_flight.get(peer).cloned())
+                .filter_map(|peer| match in_flight.get(peer) {
+                    Some(SettleSlot::InFlight(completion)) => Some(completion.clone()),
+                    _ => None,
+                })
                 .collect()
         };
         Box::pin(async move {
@@ -918,7 +970,9 @@ mod tests {
                 finished: Arc::clone(&finished),
                 gate: Arc::clone(&gate),
             });
-            let trigger = AccountingSettlement::new(bandwidth);
+            // Zero cooldown isolates the in-flight dedup: a fresh settle may start
+            // the instant the prior one clears, which is what this test asserts.
+            let trigger = AccountingSettlement::with_min_settle_interval(bandwidth, Duration::ZERO);
 
             // Two synchronous triggers for one peer. The first reserves the peer and
             // spawns a settle that parks on the gate; the second finds the peer
@@ -994,24 +1048,92 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_guard_clears_the_peer_on_drop() {
-        // The guard removes the peer in Drop, which runs on normal completion,
-        // unwind (a panicking settle), and cancellation alike, so a settle that
-        // never completes cleanly cannot pin the peer and starve its settlement.
+    fn in_flight_guard_leaves_a_cooldown_on_drop() {
+        // The guard replaces the in-flight entry with a cooldown in Drop, which
+        // runs on normal completion, unwind (a panicking settle), and cancellation
+        // alike, so a settle that never completes cleanly cannot pin the peer in
+        // flight and starve its settlement, while the cooldown still paces the next
+        // attempt.
         let in_flight = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let (done, completion) = oneshot::channel();
-        in_flight.lock().insert(peer(1), completion.shared());
+        in_flight
+            .lock()
+            .insert(peer(1), SettleSlot::InFlight(completion.shared()));
         {
             let _guard = InFlightGuard {
                 in_flight: Arc::clone(&in_flight),
                 peer: peer(1),
                 done: Some(done),
             };
-            assert!(in_flight.lock().contains_key(&peer(1)));
+            assert!(matches!(
+                in_flight.lock().get(&peer(1)),
+                Some(SettleSlot::InFlight(_))
+            ));
         }
         assert!(
-            !in_flight.lock().contains_key(&peer(1)),
-            "the guard must clear the peer when dropped"
+            matches!(
+                in_flight.lock().get(&peer(1)),
+                Some(SettleSlot::Cooldown(_))
+            ),
+            "the guard leaves a cooldown when the in-flight settle ends"
         );
+    }
+
+    #[test]
+    fn trigger_is_suppressed_during_the_cooldown_then_fires_after_it() {
+        // After a settle completes, a re-trigger inside the inter-attempt gap is a
+        // no-op the creditor would reject, so it must not spawn a fresh settle;
+        // once the gap elapses a genuinely-needed settle fires again.
+        settlement_runtime().block_on(async {
+            let for_peer_calls = Arc::new(AtomicUsize::new(0));
+            let started = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(Notify::new());
+            let bandwidth = Arc::new(MockBandwidth {
+                for_peer_calls: Arc::clone(&for_peer_calls),
+                started: Arc::clone(&started),
+                finished: Arc::clone(&finished),
+                gate: Arc::clone(&gate),
+            });
+            // A short, test-sized cooldown so the suppression window is observable
+            // without slowing the suite.
+            let trigger = AccountingSettlement::with_min_settle_interval(
+                bandwidth,
+                Duration::from_millis(200),
+            );
+
+            // First settle starts, parks on the gate, then is released and clears.
+            trigger.trigger_settlement(peer(1));
+            while started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            gate.notify_one();
+            while finished.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+
+            // Re-triggering immediately is suppressed by the cooldown: no second
+            // settle is created. Spin briefly to give any erroneous spawn a chance.
+            for _ in 0..50 {
+                trigger.trigger_settlement(peer(1));
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                for_peer_calls.load(Ordering::SeqCst),
+                1,
+                "re-triggers inside the cooldown must not spawn a settle"
+            );
+
+            // Past the cooldown a genuinely-needed settle fires again.
+            vertex_tasks::time::sleep(Duration::from_millis(250)).await;
+            let mut tries = 0;
+            while for_peer_calls.load(Ordering::SeqCst) < 2 {
+                trigger.trigger_settlement(peer(1));
+                tries += 1;
+                assert!(tries < 10_000, "cooldown never elapsed to admit a settle");
+                tokio::task::yield_now().await;
+            }
+            gate.notify_one();
+        });
     }
 }
