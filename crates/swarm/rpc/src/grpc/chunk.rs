@@ -92,13 +92,15 @@ fn parse_stamped_chunk(req: &UploadChunkRequest) -> Result<StampedChunk, Status>
     })
 }
 
-/// Absence becomes `not_found`, all else `internal`.
+/// Exhausted retrieval becomes `unavailable` (absence is not provable, so the
+/// caller may retry), no-storer `not_found`, all else `internal`.
 #[allow(clippy::result_large_err)]
 fn retrieval_status(error: &SwarmError) -> Status {
     match error {
-        SwarmError::ChunkNotFound { .. } | SwarmError::NoStorer { .. } => {
-            Status::not_found(format!("chunk not found: {error}"))
+        SwarmError::RetrievalExhausted { .. } => {
+            Status::unavailable(format!("retrieval exhausted: {error}"))
         }
+        SwarmError::NoStorer { .. } => Status::not_found(format!("chunk not found: {error}")),
         other => Status::internal(format!("chunk retrieval failed: {other}")),
     }
 }

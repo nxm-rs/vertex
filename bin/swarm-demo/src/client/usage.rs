@@ -56,8 +56,9 @@ impl SnapshotSource for BrowserUsageSource {
             // for a single-owner chunk). Its data payload is the snapshot payload
             // the codec parses; hand back a clone of it.
             Ok(result) => Ok(Some(result.chunk.data().clone())),
-            // A definitively-absent chunk: the network agrees it does not exist.
-            Err(e) if e.is_not_found() => Ok(None),
+            // Retrieval exhausted the reachable peers: best-effort snapshot, so
+            // treat the chunk as absent rather than failing the open.
+            Err(SwarmError::RetrievalExhausted { .. }) => Ok(None),
             // Any other error is a read that could not be completed.
             Err(e) => Err(UsageAdapterError::from(e)),
         }

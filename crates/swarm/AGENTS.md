@@ -47,7 +47,7 @@ A per-node-type `#[derive(NetworkBehaviour)]` composite (modelled on `topology`)
 
 ## Retrieval dispatch ordering
 
-Retrieval fan-out is free to redirect a chunk to any close peer in any completion order because the consumer reorders (see `crates/swarm/stream/AGENTS.md`). Per-peer substream capping is a non-economic guard composed AFTER economic selection: the dispatch order is selector (who is eligible) then skip-busy (who has a free slot) then the origin credit gate (band the chosen request). The substream cap must never be merged with the affordability or debt signals.
+Retrieval fan-out is free to redirect a chunk to any close peer in any completion order because the consumer reorders (see `crates/swarm/stream/AGENTS.md`). Per-peer substream capping is a non-economic guard composed AFTER economic selection: the dispatch order is the candidate ordering (who is eligible) then the in-flight cap (who has a free slot) then the origin credit gate (band the chosen request). The substream cap must never be merged with the affordability or debt signals.
 
 ## Nectar boundary
 

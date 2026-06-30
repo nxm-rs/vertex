@@ -4,7 +4,7 @@
 //! how close the serving entry peer already is to the chunk: a chunk in the
 //! peer's neighbourhood returns in one hop, a sparse-bin chunk forwards several.
 //! Bucketing observed latency by `PO(serving_peer, chunk)` captures that, so the
-//! race paces its stagger to the distance actually being walked rather than to a
+//! race paces its stagger to the distance actually being traversed rather than to a
 //! single constant. Single-hop ping latency is deliberately not folded in: it
 //! reflects one connection, not a forwarding chain.
 
@@ -21,13 +21,13 @@ const PO_BUCKETS: usize = 32;
 /// it, so the estimate tracks the recent distribution without chasing one outlier.
 const EWMA_SHIFT: u32 = 3;
 
-/// Multiplier on the observed round trip for the adaptive stagger: the next leg
+/// Multiplier on the observed round trip for the adaptive stagger: the next attempt
 /// waits this many typical round trips, sitting above a head merely in flight
 /// while still tracking the real distribution.
 const HEDGE_RTT_MULTIPLIER: u32 = 2;
 
 /// Floor on the adaptive stagger, so even a very low-RTT neighbourhood keeps a
-/// hair of spacing between dispatched legs rather than fanning out at once.
+/// hair of spacing between dispatched attempts rather than fanning out at once.
 const HEDGE_STAGGER_FLOOR: Duration = Duration::from_millis(50);
 
 /// Per-PO EWMA of observed originated-retrieval latency, in nanoseconds.

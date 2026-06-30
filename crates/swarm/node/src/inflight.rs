@@ -11,7 +11,7 @@
 //! selection time so the next-closest peer with a free slot serves the chunk,
 //! never blocking on the head peer (which would reintroduce head-of-line
 //! blocking). The permit rides the chosen request future and releases the slot on
-//! drop, including a cancelled race leg.
+//! drop, including a cancelled attempt.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -75,7 +75,7 @@ impl PeerInflightLimiter {
     /// cap.
     ///
     /// Non-blocking. The returned permit releases the slot on drop, including a
-    /// cancelled race leg, so a slot is held only for the lifetime of the request
+    /// cancelled attempt, so a slot is held only for the lifetime of the request
     /// future it rides.
     pub fn try_acquire(&self, peer: &OverlayAddress) -> Option<OwnedSemaphorePermit> {
         let semaphore = {
@@ -139,7 +139,7 @@ mod tests {
         assert!(limiter.try_acquire(&p).is_none(), "at the cap");
 
         // Releasing one permit frees exactly one slot, modelling a cancelled or
-        // completed race leg returning a slot for the next request.
+        // completed attempt returning a slot for the next request.
         drop(first);
         assert!(limiter.has_free_slot(&p), "a released slot is free again");
         let third = limiter.try_acquire(&p).expect("slot freed by the drop");

@@ -670,7 +670,7 @@ mod tests {
                         served_by: OverlayAddress::from([1u8; 32]),
                     })
                 }
-                None => Err(SwarmError::ChunkNotFound { address: *address }),
+                None => Err(SwarmError::RetrievalExhausted { address: *address }),
             }
         }
 
@@ -839,7 +839,7 @@ mod tests {
         // Unordered: locate each outcome by its item address.
         for (address, result) in results {
             if address == missing {
-                assert!(matches!(result, Err(SwarmError::ChunkNotFound { .. })));
+                assert!(matches!(result, Err(SwarmError::RetrievalExhausted { .. })));
             } else {
                 assert!(result.is_ok());
             }
@@ -1217,7 +1217,7 @@ mod tests {
         assert_eq!(results.len(), addresses.len());
         for (address, result) in results {
             if address == missing {
-                assert!(matches!(result, Err(SwarmError::ChunkNotFound { .. })));
+                assert!(matches!(result, Err(SwarmError::RetrievalExhausted { .. })));
             } else {
                 assert!(result.is_ok());
             }
@@ -1338,7 +1338,7 @@ mod tests {
         let client = ClientMock::new(vec![chunk_for(11)]);
         let missing = ChunkAddress::new([0xfe; 32]);
         let err = client.get(missing).await.expect_err("missing chunk errors");
-        assert!(matches!(err, SwarmError::ChunkNotFound { .. }));
+        assert!(matches!(err, SwarmError::RetrievalExhausted { .. }));
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 //! first success.
 //!
 //! Some requests have several interchangeable candidates, any of which can
-//! satisfy the request. Walking them strictly in series lets one slow or
+//! satisfy the request. Trying them strictly in series lets one slow or
 //! withholding head candidate stall the whole request for a full per-attempt
 //! deadline, and where the caller streams a sequence of such requests that
 //! head-of-line stall blocks every later item behind it.
@@ -51,17 +51,17 @@ use futures_timer::Delay;
 /// The value sits comfortably above a typical live-network retrieval round
 /// trip, which spans several forwarding hops and runs in the hundreds of
 /// milliseconds. A stagger below that round trip dispatches the second
-/// candidate before the first leg has had a chance to answer, so both entry
-/// points forward and deliver the same chunk and both legs are metered: a near
-/// twofold over-fetch on the bulk path. Pacing the second leg past the round
-/// trip keeps the race single-leg whenever the head is merely in flight, and
-/// reserves the fan-out for a head that is genuinely slow or withholding. The
-/// failover cost is that a withholding head is now overtaken after this stagger
-/// rather than within a few hundred milliseconds; that is acceptable because the
-/// stagger stays far below the per-request `retrieval_timeout`, the failed-leg
-/// path still starts the next candidate immediately on an explicit error, and
-/// the difficult-chunk walk's wall-clock deadline still admits its full leg
-/// budget at this pace.
+/// candidate before the first attempt has had a chance to answer, so both entry
+/// points forward and deliver the same chunk and both attempts are metered: a
+/// near twofold over-fetch on the bulk path. Pacing the second attempt past the
+/// round trip keeps the race single-attempt whenever the head is merely in
+/// flight, and reserves the fan-out for a head that is genuinely slow or
+/// withholding. The failover cost is that a withholding head is now overtaken
+/// after this stagger rather than within a few hundred milliseconds; that is
+/// acceptable because the stagger stays far below the per-request
+/// `retrieval_timeout`, the failed-attempt path still starts the next candidate
+/// immediately on an explicit error, and the difficult-chunk retrieval's
+/// wall-clock deadline still admits its full attempt budget at this pace.
 pub const RETRIEVAL_STAGGER: Duration = Duration::from_millis(1200);
 
 /// Outcome of a candidate race that produced no success.
@@ -71,9 +71,9 @@ pub enum RaceFailure<E> {
     NoCandidates,
     /// Every candidate was attempted and failed; carries the last failure.
     AllFailed(E),
-    /// The walk's wall-clock deadline elapsed before any candidate succeeded.
-    /// Distinct from [`AllFailed`](Self::AllFailed) because the walk may still
-    /// have had legs in flight or untried candidates when the clock ran out.
+    /// The race's wall-clock deadline elapsed before any candidate succeeded.
+    /// Distinct from [`AllFailed`](Self::AllFailed) because the race may still
+    /// have had attempts in flight or untried candidates when the clock ran out.
     TimedOut,
 }
 
@@ -133,30 +133,30 @@ where
     }
 }
 
-/// Like [`race_candidates`], but bounded to at most `budget` dispatched legs and
-/// an overall wall-clock `deadline`.
+/// Like [`race_candidates`], but bounded to at most `budget` dispatched attempts
+/// and an overall wall-clock `deadline`.
 ///
-/// This is the difficult-chunk retrieval walk. Retrieval is forwarding-Kademlia
-/// with no authoritative negative response: a leg that errors or times out means
-/// "this entry point could not serve it", never "the chunk is absent". So the
-/// walk keeps trying the next candidate on every failure and only gives up on a
-/// real bound: `budget` legs dispatched, the candidate source exhausted, or the
-/// `deadline`. The caller filters back-pressured peers out of `candidates`
-/// beforehand (skip-busy), so a busy peer is never dispatched and never spends a
+/// This is the difficult-chunk retrieval race. Retrieval is forwarding-Kademlia
+/// with no authoritative negative response: an attempt that errors or times out
+/// means "this entry point could not serve it", never "the chunk is absent". So
+/// the race keeps trying the next candidate on every failure and only gives up
+/// on a real bound: `budget` attempts dispatched, the candidate source
+/// exhausted, or the `deadline`. The caller filters back-pressured peers out of
+/// `candidates` beforehand, so a busy peer is never dispatched and never spends a
 /// budget unit; `budget` therefore counts only genuine coverage attempts. The
 /// `attempt` closure may also decline a candidate at dispatch by returning
-/// `None` (a peer that filled since the skip-busy snapshot), which is skipped for
-/// the next candidate without spending a budget unit, so the cap holds on the
+/// `None` (a peer that filled since the availability snapshot), which is skipped
+/// for the next candidate without spending a budget unit, so the cap holds on the
 /// live state rather than the stale snapshot.
 ///
-/// Each leg is staggered, at most `max_in_flight` run concurrently, and losers
-/// are dropped on resolve, so true concurrency is bounded by `max_in_flight`
-/// regardless of `budget`: this is a patient walk, not a wide simultaneous
-/// fan-out. A stagger tick adds a leg only while fewer than `max_in_flight` are
-/// live; a failed leg still refills at once, which replaces a freed slot rather
-/// than widening, so the walk keeps its reach without multiplying the metered
-/// over-fetch when legs merely withhold.
-pub async fn race_walk<C, T, E, I, F, Fut>(
+/// Each attempt is staggered, at most `max_in_flight` run concurrently, and
+/// losers are dropped on resolve, so true concurrency is bounded by
+/// `max_in_flight` regardless of `budget`: this is a patient race, not a wide
+/// simultaneous fan-out. A stagger tick adds an attempt only while fewer than
+/// `max_in_flight` are live; a failed attempt still refills at once, which
+/// replaces a freed slot rather than widening, so the race keeps its reach
+/// without multiplying the metered over-fetch when attempts merely withhold.
+pub async fn race_with_refill<C, T, E, I, F, Fut>(
     candidates: I,
     budget: usize,
     max_in_flight: usize,
@@ -174,18 +174,18 @@ where
     let mut dispatched = 0usize;
     let mut last_error: Option<E> = None;
 
-    // Dispatch the next dispatchable candidate while the leg budget allows. A
+    // Dispatch the next dispatchable candidate while the attempt budget allows. A
     // candidate the closure declines (returns `None`, e.g. a peer found busy at
-    // dispatch) is skipped without spending a budget unit, so only a pushed leg
-    // counts. Returns whether a leg was pushed (false once the budget is spent or
-    // the source is drained, declines included).
+    // dispatch) is skipped without spending a budget unit, so only a pushed
+    // attempt counts. Returns whether an attempt was pushed (false once the
+    // budget is spent or the source is drained, declines included).
     let mut dispatch_next = |in_flight: &mut FuturesUnordered<Fut>, dispatched: &mut usize| {
         if *dispatched >= budget {
             return false;
         }
         for candidate in candidates.by_ref() {
-            if let Some(leg) = attempt(candidate) {
-                in_flight.push(leg);
+            if let Some(future) = attempt(candidate) {
+                in_flight.push(future);
                 *dispatched += 1;
                 return true;
             }
@@ -205,9 +205,9 @@ where
             result = in_flight.select_next_some() => match result {
                 Ok(value) => return Ok(value),
                 Err(error) => {
-                    // A failed leg frees its slot: dispatch the next candidate at
-                    // once. When the budget and the source are both spent and no
-                    // leg is in flight, this failure is the walk's last word.
+                    // A failed attempt frees its slot: dispatch the next candidate
+                    // at once. When the budget and the source are both spent and no
+                    // attempt is in flight, this failure is the race's last word.
                     if !dispatch_next(&mut in_flight, &mut dispatched) && in_flight.is_empty() {
                         return Err(RaceFailure::AllFailed(error));
                     }
@@ -215,9 +215,10 @@ where
                 }
             },
             _ = stagger_tick => {
-                // Grow the in-flight set only up to the width: a stagger adds a
-                // leg, a withholding leg never does. Failure-refill above still
-                // replaces a freed slot, so reach is preserved without widening.
+                // Grow the in-flight set only up to the width: a stagger adds an
+                // attempt, a withholding attempt never does. Failure-refill above
+                // still replaces a freed slot, so reach is preserved without
+                // widening.
                 if in_flight.len() < max_in_flight {
                     dispatch_next(&mut in_flight, &mut dispatched);
                 }
@@ -225,7 +226,7 @@ where
             },
             _ = deadline_tick => {
                 // Out of wall-clock time. Surface the last real failure if one
-                // landed, else the legs were merely slow: a distinct TimedOut.
+                // landed, else the attempts were merely slow: a distinct TimedOut.
                 return match last_error.take() {
                     Some(error) => Err(RaceFailure::AllFailed(error)),
                     None => Err(RaceFailure::TimedOut),
@@ -247,10 +248,10 @@ mod tests {
 
     use super::*;
 
-    /// A retrieval leg that records whether it was polled to completion or
+    /// A retrieval attempt that records whether it was polled to completion or
     /// dropped mid-flight, so a test can assert losing attempts are dropped (the
     /// reservation-release signal).
-    struct TrackedLeg {
+    struct TrackedAttempt {
         delay: Delay,
         result: Option<Result<u32, &'static str>>,
         completed: Arc<AtomicUsize>,
@@ -258,7 +259,7 @@ mod tests {
         done: bool,
     }
 
-    impl TrackedLeg {
+    impl TrackedAttempt {
         fn new(
             after: Duration,
             result: Result<u32, &'static str>,
@@ -275,7 +276,7 @@ mod tests {
         }
     }
 
-    impl std::future::Future for TrackedLeg {
+    impl std::future::Future for TrackedAttempt {
         type Output = Result<u32, &'static str>;
 
         fn poll(
@@ -294,7 +295,7 @@ mod tests {
         }
     }
 
-    impl Drop for TrackedLeg {
+    impl Drop for TrackedAttempt {
         fn drop(&mut self) {
             // Only count a drop that pre-empted completion: that is the
             // race-lost path whose resource release we care about.
@@ -323,25 +324,25 @@ mod tests {
         let completed = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicUsize::new(0));
 
-        let legs = vec![
+        let outcomes = vec![
             // Head: would succeed, but only after ~5s.
             (Duration::from_secs(5), Ok(1u32)),
             // Second: succeeds shortly after it is staggered in.
             (Duration::from_millis(50), Ok(2u32)),
         ];
-        let mut legs = legs.into_iter();
+        let mut outcomes = outcomes.into_iter();
 
         let start = Instant::now();
         let outcome = race_candidates(0..2, RETRIEVAL_STAGGER, |_| {
-            let (after, result) = legs.next().expect("a leg per candidate");
-            TrackedLeg::new(after, result, completed.clone(), dropped.clone())
+            let (after, result) = outcomes.next().expect("an attempt per candidate");
+            TrackedAttempt::new(after, result, completed.clone(), dropped.clone())
         })
         .await;
         let elapsed = start.elapsed();
 
         assert_eq!(outcome.ok(), Some(2), "the staggered second wins");
         // Resolved well under the head's 5s withhold: stagger (~500ms) plus the
-        // second leg (~50ms).
+        // second attempt (~50ms).
         assert!(
             elapsed < Duration::from_secs(2),
             "race resolved in {elapsed:?}, expected ~stagger not the head delay"
@@ -367,16 +368,16 @@ mod tests {
         let completed = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicUsize::new(0));
 
-        let legs = vec![
+        let outcomes = vec![
             (Duration::from_millis(10), Err("head failed")),
             (Duration::from_millis(10), Ok(2u32)),
         ];
-        let mut legs = legs.into_iter();
+        let mut outcomes = outcomes.into_iter();
 
         let start = Instant::now();
         let outcome = race_candidates(0..2, RETRIEVAL_STAGGER, |_| {
-            let (after, result) = legs.next().expect("a leg per candidate");
-            TrackedLeg::new(after, result, completed.clone(), dropped.clone())
+            let (after, result) = outcomes.next().expect("an attempt per candidate");
+            TrackedAttempt::new(after, result, completed.clone(), dropped.clone())
         })
         .await;
         let elapsed = start.elapsed();
@@ -393,16 +394,16 @@ mod tests {
         let completed = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicUsize::new(0));
 
-        let legs = vec![
+        let outcomes = vec![
             (Duration::from_millis(5), Err("first")),
             (Duration::from_millis(5), Err("second")),
             (Duration::from_millis(5), Err("last")),
         ];
-        let mut legs = legs.into_iter();
+        let mut outcomes = outcomes.into_iter();
 
         let outcome = race_candidates(0..3, RETRIEVAL_STAGGER, |_| {
-            let (after, result) = legs.next().expect("a leg per candidate");
-            TrackedLeg::new(after, result, completed.clone(), dropped.clone())
+            let (after, result) = outcomes.next().expect("an attempt per candidate");
+            TrackedAttempt::new(after, result, completed.clone(), dropped.clone())
         })
         .await;
 
@@ -412,16 +413,16 @@ mod tests {
         }
     }
 
-    /// The walk reaches a chunk whose closest few entry points miss: the legs
-    /// before the holder fail, and the walk refills to the next-closest until the
+    /// The race reaches a chunk whose closest few entry points miss: the attempts
+    /// before the holder fail, and the race refills to the next-closest until the
     /// holder serves it, well within the budget.
     #[tokio::test]
-    async fn walk_reaches_a_holder_past_missing_close_peers() {
+    async fn race_reaches_a_holder_past_missing_close_peers() {
         // Candidates 0..10 in proximity order; the first four miss, the fifth
         // serves. A bound of 3 would have failed here.
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
-        let outcome = race_walk(
+        let outcome = race_with_refill(
             0..10u32,
             8,
             3,
@@ -442,18 +443,18 @@ mod tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             5,
-            "exactly the five legs up to and including the holder were dispatched"
+            "exactly the five attempts up to and including the holder were dispatched"
         );
     }
 
-    /// An all-miss walk gives up after exactly `budget` legs, never the whole
+    /// An all-miss race gives up after exactly `budget` attempts, never the whole
     /// pool: the bound caps paid coverage attempts even when far more candidates
     /// are available.
     #[tokio::test]
-    async fn walk_spends_exactly_the_budget_then_fails() {
+    async fn race_spends_exactly_the_budget_then_fails() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
-        let outcome = race_walk(
+        let outcome = race_with_refill(
             0..100u32,
             6,
             3,
@@ -470,20 +471,20 @@ mod tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             6,
-            "the budget caps dispatched legs at 6 of the 100 available"
+            "the budget caps dispatched attempts at 6 of the 100 available"
         );
     }
 
     /// A candidate the closure declines (returns `None`, a peer busy at dispatch)
     /// is skipped for the next without spending a budget unit, so the budget is
-    /// spent only on dispatched legs.
+    /// spent only on dispatched attempts.
     #[tokio::test]
-    async fn walk_skips_declined_candidates_without_spending_budget() {
+    async fn race_skips_declined_candidates_without_spending_budget() {
         // Budget 2. The first three candidates decline; the budget must survive
         // them so the fourth (a miss) and fifth (a hit) are still reached.
         let dispatched = Arc::new(AtomicUsize::new(0));
         let counted = dispatched.clone();
-        let outcome = race_walk(
+        let outcome = race_with_refill(
             0..10u32,
             2,
             3,
@@ -503,21 +504,21 @@ mod tests {
         assert_eq!(
             dispatched.load(Ordering::SeqCst),
             2,
-            "budget spent only on the two dispatched legs, not the three declines"
+            "budget spent only on the two dispatched attempts, not the three declines"
         );
     }
 
-    /// Under a withhold-storm (legs stall, never error) a stagger grows the
+    /// Under a withhold-storm (attempts stall, never error) a stagger grows the
     /// in-flight set only up to the width, never the budget: the metered
     /// over-fetch is bounded by `max_in_flight` even when the budget and the
-    /// deadline would admit more legs.
+    /// deadline would admit more attempts.
     #[tokio::test]
-    async fn walk_caps_concurrent_legs_at_the_width() {
+    async fn race_caps_concurrent_attempts_at_the_width() {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counted = constructed.clone();
         // Budget 8 over a 300ms deadline at a 20ms stagger would dispatch eight
-        // legs without a width cap; max_in_flight = 3 holds it to three.
-        let outcome = race_walk(
+        // attempts without a width cap; max_in_flight = 3 holds it to three.
+        let outcome = race_with_refill(
             0..100u32,
             8,
             3,
@@ -537,17 +538,17 @@ mod tests {
         assert_eq!(
             constructed.load(Ordering::SeqCst),
             3,
-            "the width caps concurrent legs at 3, not the budget of 8"
+            "the width caps concurrent attempts at 3, not the budget of 8"
         );
     }
 
-    /// A walk whose legs all merely withhold (never an explicit failure) is
+    /// A race whose attempts all merely withhold (never an explicit failure) is
     /// bounded by the wall clock, surfacing TimedOut rather than hanging.
     #[tokio::test]
-    async fn walk_deadline_bounds_withholding_legs() {
+    async fn race_deadline_bounds_withholding_attempts() {
         let start = Instant::now();
-        // Every leg withholds for far longer than the deadline; none ever errors.
-        let outcome = race_walk(
+        // Every attempt withholds for far longer than the deadline; none ever errors.
+        let outcome = race_with_refill(
             0..8u32,
             8,
             3,
@@ -565,18 +566,18 @@ mod tests {
 
         assert!(
             matches!(outcome, Err(RaceFailure::TimedOut)),
-            "withholding legs surface TimedOut"
+            "withholding attempts surface TimedOut"
         );
         assert!(
             elapsed < Duration::from_secs(2),
-            "the deadline bounded the walk ({elapsed:?})"
+            "the deadline bounded the race ({elapsed:?})"
         );
     }
 
     /// An empty pool and a zero budget both attempt nothing.
     #[tokio::test]
-    async fn walk_with_nothing_to_try_yields_no_candidates() {
-        let empty = race_walk(
+    async fn race_with_nothing_to_try_yields_no_candidates() {
+        let empty = race_with_refill(
             Vec::<u32>::new(),
             8,
             3,
@@ -587,7 +588,7 @@ mod tests {
         .await;
         assert!(matches!(empty, Err(RaceFailure::NoCandidates)));
 
-        let zero_budget = race_walk(
+        let zero_budget = race_with_refill(
             0..4u32,
             0,
             3,

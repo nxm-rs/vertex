@@ -710,7 +710,7 @@ impl ClientHandler {
                     stamp,
                     peer: overlay,
                 }));
-                // An originated delivery whose receiver is gone: the race leg that
+                // An originated delivery whose receiver is gone: the attempt that
                 // asked for it already lost (or the request was abandoned), so the
                 // chunk was fetched and metered but is discarded. Retrieval is not
                 // cancellable downstream, so this is the delivery-side over-fetch
