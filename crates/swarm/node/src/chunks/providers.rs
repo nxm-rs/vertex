@@ -190,11 +190,17 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     /// an originated retrieval that reserves the per-peer in-flight permit riding
     /// its future. Shared by the single-flight primary route and the staggered
     /// fallback; `legs` accumulates the metered legs across both phases.
+    ///
+    /// With `enforce_cap`, a peer that filled its in-flight slot since the
+    /// skip-busy snapshot is declined at dispatch (no leg, no budget unit) so the
+    /// cap holds on live state; without it (no limiter, or the all-busy
+    /// fall-through) the leg runs best-effort even with no permit.
     async fn walk_legs(
         &self,
         candidates: Vec<SwarmAddress>,
         chunk_address: SwarmAddress,
         bounds: WalkBounds,
+        enforce_cap: bool,
         legs: &AtomicUsize,
     ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
         race_walk(
@@ -204,20 +210,26 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             bounds.deadline,
             bounds.stagger,
             |peer_overlay| {
-                legs.fetch_add(1, Ordering::Relaxed);
                 let permit = self
                     .inflight
                     .as_ref()
                     .and_then(|limiter| limiter.try_acquire(&peer_overlay));
+                // A peer that filled since the skip-busy snapshot is declined so
+                // the cap holds on live state, spending no budget; best-effort
+                // (no limiter or all-busy fall-through) attempts without a permit.
+                if enforce_cap && permit.is_none() {
+                    return None;
+                }
+                legs.fetch_add(1, Ordering::Relaxed);
                 // `originated = true`: our own retrieval, so the client service
                 // debits the serving peer on delivery.
                 let request = self
                     .client_handle
                     .retrieve_chunk(peer_overlay, chunk_address, true);
-                async move {
+                Some(async move {
                     let _permit = permit;
                     request.await
-                }
+                })
             },
         )
         .await
@@ -253,7 +265,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // Skip-busy: drop peers at their in-flight cap so the route leads with an
         // in-headroom peer. The cap is the non-economic muxer guard, composed
         // after the accounting band, never merged with it.
-        let bin_candidates = skip_busy(bin_candidates, self.inflight.as_deref());
+        let (bin_candidates, enforce_cap) = skip_busy(bin_candidates, self.inflight.as_deref());
 
         if !bin_candidates.is_empty() {
             let primary = self
@@ -268,6 +280,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                         deadline: PRIMARY_ROUTE_DEADLINE,
                         stagger: PRIMARY_ROUTE_SINGLE_FLIGHT,
                     },
+                    enforce_cap,
                     &legs,
                 )
                 .await;
@@ -300,7 +313,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // result falls through to the no-connected-peers path below, the same
         // generic transient error a no-peers failure yields.
         let closest_peers = self.select_or_wait(closest_peers, &chunk_address).await;
-        let candidates = skip_busy(closest_peers, self.inflight.as_deref());
+        let (candidates, enforce_cap) = skip_busy(closest_peers, self.inflight.as_deref());
 
         let outcome = self
             .walk_legs(
@@ -312,6 +325,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                     deadline: RETRIEVE_WALK_DEADLINE,
                     stagger: RETRIEVAL_STAGGER,
                 },
+                enforce_cap,
                 &legs,
             )
             .await;
@@ -518,28 +532,34 @@ fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
     bins
 }
 
-/// Filter proximity-ordered `candidates` to those with a free retrieval slot.
+/// Filter proximity-ordered `candidates` to those with a free retrieval slot,
+/// returning the survivors and whether the walk should enforce the cap.
 ///
-/// With no limiter the list is unchanged. When every close candidate is at its
-/// in-flight cap the full list is returned (fall through, since degraded service
-/// beats failing the request). Skip-busy happens here, at selection time, so a
-/// busy head peer is never raced and the next-closest free peer leads instead.
+/// With no limiter the list is unchanged and `enforce_cap` is false. When every
+/// close candidate is at its in-flight cap the full list is returned with
+/// `enforce_cap` false (fall through, since degraded service beats failing the
+/// request, so legs run best-effort). Only when free-slot peers are found is
+/// `enforce_cap` true, so a peer that fills between this snapshot and dispatch is
+/// declined rather than run uncapped. Skip-busy happens here, at selection time,
+/// so a busy head peer is never raced and the next-closest free peer leads.
 fn skip_busy(
     candidates: Vec<SwarmAddress>,
     inflight: Option<&PeerInflightLimiter>,
-) -> Vec<SwarmAddress> {
+) -> (Vec<SwarmAddress>, bool) {
     let Some(limiter) = inflight else {
-        return candidates;
+        return (candidates, false);
     };
     let survivors: Vec<SwarmAddress> = candidates
         .iter()
         .copied()
         .filter(|peer| limiter.has_free_slot(peer))
         .collect();
+    // `enforce_cap` only when free-slot peers were found: the all-busy
+    // fall-through returns the full list so the walk still attempts, best-effort.
     if survivors.is_empty() {
-        candidates
+        (candidates, false)
     } else {
-        survivors
+        (survivors, true)
     }
 }
 
@@ -1058,7 +1078,7 @@ mod tests {
             candidates: Vec<SwarmAddress>,
             address: ChunkAddress,
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
-            let candidates = skip_busy(candidates, Some(&limiter));
+            let (candidates, _enforce_cap) = skip_busy(candidates, Some(&limiter));
             race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
                 let permit = limiter.try_acquire(&peer);
                 let handle = handle.clone();
@@ -1073,7 +1093,7 @@ mod tests {
         #[test]
         fn skip_busy_without_a_limiter_keeps_every_candidate() {
             let candidates = vec![overlay(1), overlay(2), overlay(3)];
-            assert_eq!(skip_busy(candidates.clone(), None), candidates);
+            assert_eq!(skip_busy(candidates.clone(), None), (candidates, false));
         }
 
         #[test]
@@ -1082,12 +1102,14 @@ mod tests {
             let busy = overlay(1);
             let _held = limiter.try_acquire(&busy).expect("first slot");
 
-            let survivors = skip_busy(vec![busy, overlay(2), overlay(3)], Some(&limiter));
+            let (survivors, enforce_cap) =
+                skip_busy(vec![busy, overlay(2), overlay(3)], Some(&limiter));
             assert_eq!(
                 survivors,
                 vec![overlay(2), overlay(3)],
                 "the capped head is skipped, the next-closest free peers remain"
             );
+            assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
         }
 
         #[test]
@@ -1097,10 +1119,14 @@ mod tests {
             let _h1 = limiter.try_acquire(&overlay(1)).expect("slot a");
             let _h2 = limiter.try_acquire(&overlay(2)).expect("slot b");
 
+            let (survivors, enforce_cap) = skip_busy(candidates.clone(), Some(&limiter));
             assert_eq!(
-                skip_busy(candidates.clone(), Some(&limiter)),
-                candidates,
+                survivors, candidates,
                 "all-busy falls through to the full list rather than failing"
+            );
+            assert!(
+                !enforce_cap,
+                "the all-busy fall-through is best-effort, not cap-enforced"
             );
         }
 
@@ -1116,7 +1142,7 @@ mod tests {
             let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
 
             let pool: Vec<SwarmAddress> = (1..=16).map(overlay).collect();
-            let candidates = skip_busy(pool, Some(&limiter));
+            let (candidates, _enforce_cap) = skip_busy(pool, Some(&limiter));
             assert_eq!(candidates.len(), 16, "all 16 peers have a free slot");
 
             let legs = Arc::new(AtomicUsize::new(0));
@@ -1131,10 +1157,10 @@ mod tests {
                     counted.fetch_add(1, Ordering::SeqCst);
                     let permit = limiter.try_acquire(&peer);
                     let handle = handle.clone();
-                    async move {
+                    Some(async move {
                         let _permit = permit;
                         handle.retrieve_chunk(peer, address(0xaa), true).await
-                    }
+                    })
                 },
             )
             .await;
@@ -1144,6 +1170,82 @@ mod tests {
                 legs.load(Ordering::SeqCst),
                 RETRIEVE_LEG_BUDGET,
                 "the walk meters at most the leg budget across the wider free-slot pool"
+            );
+        }
+
+        #[tokio::test]
+        async fn enforce_cap_declines_a_peer_that_filled_since_the_snapshot() {
+            // A peer free at the skip-busy snapshot but saturated before its leg
+            // dispatches is declined under enforce_cap: no command reaches it and
+            // it spends no leg, so the cap holds on live state, not the stale
+            // snapshot. The next free peer serves instead.
+            let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+            let handle = ClientHandle::new(tx);
+            let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
+
+            let filled = overlay(1);
+            let free = overlay(2);
+
+            // Skip-busy sees both peers free, so the walk enforces the cap.
+            let (candidates, enforce_cap) = skip_busy(vec![filled, free], Some(&limiter));
+            assert_eq!(candidates, vec![filled, free]);
+            assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
+
+            // Between the snapshot and dispatch the first peer's slot is taken.
+            let _held = limiter
+                .try_acquire(&filled)
+                .expect("saturate the first peer");
+
+            let address = address(0xac);
+            let legs = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&legs);
+            let lim = Arc::clone(&limiter);
+            let race = tokio::spawn(async move {
+                race_walk(
+                    candidates,
+                    RETRIEVE_LEG_BUDGET,
+                    RETRIEVE_WALK_MAX_IN_FLIGHT,
+                    RETRIEVE_WALK_DEADLINE,
+                    RETRIEVAL_STAGGER,
+                    move |peer| {
+                        let permit = lim.try_acquire(&peer);
+                        // The enforce-cap decline: a peer with no live slot spends
+                        // no leg and is skipped for the next candidate.
+                        if enforce_cap && permit.is_none() {
+                            return None;
+                        }
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        let handle = handle.clone();
+                        Some(async move {
+                            let _permit = permit;
+                            handle.retrieve_chunk(peer, address, true).await
+                        })
+                    },
+                )
+                .await
+            });
+
+            // The only command is for the free peer: the saturated peer is declined.
+            match rx.recv().await.expect("a command for the free peer") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, free, "the saturated peer is declined, not contacted");
+                    response
+                        .send(Ok(RetrievalResult {
+                            chunk: test_chunk(),
+                            stamp: None,
+                            peer: free,
+                        }))
+                        .expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+
+            let result = race.await.unwrap().expect("race resolves");
+            assert_eq!(result.peer, free, "the free peer serves the chunk");
+            assert_eq!(
+                legs.load(Ordering::SeqCst),
+                1,
+                "only the free peer spent a leg; the saturated peer was declined"
             );
         }
 
