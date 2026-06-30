@@ -499,8 +499,15 @@ pub fn spawn_client_command_bridge(
                 }
                 command = command_rx.recv() => {
                     let Some(command) = command else { break };
-                    if let Err(e) = client_handle.send_command(command) {
-                        warn!(error = %e, "Failed to forward settlement command to node");
+                    // Backpressure, never drop: a dropped settle command strands
+                    // the originating service's per-peer pending entry, so that
+                    // peer never settles again and is eventually dropped at its
+                    // line. Awaiting the bounded node channel buffers the wait on
+                    // the upstream service channel, which the service's
+                    // one-settle-per-peer dedup keeps bounded. Errors only on a
+                    // closed channel (node shutting down).
+                    if let Err(e) = client_handle.send_command_buffered(command).await {
+                        warn!(error = %e, "settlement command bridge stopped: node channel closed");
                     }
                 }
             }
