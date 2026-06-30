@@ -285,9 +285,11 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                 )
                 .await;
             if let Ok(result) = primary {
-                histogram!("retrieval_walk_legs").record(legs.load(Ordering::Relaxed) as f64);
+                let walked = legs.load(Ordering::Relaxed);
+                histogram!("retrieval_walk_legs").record(walked as f64);
                 counter!("retrieval_walk_total", "outcome" => "hit", "path" => "bin_route")
                     .increment(1);
+                record_overfetch_legs(walked, "bin_route");
                 return Ok(ChunkRetrievalResult {
                     chunk: result.chunk,
                     stamp: result.stamp,
@@ -340,6 +342,11 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         };
         counter!("retrieval_walk_total", "outcome" => outcome_label, "path" => "fallback")
             .increment(1);
+        if outcome.is_ok() {
+            // `legs` spans both phases, so a fallback win also counts the primary
+            // legs the missed bin route already spent.
+            record_overfetch_legs(legs, "fallback");
+        }
 
         match outcome {
             Ok(result) => Ok(ChunkRetrievalResult {
@@ -530,6 +537,19 @@ fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
         delta += 1;
     }
     bins
+}
+
+/// Record the metered legs a successful retrieval spent beyond the one that won.
+///
+/// Each extra leg is a failed refill or a concurrent loser the race dropped; a
+/// dropped loser is not cancelled downstream, so it still fetches and meters a
+/// duplicate. This is the dispatch-side over-fetch signal (an upper bound). The
+/// delivery-side count of duplicates that actually arrived is
+/// `swarm.client.retrieval_overfetch_delivered`, emitted by the handler.
+fn record_overfetch_legs(legs: usize, path: &'static str) {
+    if let Some(extra) = legs.checked_sub(1).filter(|extra| *extra > 0) {
+        counter!("retrieval_overfetch_legs", "path" => path).increment(extra as u64);
+    }
 }
 
 /// Filter proximity-ordered `candidates` to those with a free retrieval slot,
