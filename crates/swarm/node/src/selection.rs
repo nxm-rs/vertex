@@ -1,20 +1,30 @@
 //! Score- and credit-aware peer selection for retrieval and pushsync.
 //!
 //! Topology returns candidate storers in proximity order. [`PeerSelector`]
-//! reorders them with two additional signals before a request goes out:
+//! reorders them with three additional signals before a request goes out:
 //!
 //! - A peer the admission band refuses (the per-chunk debit would cross its
 //!   disconnect line) is hard-skipped, so the request routes to the next-closest
 //!   affordable peer while a background settle drains the skipped one.
 //! - Peers whose score is in the warned range are excluded among the admissible,
 //!   so a peer that is being scored down is not asked again while it misbehaves.
+//! - The admissible peers split into two affordability tiers: those with full
+//!   forgiveness headroom (the band still [`Admit`]s) lead those already past the
+//!   settle trigger (the band [`SettleAndAdmit`]s). A bulk download therefore
+//!   spreads its debt across the closest headroom peers before it leans on a
+//!   near-threshold one, so no single close peer's free allowance saturates while
+//!   the aggregate forgiveness across the neighbourhood stays untapped.
 //!
-//! Proximity stays the primary key. If every admissible candidate is warned, the
-//! warned peers are returned in proximity order so a degraded request can still
-//! go out; a refused peer is never resurrected this way. Every candidate not
-//! plainly admitted is settled (a peer in the tolerance band to stay there, a
-//! refused peer to drain back under its line); the settlement providers
-//! themselves decide whether any payment is actually due.
+//! Proximity is the secondary key within each tier; the headroom split orders the
+//! admissible above it. If every admissible candidate is warned, the warned peers
+//! are returned in proximity order so a degraded request can still go out; a
+//! refused peer is never resurrected this way. Every candidate not plainly
+//! admitted is settled (a peer in the tolerance band to stay there, a refused
+//! peer to drain back under its line); the settlement providers themselves decide
+//! whether any payment is actually due.
+//!
+//! [`Admit`]: Admission::Admit
+//! [`SettleAndAdmit`]: Admission::SettleAndAdmit
 //!
 //! The price consulted per candidate is [`SwarmPricing::peer_price`], the same
 //! per-peer chunk price the accounting layer debits when the request is
@@ -223,9 +233,11 @@ impl PeerSelector {
     ///
     /// Applies the ranking described at the module level: a [`Refuse`] candidate
     /// is hard-skipped (sending would cross its disconnect line), warned peers are
-    /// excluded, and the rest keep proximity order. Every candidate not plainly
-    /// [`Admit`]ted is settled (a [`SettleAndAdmit`] peer to stay in the band, a
-    /// refused peer to drain back under its line), so its view of our debt drops.
+    /// excluded, and the admissible rest are tiered headroom-first (an [`Admit`]
+    /// peer leads a [`SettleAndAdmit`] one) with proximity the key within a tier.
+    /// Every candidate not plainly [`Admit`]ted is settled (a [`SettleAndAdmit`]
+    /// peer to stay in the band, a refused peer to drain back under its line), so
+    /// its view of our debt drops.
     /// A single pass triggers each peer at most once; the in-flight set dedups
     /// across repeated calls.
     ///
@@ -315,16 +327,22 @@ struct RankedCandidates {
 /// A [`Refuse`](Admission::Refuse) candidate is hard-skipped:
 /// sending would cross its disconnect line, so it never appears in `ordered`.
 /// Warned peers (score at or below [`DEFAULT_PEER_WARN_THRESHOLD`]) are excluded
-/// among the admissible. If every admissible candidate is warned, those warned
-/// peers are returned in proximity order so a degraded request can still go out;
-/// a refused peer is never resurrected this way. `admit` is invoked exactly once
-/// per candidate and the bands are returned for reuse.
+/// among the admissible. The admissible rest tier headroom-first: an
+/// [`Admit`](Admission::Admit) peer (debt below the settle trigger, full
+/// forgiveness headroom) leads a [`SettleAndAdmit`](Admission::SettleAndAdmit)
+/// peer (debt past the trigger), so debt spreads across the closest headroom
+/// peers before a near-threshold one is asked, and proximity stays the key within
+/// each tier. If every admissible candidate is warned, those warned peers are
+/// returned in proximity order so a degraded request can still go out; a refused
+/// peer is never resurrected this way. `admit` is invoked exactly once per
+/// candidate and the bands are returned for reuse.
 fn rank_candidates(
     candidates: &[OverlayAddress],
     score: impl Fn(&OverlayAddress) -> Option<f64>,
     admit: impl Fn(&OverlayAddress) -> Admission,
 ) -> RankedCandidates {
-    let mut ordered = Vec::with_capacity(candidates.len());
+    let mut headroom = Vec::with_capacity(candidates.len());
+    let mut near_threshold = Vec::new();
     let mut warned = Vec::new();
     let mut bands = Vec::with_capacity(candidates.len());
 
@@ -336,10 +354,16 @@ fn rank_candidates(
         }
         if score(peer).is_some_and(|s| s <= DEFAULT_PEER_WARN_THRESHOLD) {
             warned.push(*peer);
-            continue;
+        } else if matches!(band, Admission::SettleAndAdmit) {
+            near_threshold.push(*peer);
+        } else {
+            headroom.push(*peer);
         }
-        ordered.push(*peer);
     }
+
+    // Headroom peers first, near-threshold peers after, each in proximity order.
+    let mut ordered = headroom;
+    ordered.append(&mut near_threshold);
 
     if ordered.is_empty() {
         // Every admissible candidate is warned (or there are none). Fall back to
@@ -601,13 +625,36 @@ mod tests {
     fn selector_settles_proactively_when_debt_reaches_early_trigger() {
         // A still-affordable peer whose debt has reached the early-payment trigger
         // is settled before it becomes unaffordable, so its view of our debt drops
-        // before it would refuse or drop us.
+        // before it would refuse or drop us. The closer peer(1) is past the trigger
+        // (SettleAndAdmit), so the headroom peer(2) leads it: debt spreads to a
+        // peer with headroom before the near-threshold one is asked again.
         let settlement = Arc::new(RecordingSettlement::default());
         let sel = selector_with_settle_due(Vec::new(), vec![peer(1)], Arc::clone(&settlement));
 
         let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
-        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        assert_eq!(ordered, vec![peer(2), peer(1)]);
         assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer(1)]);
+    }
+
+    #[test]
+    fn headroom_peers_lead_near_threshold_peers() {
+        // peer(1) and peer(3) are past the settle trigger (SettleAndAdmit); peer(2)
+        // and peer(4) still have forgiveness headroom (Admit). The headroom tier
+        // leads, each tier in proximity order, so a bulk download spreads debt
+        // across headroom peers before leaning on a near-threshold one.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel =
+            selector_with_settle_due(Vec::new(), vec![peer(1), peer(3)], Arc::clone(&settlement));
+
+        let ordered = sel.order(
+            vec![peer(1), peer(2), peer(3), peer(4)],
+            &ChunkAddress::zero(),
+        );
+        assert_eq!(
+            ordered,
+            vec![peer(2), peer(4), peer(1), peer(3)],
+            "headroom peers lead, proximity within each tier"
+        );
     }
 
     #[test]
