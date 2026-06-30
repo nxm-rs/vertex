@@ -143,7 +143,11 @@ where
 /// real bound: `budget` legs dispatched, the candidate source exhausted, or the
 /// `deadline`. The caller filters back-pressured peers out of `candidates`
 /// beforehand (skip-busy), so a busy peer is never dispatched and never spends a
-/// budget unit; `budget` therefore counts only genuine coverage attempts.
+/// budget unit; `budget` therefore counts only genuine coverage attempts. The
+/// `attempt` closure may also decline a candidate at dispatch by returning
+/// `None` (a peer that filled since the skip-busy snapshot), which is skipped for
+/// the next candidate without spending a budget unit, so the cap holds on the
+/// live state rather than the stale snapshot.
 ///
 /// Each leg is staggered, at most `max_in_flight` run concurrently, and losers
 /// are dropped on resolve, so true concurrency is bounded by `max_in_flight`
@@ -162,7 +166,7 @@ pub async fn race_walk<C, T, E, I, F, Fut>(
 ) -> Result<T, RaceFailure<E>>
 where
     I: IntoIterator<Item = C>,
-    F: FnMut(C) -> Fut,
+    F: FnMut(C) -> Option<Fut>,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
     let mut candidates = candidates.into_iter();
@@ -170,20 +174,23 @@ where
     let mut dispatched = 0usize;
     let mut last_error: Option<E> = None;
 
-    // Dispatch the next candidate while the leg budget allows. Returns whether a
-    // leg was pushed (false once the budget is spent or the source is drained).
+    // Dispatch the next dispatchable candidate while the leg budget allows. A
+    // candidate the closure declines (returns `None`, e.g. a peer found busy at
+    // dispatch) is skipped without spending a budget unit, so only a pushed leg
+    // counts. Returns whether a leg was pushed (false once the budget is spent or
+    // the source is drained, declines included).
     let mut dispatch_next = |in_flight: &mut FuturesUnordered<Fut>, dispatched: &mut usize| {
         if *dispatched >= budget {
             return false;
         }
-        match candidates.next() {
-            Some(candidate) => {
-                in_flight.push(attempt(candidate));
+        for candidate in candidates.by_ref() {
+            if let Some(leg) = attempt(candidate) {
+                in_flight.push(leg);
                 *dispatched += 1;
-                true
+                return true;
             }
-            None => false,
         }
+        false
     };
 
     if !dispatch_next(&mut in_flight, &mut dispatched) {
@@ -422,7 +429,7 @@ mod tests {
             RETRIEVAL_STAGGER,
             |i| {
                 counted.fetch_add(1, Ordering::SeqCst);
-                async move { if i < 4 { Err("miss") } else { Ok(i) } }
+                Some(async move { if i < 4 { Err("miss") } else { Ok(i) } })
             },
         )
         .await;
@@ -454,7 +461,7 @@ mod tests {
             RETRIEVAL_STAGGER,
             |_| {
                 counted.fetch_add(1, Ordering::SeqCst);
-                async move { Err::<u32, _>("miss") }
+                Some(async move { Err::<u32, _>("miss") })
             },
         )
         .await;
@@ -464,6 +471,39 @@ mod tests {
             attempts.load(Ordering::SeqCst),
             6,
             "the budget caps dispatched legs at 6 of the 100 available"
+        );
+    }
+
+    /// A candidate the closure declines (returns `None`, a peer busy at dispatch)
+    /// is skipped for the next without spending a budget unit, so the budget is
+    /// spent only on dispatched legs.
+    #[tokio::test]
+    async fn walk_skips_declined_candidates_without_spending_budget() {
+        // Budget 2. The first three candidates decline; the budget must survive
+        // them so the fourth (a miss) and fifth (a hit) are still reached.
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let counted = dispatched.clone();
+        let outcome = race_walk(
+            0..10u32,
+            2,
+            3,
+            Duration::from_secs(30),
+            RETRIEVAL_STAGGER,
+            move |i| {
+                if i < 3 {
+                    return None; // busy at dispatch: skipped, no budget spent
+                }
+                counted.fetch_add(1, Ordering::SeqCst);
+                Some(async move { if i == 3 { Err("miss") } else { Ok(i) } })
+            },
+        )
+        .await;
+
+        assert_eq!(outcome.ok(), Some(4), "the holder past the declines serves");
+        assert_eq!(
+            dispatched.load(Ordering::SeqCst),
+            2,
+            "budget spent only on the two dispatched legs, not the three declines"
         );
     }
 
@@ -485,10 +525,10 @@ mod tests {
             Duration::from_millis(20),
             |_| {
                 counted.fetch_add(1, Ordering::SeqCst);
-                async {
+                Some(async {
                     Delay::new(Duration::from_secs(30)).await;
                     Ok::<u32, &str>(0)
-                }
+                })
             },
         )
         .await;
@@ -513,9 +553,11 @@ mod tests {
             3,
             Duration::from_millis(300),
             Duration::from_millis(50),
-            |_| async {
-                Delay::new(Duration::from_secs(30)).await;
-                Ok::<u32, &str>(0)
+            |_| {
+                Some(async {
+                    Delay::new(Duration::from_secs(30)).await;
+                    Ok::<u32, &str>(0)
+                })
             },
         )
         .await;
@@ -540,7 +582,7 @@ mod tests {
             3,
             Duration::from_secs(1),
             RETRIEVAL_STAGGER,
-            |_| async { Ok::<u32, &str>(0) },
+            |_| Some(async { Ok::<u32, &str>(0) }),
         )
         .await;
         assert!(matches!(empty, Err(RaceFailure::NoCandidates)));
@@ -551,7 +593,7 @@ mod tests {
             3,
             Duration::from_secs(1),
             RETRIEVAL_STAGGER,
-            |_| async { Ok::<u32, &str>(0) },
+            |_| Some(async { Ok::<u32, &str>(0) }),
         )
         .await;
         assert!(matches!(zero_budget, Err(RaceFailure::NoCandidates)));
