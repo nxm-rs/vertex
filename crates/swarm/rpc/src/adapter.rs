@@ -87,13 +87,19 @@ impl<C> GrpcAdapter<C> {
         registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
     }
 
-    /// Register the chunk upload/download service.
+    /// Register the chunk upload/download service. The live connected-peer count
+    /// from the topology drives the download pipeline depth.
     pub fn register_chunk(&self, registry: &mut GrpcRegistry)
     where
-        C: HasChunkClient,
+        C: HasChunkClient + HasTopology,
         C::ChunkClient: ChunkClient,
+        C::Topology: SwarmTopologyStats + Clone + Send + Sync + 'static,
     {
-        let chunk_service = ChunkService::new(self.components.chunk_client().clone());
+        let topology = self.components.topology().clone();
+        let chunk_service = ChunkService::new(self.components.chunk_client().clone())
+            .with_peer_count(std::sync::Arc::new(move || {
+                topology.connected_peers_count()
+            }));
         let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
         registry.add_service(chunk_server);
     }

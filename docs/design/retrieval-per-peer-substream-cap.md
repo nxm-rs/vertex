@@ -17,7 +17,7 @@ This invariant is what makes the fan-out free to redirect a chunk to whichever c
 
 The term "prefetch width" is retired. Three distinct, independently named concerns:
 
-- Pipeline depth: `StreamConfig::max_concurrency` (32 default, `NATIVE_DOWNLOAD_CONCURRENCY` for bulk). The total in-flight retrieval pool, a bandwidth-delay-product and memory ceiling. It bounds total concurrency, not per-peer concurrency, so it is NOT the overrun guard.
+- Pipeline depth: `StreamConfig::max_concurrency` (32 default; the download serve path sizes it with `StreamConfig::peer_bounded`, deriving the cap from the connected peer set as `connected_peers * PER_PEER_INFLIGHT_CAP`, clamped). The total in-flight retrieval pool, a memory ceiling. It bounds total concurrency, not per-peer concurrency, so it is NOT the overrun guard.
 - Per-peer in-flight cap: the new overrun guard. Bounds concurrent outbound retrieval substreams to any single peer, keeping us under the remote's per-connection multiplexer budget.
 - Reorder window: the consumer-side memory bound (nectar `WindowedReader`), independent of arrival order.
 
