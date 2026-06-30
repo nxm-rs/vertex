@@ -145,12 +145,17 @@ where
 /// beforehand (skip-busy), so a busy peer is never dispatched and never spends a
 /// budget unit; `budget` therefore counts only genuine coverage attempts.
 ///
-/// Each leg is still staggered and losers are dropped on resolve, so true
-/// concurrency stays a handful regardless of `budget`: this is a patient walk,
-/// not a wide simultaneous fan-out.
+/// Each leg is staggered, at most `max_in_flight` run concurrently, and losers
+/// are dropped on resolve, so true concurrency is bounded by `max_in_flight`
+/// regardless of `budget`: this is a patient walk, not a wide simultaneous
+/// fan-out. A stagger tick adds a leg only while fewer than `max_in_flight` are
+/// live; a failed leg still refills at once, which replaces a freed slot rather
+/// than widening, so the walk keeps its reach without multiplying the metered
+/// over-fetch when legs merely withhold.
 pub async fn race_walk<C, T, E, I, F, Fut>(
     candidates: I,
     budget: usize,
+    max_in_flight: usize,
     deadline: Duration,
     stagger: Duration,
     mut attempt: F,
@@ -203,7 +208,12 @@ where
                 }
             },
             _ = stagger_tick => {
-                dispatch_next(&mut in_flight, &mut dispatched);
+                // Grow the in-flight set only up to the width: a stagger adds a
+                // leg, a withholding leg never does. Failure-refill above still
+                // replaces a freed slot, so reach is preserved without widening.
+                if in_flight.len() < max_in_flight {
+                    dispatch_next(&mut in_flight, &mut dispatched);
+                }
                 stagger_tick = Delay::new(stagger).fuse();
             },
             _ = deadline_tick => {
@@ -407,6 +417,7 @@ mod tests {
         let outcome = race_walk(
             0..10u32,
             8,
+            3,
             Duration::from_secs(30),
             RETRIEVAL_STAGGER,
             |i| {
@@ -438,6 +449,7 @@ mod tests {
         let outcome = race_walk(
             0..100u32,
             6,
+            3,
             Duration::from_secs(30),
             RETRIEVAL_STAGGER,
             |_| {
@@ -455,6 +467,40 @@ mod tests {
         );
     }
 
+    /// Under a withhold-storm (legs stall, never error) a stagger grows the
+    /// in-flight set only up to the width, never the budget: the metered
+    /// over-fetch is bounded by `max_in_flight` even when the budget and the
+    /// deadline would admit more legs.
+    #[tokio::test]
+    async fn walk_caps_concurrent_legs_at_the_width() {
+        let constructed = Arc::new(AtomicUsize::new(0));
+        let counted = constructed.clone();
+        // Budget 8 over a 300ms deadline at a 20ms stagger would dispatch eight
+        // legs without a width cap; max_in_flight = 3 holds it to three.
+        let outcome = race_walk(
+            0..100u32,
+            8,
+            3,
+            Duration::from_millis(300),
+            Duration::from_millis(20),
+            |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Delay::new(Duration::from_secs(30)).await;
+                    Ok::<u32, &str>(0)
+                }
+            },
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(RaceFailure::TimedOut)));
+        assert_eq!(
+            constructed.load(Ordering::SeqCst),
+            3,
+            "the width caps concurrent legs at 3, not the budget of 8"
+        );
+    }
+
     /// A walk whose legs all merely withhold (never an explicit failure) is
     /// bounded by the wall clock, surfacing TimedOut rather than hanging.
     #[tokio::test]
@@ -464,6 +510,7 @@ mod tests {
         let outcome = race_walk(
             0..8u32,
             8,
+            3,
             Duration::from_millis(300),
             Duration::from_millis(50),
             |_| async {
@@ -490,6 +537,7 @@ mod tests {
         let empty = race_walk(
             Vec::<u32>::new(),
             8,
+            3,
             Duration::from_secs(1),
             RETRIEVAL_STAGGER,
             |_| async { Ok::<u32, &str>(0) },
@@ -500,6 +548,7 @@ mod tests {
         let zero_budget = race_walk(
             0..4u32,
             0,
+            3,
             Duration::from_secs(1),
             RETRIEVAL_STAGGER,
             |_| async { Ok::<u32, &str>(0) },
