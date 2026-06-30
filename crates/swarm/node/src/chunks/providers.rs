@@ -50,6 +50,18 @@ const RETRIEVE_WALK_WIDTH: usize = 32;
 /// only on the residual-failure metric below.
 const RETRIEVE_LEG_BUDGET: usize = 8;
 
+/// Maximum legs the staggered fallback keeps concurrently in flight, bounding the
+/// metered over-fetch independently of [`RETRIEVE_LEG_BUDGET`].
+///
+/// A losing race leg is not cancelled downstream: the serving chain forwards and
+/// delivers regardless, so every overlapping leg is real duplicate bandwidth and
+/// cost. The stagger grows the in-flight set one leg per tick, so a withhold-storm
+/// would otherwise reach the full budget concurrently. This caps the simultaneous
+/// legs at a handful while [`RETRIEVE_LEG_BUDGET`] still bounds the lifetime total;
+/// a failed leg refills at once, replacing a freed slot rather than widening, so
+/// the walk keeps its reach.
+const RETRIEVE_WALK_MAX_IN_FLIGHT: usize = 3;
+
 /// Wall-clock bound on the whole retrieval walk across its refilled legs, so a
 /// run of slow or withholding entry points cannot hold a download-pipeline slot
 /// indefinitely. Matches the per-request retrieval lifetime.
@@ -93,6 +105,16 @@ const PRIMARY_ROUTE_DEADLINE: Duration = Duration::from_secs(2);
 /// staggered fan-out that trades a second metered leg for failover latency is
 /// reserved for that fallback, never the primary.
 const PRIMARY_ROUTE_SINGLE_FLIGHT: Duration = Duration::from_secs(3600);
+
+/// Tuning for one staggered walk phase: the lifetime leg `budget`, the
+/// concurrent-leg width `max_in_flight`, the wall-clock `deadline`, and the
+/// per-leg `stagger`.
+struct WalkBounds {
+    budget: usize,
+    max_in_flight: usize,
+    deadline: Duration,
+    stagger: Duration,
+}
 
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
@@ -172,27 +194,32 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         &self,
         candidates: Vec<SwarmAddress>,
         chunk_address: SwarmAddress,
-        budget: usize,
-        deadline: Duration,
-        stagger: Duration,
+        bounds: WalkBounds,
         legs: &AtomicUsize,
     ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
-        race_walk(candidates, budget, deadline, stagger, |peer_overlay| {
-            legs.fetch_add(1, Ordering::Relaxed);
-            let permit = self
-                .inflight
-                .as_ref()
-                .and_then(|limiter| limiter.try_acquire(&peer_overlay));
-            // `originated = true`: our own retrieval, so the client service
-            // debits the serving peer on delivery.
-            let request = self
-                .client_handle
-                .retrieve_chunk(peer_overlay, chunk_address, true);
-            async move {
-                let _permit = permit;
-                request.await
-            }
-        })
+        race_walk(
+            candidates,
+            bounds.budget,
+            bounds.max_in_flight,
+            bounds.deadline,
+            bounds.stagger,
+            |peer_overlay| {
+                legs.fetch_add(1, Ordering::Relaxed);
+                let permit = self
+                    .inflight
+                    .as_ref()
+                    .and_then(|limiter| limiter.try_acquire(&peer_overlay));
+                // `originated = true`: our own retrieval, so the client service
+                // debits the serving peer on delivery.
+                let request = self
+                    .client_handle
+                    .retrieve_chunk(peer_overlay, chunk_address, true);
+                async move {
+                    let _permit = permit;
+                    request.await
+                }
+            },
+        )
         .await
     }
 }
@@ -233,9 +260,14 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                 .walk_legs(
                     bin_candidates,
                     chunk_address,
-                    PRIMARY_ROUTE_BUDGET,
-                    PRIMARY_ROUTE_DEADLINE,
-                    PRIMARY_ROUTE_SINGLE_FLIGHT,
+                    WalkBounds {
+                        budget: PRIMARY_ROUTE_BUDGET,
+                        // Single-flight: at most one metered leg in flight,
+                        // advancing the bin spill only on an explicit failure.
+                        max_in_flight: 1,
+                        deadline: PRIMARY_ROUTE_DEADLINE,
+                        stagger: PRIMARY_ROUTE_SINGLE_FLIGHT,
+                    },
                     &legs,
                 )
                 .await;
@@ -274,9 +306,12 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
             .walk_legs(
                 candidates,
                 chunk_address,
-                RETRIEVE_LEG_BUDGET,
-                RETRIEVE_WALK_DEADLINE,
-                RETRIEVAL_STAGGER,
+                WalkBounds {
+                    budget: RETRIEVE_LEG_BUDGET,
+                    max_in_flight: RETRIEVE_WALK_MAX_IN_FLIGHT,
+                    deadline: RETRIEVE_WALK_DEADLINE,
+                    stagger: RETRIEVAL_STAGGER,
+                },
                 &legs,
             )
             .await;
@@ -1089,6 +1124,7 @@ mod tests {
             let outcome = race_walk(
                 candidates,
                 RETRIEVE_LEG_BUDGET,
+                RETRIEVE_WALK_MAX_IN_FLIGHT,
                 RETRIEVE_WALK_DEADLINE,
                 RETRIEVAL_STAGGER,
                 move |peer| {
