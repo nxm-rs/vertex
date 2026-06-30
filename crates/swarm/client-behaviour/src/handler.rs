@@ -705,11 +705,19 @@ impl ClientHandler {
                     latency,
                     originated,
                 });
-                let _ = response.send(Ok(RetrievalResult {
+                let delivered = response.send(Ok(RetrievalResult {
                     chunk,
                     stamp,
                     peer: overlay,
                 }));
+                // An originated delivery whose receiver is gone: the race leg that
+                // asked for it already lost (or the request was abandoned), so the
+                // chunk was fetched and metered but is discarded. Retrieval is not
+                // cancellable downstream, so this is the delivery-side over-fetch
+                // the staggered race trades for failover latency.
+                if originated && delivered.is_err() {
+                    metrics::counter!("swarm.client.retrieval_overfetch_delivered").increment(1);
+                }
             }
         }
     }
