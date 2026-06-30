@@ -170,6 +170,24 @@ impl ClientHandle {
         })
     }
 
+    /// Send a command, awaiting room when the channel is full instead of dropping.
+    ///
+    /// For the settlement command bridge: a dedicated task (not the libp2p event
+    /// loop) whose job is to move a settle command into the node channel without
+    /// losing it. Dropping one would strand the originating service's per-peer
+    /// pending entry, so the peer never settles again. Backpressure here instead;
+    /// the upstream service channel buffers under the wait, bounded by the
+    /// service's one-settle-per-peer dedup. Errors only when the channel is closed.
+    pub async fn send_command_buffered(
+        &self,
+        command: ClientCommand,
+    ) -> Result<(), ChunkTransferError> {
+        self.command_tx
+            .send(command)
+            .await
+            .map_err(|_| ChunkTransferError::ChannelClosed)
+    }
+
     /// Retrieve a chunk from a specific peer.
     ///
     /// Any failure on the path resolves or drops the response channel, so this
@@ -1379,5 +1397,61 @@ mod tests {
             error: "x".into(),
             kind: FailureKind::InvalidChunk,
         });
+    }
+
+    #[tokio::test]
+    async fn send_command_buffered_backpressures_instead_of_dropping() {
+        // A full node command channel must not drop a settle command: a dropped
+        // SendPseudosettle/SendCheque strands the originating service's per-peer
+        // pending entry (no Sent/Failed event ever clears it), so the peer never
+        // settles again. The buffered send awaits room and delivers the command
+        // rather than losing it, which the non-blocking send_command would.
+        use alloy_primitives::U256;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = ClientHandle::new(tx);
+
+        // Fill the single channel slot.
+        handle
+            .send_command_buffered(ClientCommand::SendPseudosettle {
+                peer: peer(1),
+                amount: U256::from(1u64),
+            })
+            .await
+            .expect("first send fits");
+
+        // A second buffered send blocks while the channel is full rather than
+        // dropping the command.
+        let queued = {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                handle
+                    .send_command_buffered(ClientCommand::SendPseudosettle {
+                        peer: peer(2),
+                        amount: U256::from(2u64),
+                    })
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            !queued.is_finished(),
+            "the buffered send awaits room, it does not drop"
+        );
+
+        // Draining a slot lets the queued send complete: both commands delivered,
+        // none lost.
+        assert!(matches!(
+            rx.recv().await,
+            Some(ClientCommand::SendPseudosettle { .. })
+        ));
+        queued
+            .await
+            .expect("task joins")
+            .expect("queued send delivers once room frees");
+        assert!(matches!(
+            rx.recv().await,
+            Some(ClientCommand::SendPseudosettle { .. })
+        ));
     }
 }
