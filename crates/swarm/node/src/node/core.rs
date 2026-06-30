@@ -160,11 +160,13 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     let admission = accounting.bandwidth().clone();
     let settlement_trigger = Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
 
+    // Ranking only: the selector triggers no settlement. The origin credit gate
+    // settles the peer a request actually dispatches to (`settlement_trigger`),
+    // so the settle fan-out is the legs contacted, not the candidate window.
     let selector = Arc::new(PeerSelector::new(
         Arc::new(topology.clone()),
         admission.clone(),
         Arc::new(accounting.pricing().clone()),
-        settlement_trigger.clone(),
     ));
 
     // The origin-gated handle the chunk provider dispatches through: each
@@ -172,8 +174,8 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // shadow reserve), bands on the same admission boundary the selector uses,
     // commits the debit on delivery, and releases it on any other exit. The band
     // is the synchronous brake on the outbound rate: an over-threshold request
-    // settles or refuses before it sends. The settle trigger is the selector's,
-    // so settles dedup across both paths.
+    // settles or refuses before it sends. This gate is the sole settle trigger:
+    // a request settles only the peer it dispatches to, not the whole window.
     let origin_handle = client_handle.clone().with_origin_gate(
         Arc::new(accounting.pricing().clone()),
         accounting.bandwidth().clone(),
