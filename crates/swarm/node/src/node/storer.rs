@@ -358,13 +358,36 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
 
                 Some(command) = self.client_command_rx.recv() => {
                     self.handle_client_command(command);
+                    // Admit a bounded burst of already-queued commands in this
+                    // wake, preserving FIFO order, then yield to the swarm poll.
+                    let mut drained = 0;
+                    while drained < super::CHANNEL_DRAIN_BUDGET {
+                        match self.client_command_rx.try_recv() {
+                            Ok(command) => {
+                                self.handle_client_command(command);
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
 
                 Some(command) = self.pullsync_command_rx.recv() => {
                     self.handle_pullsync_command(command);
+                    let mut drained = 0;
+                    while drained < super::CHANNEL_DRAIN_BUDGET {
+                        match self.pullsync_command_rx.try_recv() {
+                            Ok(command) => {
+                                self.handle_pullsync_command(command);
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
 
                 result = topo_events.recv() => {
+                    let mut closed = false;
                     match result {
                         Ok(event) => self.handle_topology_service_event(event),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -372,8 +395,34 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             info!("Topology event channel closed, shutting down storer node");
-                            break;
+                            closed = true;
                         }
+                    }
+                    if !closed {
+                        let mut drained = 0;
+                        while drained < super::CHANNEL_DRAIN_BUDGET {
+                            match topo_events.try_recv() {
+                                Ok(event) => {
+                                    self.handle_topology_service_event(event);
+                                    drained += 1;
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                                    warn!(skipped, "Storer node lagged behind topology events");
+                                    drained += 1;
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                                    info!(
+                                        "Topology event channel closed, shutting down storer node"
+                                    );
+                                    closed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if closed {
+                        break;
                     }
                 }
             }
