@@ -661,11 +661,16 @@ mod tests {
     }
 
     /// A storer-verified receipt as the decode boundary produces it, with the
-    /// storer ground to sit at least `min_depth` bits deep relative to `address`.
+    /// storer ground to sit exactly `proximity` bits deep relative to `address`.
+    ///
+    /// The grind targets an exact proximity, not a lower bound: the depth verdict
+    /// turns on the observed proximity, so a lower bound would leave it dependent
+    /// on the random overlay and flake (a shallow case occasionally grinding deep
+    /// enough to verify). An exact target makes every verdict deterministic.
     fn signed_receipt(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
-        min_depth: u8,
+        proximity: u8,
         storage_radius: StorageRadius,
     ) -> Receipt {
         let eth = signer.address();
@@ -678,7 +683,7 @@ mod tests {
             nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, NET, &nonce);
-            if address.proximity(&overlay).get() >= min_depth {
+            if address.proximity(&overlay).get() == proximity {
                 let wire = WireReceipt::new(*address, signature, nonce, storage_radius);
                 return Receipt::reconstruct(wire, NET).expect("reconstructs");
             }
