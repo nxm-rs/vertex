@@ -827,13 +827,6 @@ mod tests {
         fn trigger_settlement(&self, peer: OverlayAddress) {
             self.triggered.lock().unwrap().push(peer);
         }
-
-        fn settled(
-            &self,
-            _peers: &[OverlayAddress],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
-            Box::pin(std::future::ready(false))
-        }
     }
 
     /// A pricer charging a fixed price for every peer and chunk.
