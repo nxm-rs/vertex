@@ -198,16 +198,20 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         }
     }
 
-    /// Order the close set, spilling to a wider in-headroom slice before blocking
-    /// on a settle drain.
+    /// Order the close set, spilling to the closest admissible peers of a wider
+    /// slice before blocking on a settle drain.
     ///
-    /// A non-empty band over the close set returns at once (the fast path). When
-    /// every close peer is refused, the closest few have spent their forgiveness
-    /// on this download while a far larger ring of slightly-farther peers still
-    /// carries headroom; banding [`RETRIEVE_SPILL_WIDTH`] peers and routing the
-    /// chunk to an admissible one there forwards it just the same, at one extra
-    /// hop, without parking the pipeline slot for the seconds a close-set debt
-    /// takes to drain. Only when even the wider slice is fully gated does it fall
+    /// A non-empty band over the close set returns at once (the fast path), keeping
+    /// the close set's headroom-first debt spread. When every close peer is
+    /// refused, the closest few have spent their forgiveness on this download while
+    /// a far larger ring of slightly-farther peers still carries headroom; banding
+    /// [`RETRIEVE_SPILL_WIDTH`] peers and routing the chunk to an admissible one
+    /// there forwards it just the same, without parking the pipeline slot for the
+    /// seconds a close-set debt takes to drain. The spill orders that wider slice
+    /// by plain proximity among the admissible (not headroom-first), so the closest
+    /// admissible peer leads and the chunk travels the minimum extra distance to
+    /// find capacity rather than scattering to a far headroom peer and paying more
+    /// forwarding hops. Only when even the wider slice is fully gated does it fall
     /// back to a bounded [`GATE_SPILL_SETTLE_BUDGET`] settle wait. Disconnect-safe:
     /// the band still hard-skips every refused peer, so no peer is sent a request
     /// past its line. With no selector the proximity order is returned unchanged.
@@ -224,7 +228,7 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             return ordered;
         }
         let wide = self.topology.closest_to(chunk, RETRIEVE_SPILL_WIDTH);
-        let spilled = selector.order(wide.clone(), chunk);
+        let spilled = selector.order_closest_admissible(wide.clone(), chunk);
         if !spilled.is_empty() {
             return spilled;
         }
