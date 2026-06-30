@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use alloy_primitives::{Address, B256, LogData};
 use alloy_rpc_types_eth::{Filter, Log};
-use vertex_storage::Database;
+use vertex_storage::{Database, Tables};
 use vertex_storage_redb::RedbDatabase;
 
 use crate::reader::{ChainReader, FinalizedHead};
@@ -343,6 +343,112 @@ async fn revert_hook_is_invoked_on_simulated_reorg() {
         *indexer.reverted.lock().unwrap(),
         vec![5],
         "revert hook records the reorged-out block"
+    );
+}
+
+/// After a page commits, the `IndexAdvanceRx` observes the post-commit nudge
+/// with the indexer name and the committed last block.
+#[tokio::test]
+async fn index_advance_fires_after_commit() {
+    let addr = Address::repeat_byte(0x07);
+    let logs = vec![log_at(3, 0, addr)];
+    let reader = Arc::new(MockReader::new(logs, head(10)));
+    let db = Arc::new(RedbDatabase::in_memory().unwrap());
+    let indexer = RecordingIndexer::new(addr, 0);
+
+    let (builder, mut advance_rx) = EventEngine::new(reader, db.clone()).with_notifier();
+    // No value before the engine runs: consumers must tolerate "no value yet".
+    assert_eq!(*advance_rx.borrow_and_update(), None);
+
+    let engine = builder.register(indexer.clone());
+    backfill_once(engine).await;
+
+    let advance = advance_rx
+        .borrow_and_update()
+        .expect("a committed page nudged the notifier");
+    assert_eq!(advance.indexer, "recording");
+    assert_eq!(
+        advance.last_block, 10,
+        "the nudge carries the committed last block (the finalized head)"
+    );
+}
+
+/// The `BlockTipRx` observes the finalized head `(number, hash)` after a sync,
+/// even though it fires before paging.
+#[tokio::test]
+async fn block_tip_observes_finalized_head() {
+    let addr = Address::repeat_byte(0x08);
+    let logs = vec![log_at(5, 0, addr)];
+    let reader = Arc::new(MockReader::new(logs, head(42)));
+    let db = Arc::new(RedbDatabase::in_memory().unwrap());
+    let indexer = RecordingIndexer::new(addr, 0);
+
+    let builder = EventEngine::new(reader, db.clone());
+    let mut tip_rx = builder.block_tip();
+    // Starts at `None` until the engine observes its first finalized head.
+    assert_eq!(*tip_rx.borrow_and_update(), None);
+
+    let engine = builder.register(indexer.clone());
+    backfill_once(engine).await;
+
+    let tip = tip_rx
+        .borrow_and_update()
+        .expect("the engine published the finalized head");
+    assert_eq!(tip.number, 42);
+    assert_eq!(tip.hash, head(42).hash);
+}
+
+/// The block-tip clock fires on a finalized-head advance even when the head's
+/// range indexes zero logs: it is a head clock, not a projection signal.
+#[tokio::test]
+async fn block_tip_fires_on_empty_head() {
+    let addr = Address::repeat_byte(0x09);
+    // No logs at all in the indexed range: the page is empty.
+    let reader = Arc::new(MockReader::new(vec![], head(15)));
+    let db = Arc::new(RedbDatabase::in_memory().unwrap());
+    let indexer = RecordingIndexer::new(addr, 0);
+
+    let builder = EventEngine::new(reader, db.clone());
+    let mut tip_rx = builder.block_tip();
+    let engine = builder.register(indexer.clone());
+    backfill_once(engine).await;
+
+    assert!(indexer.applied().is_empty(), "no logs were indexed");
+    let tip = tip_rx
+        .borrow_and_update()
+        .expect("the head clock ticks even with an empty page");
+    assert_eq!(tip.number, 15);
+}
+
+/// A no-op sync (the finalized head has not advanced) does not mark the
+/// block-tip channel changed, so a lagging consumer is not woken by a head that
+/// did not move. The follow loop re-runs `sync_once` against an unchanged head;
+/// this exercises that path directly.
+#[tokio::test]
+async fn no_op_sync_does_not_churn_block_tip() {
+    let addr = Address::repeat_byte(0x0a);
+    let logs = vec![log_at(5, 0, addr)];
+    let reader = Arc::new(MockReader::new(logs, head(20)));
+    let db = Arc::new(RedbDatabase::in_memory().unwrap());
+    let indexer = RecordingIndexer::new(addr, 0);
+
+    let builder = EventEngine::new(reader, db.clone());
+    let mut tip_rx = builder.block_tip();
+
+    let mut engine = builder.register(indexer.clone());
+    // `sync_to` writes the cursor, so the cursor table must exist; `run` would
+    // init it, but this test drives `sync_to` directly to mimic a follow re-tick.
+    crate::cursor::CursorTables::init(db.as_ref()).unwrap();
+    // Drive two syncs against the identical head, mirroring a follow-loop re-tick.
+    let h = head(20);
+    engine.sync_to_for_test(indexer.as_ref(), h).await.unwrap();
+    let first = tip_rx.borrow_and_update().expect("first head published");
+    assert_eq!(first.number, 20);
+
+    engine.sync_to_for_test(indexer.as_ref(), h).await.unwrap();
+    assert!(
+        !tip_rx.has_changed().unwrap(),
+        "an unchanged finalized head does not churn the block-tip channel"
     );
 }
 

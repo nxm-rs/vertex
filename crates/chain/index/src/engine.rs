@@ -47,11 +47,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_rpc_types_eth::Log;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 use vertex_storage::{Database, DbTxMut, Tables};
 
 use crate::cursor::{Cursor, CursorTables};
 use crate::metrics;
+use crate::notify::{BlockTip, BlockTipRx, IndexAdvance, IndexAdvanceRx};
 use crate::reader::{ChainReader, FinalizedHead};
 use crate::{IndexError, Indexer};
 
@@ -85,6 +87,13 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub struct EventEngineBuilder<R, DB> {
     reader: Arc<R>,
     db: Arc<DB>,
+    /// The block-tip clock sender. Always present (the head clock is cheap and
+    /// always-on); the engine republishes the finalized head on every advance.
+    block_tip: watch::Sender<Option<BlockTip>>,
+    /// The post-commit nudge sender, set only when [`with_notifier`] is called.
+    ///
+    /// [`with_notifier`]: EventEngineBuilder::with_notifier
+    index_advance: Option<watch::Sender<Option<IndexAdvance>>>,
 }
 
 impl<R, DB> EventEngineBuilder<R, DB>
@@ -92,6 +101,27 @@ where
     R: ChainReader + 'static,
     DB: Database,
 {
+    /// Subscribe to the raw head clock.
+    ///
+    /// Observes `Some(BlockTip { number, hash })` on every finalized-head
+    /// advance, including a head that indexed zero logs. Always available (a
+    /// cheap, always-on `watch`); starts at `None` until the first finalized head.
+    pub fn block_tip(&self) -> BlockTipRx {
+        self.block_tip.subscribe()
+    }
+
+    /// Opt into the post-commit projection nudge.
+    ///
+    /// Returns the builder (to keep the fluent chain) paired with an
+    /// [`IndexAdvanceRx`] that observes `Some(IndexAdvance { indexer, last_block })`
+    /// only after each page's `tx.commit()` succeeds, never on an empty block.
+    /// Starts at `None`; calling it again replaces the single sender.
+    pub fn with_notifier(mut self) -> (Self, IndexAdvanceRx) {
+        let (tx, rx) = watch::channel(None);
+        self.index_advance = Some(tx);
+        (self, rx)
+    }
+
     /// Attach the indexer this engine drives, producing a runnable engine.
     ///
     /// One engine instance drives one indexer with its own cursor; a
@@ -104,6 +134,8 @@ where
             indexer,
             page_size: DEFAULT_PAGE_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            block_tip: self.block_tip,
+            index_advance: self.index_advance,
         }
     }
 }
@@ -119,6 +151,11 @@ pub struct EventEngine<R, DB> {
     indexer: Arc<dyn Indexer>,
     page_size: u64,
     poll_interval: Duration,
+    /// The block-tip clock sender; republished on every finalized-head advance.
+    block_tip: watch::Sender<Option<BlockTip>>,
+    /// The post-commit nudge sender, present only when the builder opted in via
+    /// [`EventEngineBuilder::with_notifier`].
+    index_advance: Option<watch::Sender<Option<IndexAdvance>>>,
 }
 
 impl<R, DB> EventEngine<R, DB>
@@ -137,7 +174,16 @@ where
     /// fluent construction.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(reader: Arc<R>, db: Arc<DB>) -> EventEngineBuilder<R, DB> {
-        EventEngineBuilder { reader, db }
+        // The block-tip clock is always-on: a `watch` with no live receivers is
+        // a cheap atomic store, so holding the sender unconditionally costs
+        // nothing and keeps `block_tip()` available without an opt-in.
+        let (block_tip, _) = watch::channel(None);
+        EventEngineBuilder {
+            reader,
+            db,
+            block_tip,
+            index_advance: None,
+        }
     }
 
     /// Override the initial `eth_getLogs` page span. Mainly for tests.
@@ -219,6 +265,17 @@ where
         }
     }
 
+    /// Test-only access to [`sync_to`](Self::sync_to) so a unit test can drive a
+    /// single sync against a chosen head without spinning the follow loop.
+    #[cfg(test)]
+    pub(crate) async fn sync_to_for_test(
+        &mut self,
+        indexer: &dyn Indexer,
+        head: FinalizedHead,
+    ) -> Result<(), IndexError> {
+        self.sync_to(indexer, head).await
+    }
+
     /// Index every page from the cursor (or start block) up to `head`.
     async fn sync_to(
         &mut self,
@@ -226,6 +283,23 @@ where
         head: FinalizedHead,
     ) -> Result<(), IndexError> {
         let name = indexer.name();
+
+        // Publish the raw head clock on every finalized-head advance, before any
+        // paging: the tick must fire even if the head's range indexes zero logs.
+        // Skip a republish when the head has not moved so a no-op poll does not
+        // churn the channel. `send_if_modified` only marks the value changed
+        // (waking subscribers' `changed()`) when the head number actually
+        // advanced; a lagging receiver still converges to the latest value.
+        self.block_tip.send_if_modified(|current| {
+            let advanced = current.is_none_or(|tip| tip.number < head.number);
+            if advanced {
+                *current = Some(BlockTip {
+                    number: head.number,
+                    hash: head.hash,
+                });
+            }
+            advanced
+        });
 
         // Resume from one past the last applied block, but never before the
         // contract's deployment block.
@@ -347,6 +421,18 @@ where
         tx.commit()?;
 
         metrics::checkpoints_total(name).increment(1);
+
+        // Post-commit nudge: only after `tx.commit()` succeeded, so consumers
+        // never see an advance the cursor has not yet recorded, and a `?`-bailed
+        // page above this point never fires. `send_replace` is last-value-wins:
+        // a replay republishes the same value (a harmless no-op for consumers).
+        if let Some(notifier) = &self.index_advance {
+            notifier.send_replace(Some(IndexAdvance {
+                indexer: name,
+                last_block,
+            }));
+        }
+
         Ok(())
     }
 }
