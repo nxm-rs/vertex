@@ -41,6 +41,7 @@ use super::core::{
 use super::core::{ClientSwapParams, node_chain_provider};
 use crate::ChunkVerifyConfig;
 use crate::ClientHandle;
+use crate::inflight::PeerInflightLimiter;
 
 /// Default connection idle timeout for a launched client.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -456,6 +457,7 @@ impl ClientLauncher {
             task,
             topology,
             chunks,
+            inflight,
             accounting,
             client,
             provider_store: (overlay, peer_id),
@@ -469,6 +471,7 @@ impl ClientLauncher {
         Ok(LaunchedClient {
             topology,
             client,
+            inflight,
             accounting,
             chunks,
             store,
@@ -502,6 +505,7 @@ fn spawn_node_run_loop(executor: &TaskExecutor, task: NodeRunTaskFn) {
 pub struct LaunchedClient {
     topology: TopologyHandle<Arc<Identity>>,
     client: ClientHandle,
+    inflight: Arc<PeerInflightLimiter>,
     accounting: SharedAccounting,
     chunks: VerifiedChunkProvider,
     store: Arc<dyn SwarmLocalStore>,
@@ -519,6 +523,13 @@ impl LaunchedClient {
     /// Origin-gated client handle for chunk retrieval and upload.
     pub fn client(&self) -> &ClientHandle {
         &self.client
+    }
+
+    /// The per-peer retrieval in-flight limiter the launched service forgets on
+    /// disconnect. An embedder driving its own retrieval engine caps against
+    /// this shared instance rather than a private one.
+    pub fn inflight(&self) -> &Arc<PeerInflightLimiter> {
+        &self.inflight
     }
 
     /// The selection-aware verified chunk provider: the retrieval and upload

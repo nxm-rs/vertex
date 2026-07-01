@@ -584,6 +584,10 @@ pub struct ClientNodeParts<P> {
     pub topology: TopologyHandle<Arc<Identity>>,
     /// The selection-aware verified chunk provider.
     pub chunks: VerifiedChunkProvider,
+    /// The per-peer retrieval in-flight limiter, shared with the service that
+    /// forgets a peer on disconnect. Exposed so an embedder driving its own
+    /// engine (the browser provider) caps against the same instance.
+    pub inflight: Arc<PeerInflightLimiter>,
     /// The shared client accounting (selector, throttle, forwarder, service, and
     /// settlement all read this instance).
     pub accounting: SharedAccounting,
@@ -798,6 +802,7 @@ where
         task,
         topology,
         chunks,
+        inflight: core.inflight,
         accounting: core.accounting,
         client: core.origin_handle,
         provider_store,
