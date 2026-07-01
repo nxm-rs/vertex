@@ -62,6 +62,21 @@ extern "C" {
     fn abort(this: &DownloadSink, reason: &str);
 }
 
+/// Render an error and its full `source()` chain on one line. The joiner's
+/// `FileError::Getter`/`Sink` variants hide their cause behind `#[source]`, so a
+/// bare `Display` reads only "getter error"; the chain surfaces the underlying
+/// retrieval or accounting failure that actually aborted the download.
+fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
 /// Error from a browser sink operation, carrying the JS message as a string.
 #[derive(Debug)]
 struct SinkError(String);
@@ -103,6 +118,14 @@ impl WriteAt for JsWriteSink<'_> {
 }
 
 /// Chunk retrievals kept in flight while the joiner walks a file's chunk tree.
+///
+/// The browser is a light client racing only the closest connected peers, never
+/// dialling for a retrieval. The engine's per-peer in-flight cap bounds how many
+/// retrieval substreams land on any one peer, so a wide fan-out stays within a
+/// healthy neighbourhood's budget; the joiner's split of its budget between a
+/// small cap of intermediate-node fetches and the remaining data-leaf fetches is
+/// what makes the wide fan-out worthwhile, landing the first data leaf after a
+/// short descent rather than behind the whole intermediate frontier.
 const DOWNLOAD_CONCURRENCY: usize = 32;
 
 /// Leaf bodies held at once while streaming to a sequential sink: in-flight plus
@@ -173,8 +196,9 @@ pub async fn stream_file(
         // offset the moment it resolves, off the fetch thread, so a slow chunk
         // never gates the writes already in hand.
         if let Err(e) = joiner.download_into(JsWriteSink { sink }).await {
-            sink.abort(&format!("download: {e}"));
-            return Err(JsValue::from_str(&format!("download: {e}")));
+            let msg = format!("download: {}", error_chain(&e));
+            sink.abort(&msg);
+            return Err(JsValue::from_str(&msg));
         }
         return finish(sink).await;
     }
@@ -190,8 +214,9 @@ pub async fn stream_file(
         let segment = match segment {
             Ok(seg) => seg,
             Err(e) => {
-                sink.abort(&format!("joiner read: {e}"));
-                return Err(JsValue::from_str(&format!("joiner read: {e}")));
+                let msg = format!("joiner read: {}", error_chain(&e));
+                sink.abort(&msg);
+                return Err(JsValue::from_str(&msg));
             }
         };
         // Copy this segment into a JS view and write it; await applies the
