@@ -10,6 +10,7 @@
 //! [`NoLatencyHint`] but the same real [`PeerInflightLimiter`].
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use metrics::{counter, histogram};
@@ -23,6 +24,7 @@ use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::time::Duration;
 
 use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
+use crate::selection::SettlementTrigger;
 use crate::{
     ChunkTransferError, ClientHandle, PeerInflightLimiter, PeerSelector, RaceFailure,
     RetrievalResult, race_with_refill,
@@ -80,6 +82,29 @@ const RETRIEVE_SPILL_BUDGET: usize = RETRIEVE_ATTEMPT_BUDGET;
 /// Wall-clock bound on the farther-ring spill race, separate from the close
 /// race's deadline so the spill phase cannot itself stall the pipeline slot.
 const RETRIEVE_SPILL_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Closest peers a fully-gated retrieval drives a settle on before re-selecting.
+///
+/// When every close and spill peer is past its disconnect line the band yields no
+/// candidate. The dispatch path settles only a peer it contacts, so a fully-gated
+/// set never drains on its own: nothing dispatches, nothing settles, the debt
+/// stays pinned at the line. Driving a settle on the closest gated peers reopens
+/// the band. Matches the spill ring rather than the close set: a debt-saturated
+/// bulk download reopens more headroom the more peers forgive in parallel, and
+/// the trigger's in-flight dedup (shared with the origin gate) collapses
+/// concurrent gated retrievals to one settle per peer, so a wider drive unlocks
+/// more aggregate forgiveness without multiplying the settle traffic.
+const RETRIEVE_SETTLE_DRIVE_WIDTH: usize = RETRIEVE_SPILL_WIDTH;
+
+/// Backoff between settle drives, giving a spawned pseudosettle a round trip to
+/// land and reopen the band before the fallback re-selects.
+const RETRIEVE_SETTLE_DRIVE_BACKOFF: Duration = Duration::from_millis(250);
+
+/// Settle drives a fully-gated retrieval attempts before giving up and letting
+/// the consumer re-stream. Bounds the added latency (`WIDTH * BACKOFF`) so a
+/// genuinely peerless node still terminates rather than parking the pipeline slot
+/// for the whole retrieval deadline.
+const RETRIEVE_SETTLE_DRIVES: usize = 10;
 
 /// Attempts the bin-bucket primary route dispatches before handing off to the
 /// staggered fallback.
@@ -255,6 +280,11 @@ pub struct RetrievalEngine<I: SwarmIdentity, O: CandidateOrdering, G: InflightLi
     ordering: O,
     inflight: G,
     latency: L,
+    /// Drains a fully-gated close/spill set: the fallback drives a settle on the
+    /// closest refused peers to reopen the band. Shares the origin gate's
+    /// in-flight dedup, so concurrent gated retrievals collapse to one settle per
+    /// peer.
+    settlement: Arc<dyn SettlementTrigger>,
 }
 
 impl<I, O, G, L> RetrievalEngine<I, O, G, L>
@@ -264,13 +294,14 @@ where
     G: InflightLimit,
     L: LatencyHint,
 {
-    /// Build an engine over its three capabilities.
+    /// Build an engine over its capabilities.
     pub fn new(
         client_handle: ClientHandle,
         topology: TopologyHandle<I>,
         ordering: O,
         inflight: G,
         latency: L,
+        settlement: Arc<dyn SettlementTrigger>,
     ) -> Self {
         Self {
             client_handle,
@@ -278,6 +309,7 @@ where
             ordering,
             inflight,
             latency,
+            settlement,
         }
     }
 
@@ -447,86 +479,120 @@ where
         // bounds the paid fan-out; each attempt reserves the per-peer in-flight
         // permit that rides its future, released on drop including a cancelled
         // losing attempt.
-        let closest_peers = self.topology.closest_to(&chunk_address, RETRIEVE_WIDTH);
-        // Spill to a wider in-headroom slice when every close peer is gated, so a
-        // fully gated close set routes around its spent peers rather than
-        // blocking; if even the wide slice is gated the empty result falls through
-        // to the no-connected-peers path below, the same RetrievalExhausted a
-        // no-peers failure yields, and the consumer re-streams.
-        let closest_peers = self.order_with_spill(closest_peers, address);
-        let (close_candidates, _enforce_cap) = self.inflight.available(closest_peers);
+        // A fully-gated set (every close and spill peer past its disconnect line)
+        // yields no candidate to race. The dispatch path settles only a peer it
+        // contacts, so a gated set never drains on its own: nothing dispatches,
+        // nothing settles, the debt stays pinned at the line. Before giving up,
+        // drive a settle on the closest gated peers and re-select, bounded so a
+        // genuinely peerless node still terminates. The trigger's in-flight dedup
+        // collapses the concurrent gated retrievals of a bulk download to one
+        // settle per peer, so this drives the download at the peers' forgiveness
+        // rate rather than spamming settles.
+        let mut settle_drives = 0usize;
+        let outcome = loop {
+            let closest_peers = self.topology.closest_to(&chunk_address, RETRIEVE_WIDTH);
+            // Spill to a wider in-headroom slice when every close peer is gated, so
+            // a fully gated close set routes around its spent peers rather than
+            // blocking.
+            let closest_peers = self.order_with_spill(closest_peers, address);
+            let (close_candidates, _enforce_cap) = self.inflight.available(closest_peers);
 
-        // Farther-ring spill: when the whole close set fails on the wire (not
-        // merely gated), widen to the admissible peers of a larger slice, minus
-        // the close peers already raced, so the second race reaches holders beyond
-        // the close set rather than re-racing the same failing peers. A gated
-        // close set already spilled to this slice above, so its already-raced set
-        // covers the slice and the difference is empty.
-        let raced: HashSet<OverlayAddress> = close_candidates.iter().copied().collect();
-        let wide = self
-            .topology
-            .closest_to(&chunk_address, RETRIEVE_SPILL_WIDTH);
-        let wide = self.ordering.order_closest_admissible(wide, address);
-        let spill_ring: Vec<OverlayAddress> = wide
-            .into_iter()
-            .filter(|peer| !raced.contains(peer))
-            .collect();
-        let (spill_candidates, _spill_enforce_cap) = self.inflight.available(spill_ring);
+            // Farther-ring spill: when the whole close set fails on the wire (not
+            // merely gated), widen to the admissible peers of a larger slice, minus
+            // the close peers already raced, so the second race reaches holders
+            // beyond the close set rather than re-racing the same failing peers. A
+            // gated close set already spilled to this slice above, so its
+            // already-raced set covers the slice and the difference is empty.
+            let raced: HashSet<OverlayAddress> = close_candidates.iter().copied().collect();
+            let wide = self
+                .topology
+                .closest_to(&chunk_address, RETRIEVE_SPILL_WIDTH);
+            let wide = self.ordering.order_closest_admissible(wide, address);
+            let spill_ring: Vec<OverlayAddress> = wide
+                .into_iter()
+                .filter(|peer| !raced.contains(peer))
+                .collect();
+            let (spill_candidates, _spill_enforce_cap) = self.inflight.available(spill_ring);
 
-        // Pace each phase's staggered fan-out to the live round trip rather than a
-        // fixed constant. Each candidate's expected latency is read from the
-        // per-PO estimate at its proximity to the chunk (the forwarding distance
-        // that dominates retrieval latency). Cold buckets fall back to the
-        // constant, so this is never slower, only faster on low-RTT distances.
-        let close_stagger = adaptive_stagger(
-            close_candidates
-                .iter()
-                .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
-        );
-        let spill_stagger = adaptive_stagger(
-            spill_candidates
-                .iter()
-                .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
-        );
+            if close_candidates.is_empty() && spill_candidates.is_empty() {
+                // Either fully gated or genuinely peerless. Settle the closest raw
+                // peers so their debt drains below the disconnect line, back off for
+                // the settles to land, and re-select. A peerless node (no closest
+                // peers) or an exhausted drive budget falls through to the terminal
+                // no-candidates failure the consumer re-streams on.
+                let gated = self
+                    .topology
+                    .closest_to(&chunk_address, RETRIEVE_SETTLE_DRIVE_WIDTH);
+                if gated.is_empty() || settle_drives >= RETRIEVE_SETTLE_DRIVES {
+                    break Err(RaceFailure::NoCandidates);
+                }
+                for peer in gated {
+                    self.settlement.trigger_settlement(peer);
+                }
+                settle_drives += 1;
+                counter!("swarm.client.retrieval_settle_drive").increment(1);
+                // `futures_timer::Delay`, not `vertex_tasks::time::sleep`: the
+                // latter is `!Send` on wasm and this future carries the async-trait
+                // `Send` bound. `Delay` is the Send-safe timer the race staggers use.
+                futures_timer::Delay::new(RETRIEVE_SETTLE_DRIVE_BACKOFF).await;
+                continue;
+            }
 
-        // One dispatch closure feeds both phases. The in-flight cap is not
-        // enforced here (see `available`): a busy-but-good holder is dispatched
-        // best-effort, but only after the free leaders are exhausted, so the easy
-        // chunk still serves from a free peer with no extra over-fetch. The permit
-        // still rides each request future and releases on drop, including a
-        // cancelled losing attempt.
-        let dispatch = |peer_overlay: OverlayAddress| {
-            let permit = self.inflight.try_acquire(&peer_overlay);
-            attempts.fetch_add(1, Ordering::Relaxed);
-            // `originated = true`: our own retrieval, so the client service debits
-            // the serving peer on delivery.
-            let request = self
-                .client_handle
-                .retrieve_chunk(peer_overlay, chunk_address, true);
-            Some(async move {
-                let _permit = permit;
-                request.await
-            })
+            // Pace each phase's staggered fan-out to the live round trip rather than
+            // a fixed constant. Each candidate's expected latency is read from the
+            // per-PO estimate at its proximity to the chunk (the forwarding distance
+            // that dominates retrieval latency). Cold buckets fall back to the
+            // constant, so this is never slower, only faster on low-RTT distances.
+            let close_stagger = adaptive_stagger(
+                close_candidates
+                    .iter()
+                    .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
+            );
+            let spill_stagger = adaptive_stagger(
+                spill_candidates
+                    .iter()
+                    .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
+            );
+
+            // One dispatch closure feeds both phases. The in-flight cap is not
+            // enforced here (see `available`): a busy-but-good holder is dispatched
+            // best-effort, but only after the free leaders are exhausted, so the
+            // easy chunk still serves from a free peer with no extra over-fetch. The
+            // permit still rides each request future and releases on drop, including
+            // a cancelled losing attempt.
+            let dispatch = |peer_overlay: OverlayAddress| {
+                let permit = self.inflight.try_acquire(&peer_overlay);
+                attempts.fetch_add(1, Ordering::Relaxed);
+                // `originated = true`: our own retrieval, so the client service
+                // debits the serving peer on delivery.
+                let request = self
+                    .client_handle
+                    .retrieve_chunk(peer_overlay, chunk_address, true);
+                Some(async move {
+                    let _permit = permit;
+                    request.await
+                })
+            };
+
+            break race_close_then_spill(
+                close_candidates,
+                spill_candidates,
+                RaceBounds {
+                    budget: RETRIEVE_ATTEMPT_BUDGET,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: RETRIEVE_DEADLINE,
+                    stagger: close_stagger,
+                },
+                RaceBounds {
+                    budget: RETRIEVE_SPILL_BUDGET,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: RETRIEVE_SPILL_DEADLINE,
+                    stagger: spill_stagger,
+                },
+                dispatch,
+            )
+            .await;
         };
-
-        let outcome = race_close_then_spill(
-            close_candidates,
-            spill_candidates,
-            RaceBounds {
-                budget: RETRIEVE_ATTEMPT_BUDGET,
-                max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
-                deadline: RETRIEVE_DEADLINE,
-                stagger: close_stagger,
-            },
-            RaceBounds {
-                budget: RETRIEVE_SPILL_BUDGET,
-                max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
-                deadline: RETRIEVE_SPILL_DEADLINE,
-                stagger: spill_stagger,
-            },
-            dispatch,
-        )
-        .await;
 
         let dispatched = attempts.load(Ordering::Relaxed);
         histogram!("swarm.client.retrieval_attempts").record(dispatched as f64);

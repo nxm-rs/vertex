@@ -15,6 +15,7 @@ use vertex_swarm_topology::TopologyHandle;
 
 use crate::ClientHandle;
 use crate::retrieval_engine::{CandidateOrdering, InflightLimit, LatencyHint, RetrievalEngine};
+use crate::selection::SettlementTrigger;
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -69,10 +70,18 @@ where
         ordering: O,
         inflight: G,
         latency: L,
+        settlement: Arc<dyn SettlementTrigger>,
         store: Option<Arc<dyn SwarmLocalStore>>,
     ) -> Self {
         Self {
-            engine: RetrievalEngine::new(client_handle, topology, ordering, inflight, latency),
+            engine: RetrievalEngine::new(
+                client_handle,
+                topology,
+                ordering,
+                inflight,
+                latency,
+                settlement,
+            ),
             store,
         }
     }
