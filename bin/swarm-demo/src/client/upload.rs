@@ -10,7 +10,7 @@ use nectar_postage_issuer::{BatchStamper as IssuerStamper, Stamper};
 use nectar_postage_usage::SnapshotIssuer;
 use nectar_primitives::file::split;
 use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE};
-use vertex_swarm_api::{StampedChunk, SwarmChunkProvider, SwarmChunkSender};
+use vertex_swarm_api::{StampedChunk, SwarmChunkProvider, SwarmChunkSender, SwarmError};
 use vertex_swarm_primitives::Stamp;
 use wasm_bindgen::JsValue;
 
@@ -117,10 +117,25 @@ async fn push_all(
     ));
     // Each item carries its address, so a failed push names the right chunk.
     while let Some((address, result)) = stream.next().await {
-        if let Err(e) = result {
-            return Err(JsValue::from_str(&format!(
-                "push failed for chunk {address}: {e}"
-            )));
+        match result {
+            Ok(_) => {}
+            // A browser rarely holds a credible neighbourhood depth, so the
+            // custody verdict is unverifiable early in a session: a storer
+            // returned a receipt but its depth cannot be proven from a shallow
+            // local view. Accept it as pending rather than failing the upload;
+            // custody confirms once the neighbourhood saturates.
+            Err(SwarmError::UnconfirmedCustody { .. }) => {
+                tracing::warn!(
+                    %address,
+                    "chunk reached a storer but custody is unconfirmed from a shallow local view; \
+                     accepting as pending"
+                );
+            }
+            Err(e) => {
+                return Err(JsValue::from_str(&format!(
+                    "push failed for chunk {address}: {e}"
+                )));
+            }
         }
     }
     Ok(())

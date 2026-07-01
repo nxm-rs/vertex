@@ -1,7 +1,5 @@
 //! RPC provider implementations for Swarm nodes.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use tracing::warn;
@@ -13,9 +11,8 @@ use vertex_swarm_api::{
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_topology::TopologyHandle;
 
-use crate::retrieval_engine::RetrievalEngine;
-use crate::retrieval_latency::RetrievalLatency;
-use crate::{ClientHandle, PeerInflightLimiter, PeerSelector};
+use crate::ClientHandle;
+use crate::retrieval_engine::{CandidateOrdering, InflightLimit, LatencyHint, RetrievalEngine};
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -24,47 +21,68 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// The native client's concrete retrieval engine: the score- and
-/// affordability-aware selector, the per-peer in-flight cap, and the per-PO
-/// latency estimate, all shared by `Arc`.
-type NativeEngine<I> =
-    RetrievalEngine<I, Arc<PeerSelector>, Arc<PeerInflightLimiter>, Arc<RetrievalLatency>>;
-
-/// Chunk provider using a shared retrieval engine for network retrieval.
+/// Chunk provider driving the shared retrieval engine, generic over the three
+/// retrieval capabilities: a native client wires the score- and affordability-
+/// aware selector, per-peer in-flight cap, and per-PO latency estimate; a
+/// browser client wires proximity ordering, the same per-peer cap, and the
+/// constant stagger.
+///
+/// Both instantiations share one push path: the closest-storer custody upload
+/// runs the depth verdict against the local neighbourhood floor. A shallow
+/// observer (a browser with few peers) sets a low floor, so an honest deep
+/// receipt still verifies; only an unverifiable early-session view (before the
+/// neighbourhood is credible) yields [`SwarmError::UnconfirmedCustody`].
 ///
 /// Every retrieval terminal surfaces as [`SwarmError::RetrievalExhausted`];
 /// forwarding retrieval has no authoritative negative, so absence is never
 /// claimed.
 #[derive(Clone)]
-pub struct NetworkChunkProvider<I: SwarmIdentity> {
-    engine: NativeEngine<I>,
+pub struct NetworkChunkProvider<I, O, G, L>
+where
+    I: SwarmIdentity + 'static,
+    O: CandidateOrdering + 'static,
+    G: InflightLimit + 'static,
+    L: LatencyHint + 'static,
+{
+    engine: RetrievalEngine<I, O, G, L>,
 }
 
-impl<I: SwarmIdentity> NetworkChunkProvider<I> {
-    /// Build the provider over the three retrieval capabilities the native
-    /// client always wires: the candidate `selector`, the per-peer `inflight`
-    /// cap, and the per-PO `retrieval_latency` estimate.
-    pub(crate) fn new(
+impl<I, O, G, L> NetworkChunkProvider<I, O, G, L>
+where
+    I: SwarmIdentity + 'static,
+    O: CandidateOrdering + 'static,
+    G: InflightLimit + 'static,
+    L: LatencyHint + 'static,
+{
+    /// Build the provider over the three retrieval capabilities: candidate
+    /// `ordering`, the per-peer `inflight` cap, and the per-PO `latency`
+    /// estimate.
+    pub fn new(
         client_handle: ClientHandle,
         topology: TopologyHandle<I>,
-        selector: Arc<PeerSelector>,
-        inflight: Arc<PeerInflightLimiter>,
-        retrieval_latency: Arc<RetrievalLatency>,
+        ordering: O,
+        inflight: G,
+        latency: L,
     ) -> Self {
         Self {
-            engine: RetrievalEngine::new(
-                client_handle,
-                topology,
-                selector,
-                inflight,
-                retrieval_latency,
-            ),
+            engine: RetrievalEngine::new(client_handle, topology, ordering, inflight, latency),
         }
     }
 }
 
 #[async_trait]
-impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
+impl<I, O, G, L> SwarmChunkProvider for NetworkChunkProvider<I, O, G, L>
+where
+    I: SwarmIdentity + 'static,
+    O: CandidateOrdering + 'static,
+    G: InflightLimit + 'static,
+    // The retrieval race holds the in-flight permit across the request await, so
+    // the `Send`-bounded provider future requires a `Send` permit. Native
+    // `MaybeSend` is `Send`, so this is free there; on wasm it holds for the real
+    // `OwnedSemaphorePermit` the concrete client wires.
+    <G as InflightLimit>::Permit: Send,
+    L: LatencyHint + 'static,
+{
     async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
         self.engine.retrieve(address).await
     }
@@ -75,7 +93,13 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     }
 }
 
-impl<I: SwarmIdentity> NetworkChunkProvider<I> {
+impl<I, O, G, L> NetworkChunkProvider<I, O, G, L>
+where
+    I: SwarmIdentity + 'static,
+    O: CandidateOrdering + 'static,
+    G: InflightLimit + 'static,
+    L: LatencyHint + 'static,
+{
     /// Push `chunk` to the storer peers closest to its address, returning the
     /// first receipt.
     ///
@@ -195,7 +219,13 @@ fn push_receipt_of(receipt: Receipt) -> PushReceipt {
 }
 
 #[async_trait]
-impl<I: SwarmIdentity> SwarmChunkSender for NetworkChunkProvider<I> {
+impl<I, O, G, L> SwarmChunkSender for NetworkChunkProvider<I, O, G, L>
+where
+    I: SwarmIdentity + 'static,
+    O: CandidateOrdering + 'static,
+    G: InflightLimit + 'static,
+    L: LatencyHint + 'static,
+{
     async fn send_chunk_unchecked(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
         self.push_to_closest(chunk).await
     }

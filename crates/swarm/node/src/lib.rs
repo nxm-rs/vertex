@@ -55,6 +55,7 @@ pub use protocol::{
 };
 
 pub use inflight::{DEFAULT_PEER_INFLIGHT_CAP, PeerInflightLimiter};
+pub use retrieval_latency::RetrievalLatency;
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, race_with_refill};
 
