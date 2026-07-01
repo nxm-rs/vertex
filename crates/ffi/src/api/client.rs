@@ -19,9 +19,7 @@ use vertex_swarm_api::{
     ChunkAddress, HasChunkClient, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider,
     SwarmError,
 };
-use vertex_swarm_builder::{
-    ChunkVerifyConfig, ClientConfig, NetworkChunkProvider, VerifyingChunkProvider,
-};
+use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, VerifiedChunkProvider};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
@@ -42,7 +40,7 @@ use crate::error::{FfiError, FfiResult};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The concrete chunk provider the client builder produces for a client node.
-type ClientChunks = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
+type ClientChunks = VerifiedChunkProvider;
 
 /// A running embedded Swarm client. Opaque to the host; owns the runtime that
 /// drives the node.

@@ -59,7 +59,7 @@ pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 // download-verification wrapper live in `vertex-swarm-node` (the wasm-clean cone
 // both client entry points share); re-exported here so the existing builder
 // import paths stay stable.
-pub use vertex_swarm_node::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
+pub use vertex_swarm_node::{ChunkVerifyConfig, VerifiedChunkProvider, VerifyingChunkProvider};
 
 // Configs
 pub use config::{BootnodeConfig, ClientConfig};
