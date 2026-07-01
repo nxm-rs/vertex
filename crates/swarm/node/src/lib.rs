@@ -64,6 +64,5 @@ pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider
 pub use node::stats::StatsConfig;
 pub use node::task::spawn_stats_task;
 pub use retrieval_engine::{
-    CandidateOrdering, InflightLimit, LatencyHint, NoInflightLimit, NoLatencyHint, ProximityOnly,
-    RetrievalEngine,
+    CandidateOrdering, InflightLimit, LatencyHint, NoLatencyHint, ProximityOnly, RetrievalEngine,
 };

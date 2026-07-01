@@ -6,8 +6,8 @@
 //! spill, and over-fetch metrics live in one place. Each capability is a small
 //! trait the engine is generic over: the native client supplies
 //! [`PeerSelector`], [`PeerInflightLimiter`], and [`RetrievalLatency`]; the
-//! browser supplies the zero-sized null objects [`ProximityOnly`],
-//! [`NoInflightLimit`], and [`NoLatencyHint`].
+//! browser supplies the zero-sized null objects [`ProximityOnly`] and
+//! [`NoLatencyHint`] but the same real [`PeerInflightLimiter`].
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -126,8 +126,9 @@ impl CandidateOrdering for PeerSelector {
 
 /// Per-peer cap on concurrent outbound retrieval substreams.
 ///
-/// The native client supplies [`PeerInflightLimiter`]; the browser supplies
-/// [`NoInflightLimit`], which never declines a peer.
+/// Supplied by [`PeerInflightLimiter`] on both node types: it bounds concurrent
+/// outbound retrieval substreams per peer so a hot peer's multiplexer budget is
+/// not overrun.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait InflightLimit: Send + Sync {
     /// Per-attempt reservation that releases the slot on drop, including a
@@ -200,23 +201,6 @@ impl CandidateOrdering for ProximityOnly {
         _chunk: &ChunkAddress,
     ) -> Vec<OverlayAddress> {
         candidates
-    }
-}
-
-/// No per-peer cap: every candidate has a free slot. The browser client's
-/// [`InflightLimit`].
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoInflightLimit;
-
-impl InflightLimit for NoInflightLimit {
-    type Permit = ();
-
-    fn available(&self, candidates: Vec<OverlayAddress>) -> (Vec<OverlayAddress>, bool) {
-        (candidates, false)
-    }
-
-    fn try_acquire(&self, _peer: &OverlayAddress) -> Option<Self::Permit> {
-        Some(())
     }
 }
 
@@ -703,10 +687,7 @@ mod tests {
         use vertex_swarm_api::ChunkAddress;
         use vertex_tasks::time::Duration;
 
-        use super::super::{
-            CandidateOrdering, InflightLimit, LatencyHint, NoInflightLimit, NoLatencyHint,
-            ProximityOnly,
-        };
+        use super::super::{CandidateOrdering, LatencyHint, NoLatencyHint, ProximityOnly};
 
         fn overlay(n: u8) -> SwarmAddress {
             SwarmAddress::from([n; 32])
@@ -725,21 +706,6 @@ mod tests {
                 ProximityOnly.order_closest_admissible(candidates.clone(), &chunk),
                 candidates,
                 "the spill ordering is a no-op"
-            );
-        }
-
-        #[test]
-        fn no_inflight_limit_keeps_every_candidate_and_never_declines() {
-            let candidates = vec![overlay(1), overlay(2)];
-            assert_eq!(
-                NoInflightLimit.available(candidates.clone()),
-                (candidates, false),
-                "no peer is filtered and the cap is not enforced"
-            );
-            assert_eq!(
-                NoInflightLimit.try_acquire(&overlay(1)),
-                Some(()),
-                "a permit is always granted"
             );
         }
 
