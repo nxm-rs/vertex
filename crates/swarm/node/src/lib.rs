@@ -55,6 +55,7 @@ pub use protocol::{
 };
 
 pub use inflight::{DEFAULT_PEER_INFLIGHT_CAP, PeerInflightLimiter};
+pub use retrieval_latency::RetrievalLatency;
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, race_with_refill};
 
@@ -63,6 +64,5 @@ pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider
 pub use node::stats::StatsConfig;
 pub use node::task::spawn_stats_task;
 pub use retrieval_engine::{
-    CandidateOrdering, InflightLimit, LatencyHint, NoInflightLimit, NoLatencyHint, ProximityOnly,
-    RetrievalEngine,
+    CandidateOrdering, InflightLimit, LatencyHint, NoLatencyHint, ProximityOnly, RetrievalEngine,
 };

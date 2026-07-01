@@ -36,7 +36,7 @@ const HEDGE_STAGGER_FLOOR: Duration = Duration::from_millis(50);
 /// retrieval keyed by `PO(serving_peer, chunk)`) and the chunk provider (which
 /// reads an estimate to pace its race). A zero bucket means no sample yet.
 #[derive(Debug)]
-pub(crate) struct RetrievalLatency {
+pub struct RetrievalLatency {
     buckets: [AtomicU64; PO_BUCKETS],
 }
 

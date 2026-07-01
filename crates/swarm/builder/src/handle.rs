@@ -10,9 +10,7 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
-use vertex_swarm_node::{NetworkChunkProvider, VerifyingChunkProvider};
-
-type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
+use vertex_swarm_node::VerifiedChunkProvider;
 
 /// Build output from launching a Swarm node: the event-loop task function plus
 /// the component container `P`, which determines the node's capabilities. All

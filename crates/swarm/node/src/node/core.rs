@@ -569,9 +569,18 @@ pub struct NodeRunParts {
     pub run: RunTaskFn,
 }
 
+/// The native client's fully-capable provider instantiation: score/affordability
+/// ordering, the per-peer in-flight cap, and the per-PO latency estimate.
+type NativeChunkProvider = NetworkChunkProvider<
+    Arc<Identity>,
+    Arc<PeerSelector>,
+    Arc<PeerInflightLimiter>,
+    Arc<RetrievalLatency>,
+>;
+
 /// Network chunk provider wrapped with config-gated download verification: the
 /// RPC chunk surface both client entry points expose.
-pub type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
+pub type VerifiedChunkProvider = VerifyingChunkProvider<NativeChunkProvider>;
 
 /// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
 /// the verified chunk provider, the shared accounting and throttled client handle

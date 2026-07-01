@@ -5,7 +5,6 @@ mod cache;
 mod chain;
 mod download;
 mod net_get;
-mod network;
 mod upload;
 mod usage;
 
@@ -15,12 +14,11 @@ use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::Batch;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender};
-use vertex_swarm_node::LaunchedClient;
+use vertex_swarm_node::{LaunchedClient, NetworkChunkProvider, NoLatencyHint, ProximityOnly};
 use wasm_bindgen::prelude::*;
 
 use cache::MemoryCache;
 pub use download::DownloadSink;
-use network::BrowserChunkProvider;
 
 /// Fallback batch geometry, used only when on-chain discovery is unavailable.
 const DEFAULT_BATCH_DEPTH: u8 = 20;
@@ -41,12 +39,17 @@ impl SwarmClient {
     pub fn from_launched(launched: &LaunchedClient) -> Self {
         // The launched client's handle already paces its own outbound retrieval
         // and pushsync under each peer's pseudosettle allowance (the builder
-        // wires the self-throttle), so the provider reuses it as-is.
+        // wires the self-throttle), so the provider reuses it as-is. The browser
+        // drives the shared provider with proximity ordering and the constant
+        // stagger, but the real per-peer in-flight cap the launched service
+        // maintains; it shares the native custody-verdict push.
         let client = launched.client().clone();
-        let routing = BrowserChunkProvider::new(
+        let routing = NetworkChunkProvider::new(
             client,
             launched.topology().clone(),
+            ProximityOnly,
             launched.inflight().clone(),
+            NoLatencyHint,
         );
         let provider: Arc<dyn SwarmChunkProvider> = Arc::new(routing.clone());
         let sender: Arc<dyn SwarmChunkSender> = Arc::new(routing);
