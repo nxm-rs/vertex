@@ -43,7 +43,11 @@ impl SwarmClient {
         // and pushsync under each peer's pseudosettle allowance (the builder
         // wires the self-throttle), so the provider reuses it as-is.
         let client = launched.client().clone();
-        let routing = BrowserChunkProvider::new(client, launched.topology().clone());
+        let routing = BrowserChunkProvider::new(
+            client,
+            launched.topology().clone(),
+            launched.inflight().clone(),
+        );
         let provider: Arc<dyn SwarmChunkProvider> = Arc::new(routing.clone());
         let sender: Arc<dyn SwarmChunkSender> = Arc::new(routing);
         Self {

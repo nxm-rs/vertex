@@ -8,7 +8,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{
-    ClientHandle, NoInflightLimit, NoLatencyHint, ProximityOnly, RetrievalEngine,
+    ClientHandle, NoLatencyHint, PeerInflightLimiter, ProximityOnly, RetrievalEngine,
 };
 use vertex_swarm_topology::TopologyHandle;
 
@@ -17,26 +17,37 @@ const PUSH_CANDIDATE_COUNT: usize = 5;
 
 /// A proximity-routing chunk provider/sender over the browser client node.
 ///
-/// Drives the shared [`RetrievalEngine`] with the null-object capabilities
-/// ([`ProximityOnly`], [`NoInflightLimit`], [`NoLatencyHint`]): no economic
-/// ordering, no per-peer cap, and the constant stagger. Every retrieval terminal
-/// surfaces as `RetrievalExhausted`.
+/// Drives the shared [`RetrievalEngine`] with [`ProximityOnly`] ordering and the
+/// constant stagger ([`NoLatencyHint`]), but a real per-peer [`PeerInflightLimiter`]
+/// (the launched service's own instance, so a disconnect forgets the same peer the
+/// engine caps against). The per-peer cap is the browser's flood guard: it bounds
+/// how many concurrent retrieval substreams the wide download fan-out lands on any
+/// one close peer, so the fan-out stays inside the light-client debt band without
+/// relying on the joiner's walk shape. The cap is sized to leave a subtree
+/// descent's worth of concurrent structure fetches unthrottled, so it never
+/// strangles time-to-first-byte. Every retrieval terminal surfaces as
+/// `RetrievalExhausted`.
 #[derive(Clone)]
 pub struct BrowserChunkProvider {
-    engine: RetrievalEngine<Arc<Identity>, ProximityOnly, NoInflightLimit, NoLatencyHint>,
+    engine: RetrievalEngine<Arc<Identity>, ProximityOnly, Arc<PeerInflightLimiter>, NoLatencyHint>,
     client: ClientHandle,
     topology: TopologyHandle<Arc<Identity>>,
 }
 
 impl BrowserChunkProvider {
-    /// Build the provider from the launched client's handle and topology.
-    pub fn new(client: ClientHandle, topology: TopologyHandle<Arc<Identity>>) -> Self {
+    /// Build the provider from the launched client's handle, topology, and the
+    /// service-shared per-peer in-flight limiter.
+    pub fn new(
+        client: ClientHandle,
+        topology: TopologyHandle<Arc<Identity>>,
+        inflight: Arc<PeerInflightLimiter>,
+    ) -> Self {
         Self {
             engine: RetrievalEngine::new(
                 client.clone(),
                 topology.clone(),
                 ProximityOnly,
-                NoInflightLimit,
+                inflight,
                 NoLatencyHint,
             ),
             client,
