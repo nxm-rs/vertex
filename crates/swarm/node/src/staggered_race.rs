@@ -35,7 +35,11 @@
 
 use std::time::Duration;
 
-use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+use futures::{
+    FutureExt, StreamExt,
+    future::{self, Either},
+    stream::FuturesUnordered,
+};
 use futures_timer::Delay;
 
 /// Default stagger between retrieval candidates joining a [`race_candidates`]
@@ -98,39 +102,19 @@ where
     F: FnMut(C) -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    let mut candidates = candidates.into_iter();
-
-    let mut in_flight = FuturesUnordered::new();
-    match candidates.next() {
-        Some(candidate) => in_flight.push(attempt(candidate)),
-        None => return Err(RaceFailure::NoCandidates),
-    }
-
-    let mut stagger_tick = Delay::new(stagger).fuse();
-
-    loop {
-        futures::select! {
-            result = in_flight.select_next_some() => match result {
-                Ok(value) => return Ok(value),
-                Err(error) => {
-                    // A failed attempt frees its slot: start the next candidate
-                    // immediately. Once no candidates and no attempts remain,
-                    // the race ends with the last attempt's error.
-                    if let Some(candidate) = candidates.next() {
-                        in_flight.push(attempt(candidate));
-                    } else if in_flight.is_empty() {
-                        return Err(RaceFailure::AllFailed(error));
-                    }
-                }
-            },
-            _ = stagger_tick => {
-                if let Some(candidate) = candidates.next() {
-                    in_flight.push(attempt(candidate));
-                    stagger_tick = Delay::new(stagger).fuse();
-                }
-            }
-        }
-    }
+    // Unbounded: no attempt budget, no in-flight width cap, and no wall-clock
+    // deadline, so the race never times out. The closure cannot decline a
+    // candidate, so the race ends only on a success, an all-failed drain, or an
+    // empty candidate list.
+    race(
+        candidates,
+        usize::MAX,
+        usize::MAX,
+        None,
+        stagger,
+        move |candidate| Some(attempt(candidate)),
+    )
+    .await
 }
 
 /// Like [`race_candidates`], but bounded to at most `budget` dispatched attempts
@@ -161,6 +145,38 @@ pub async fn race_with_refill<C, T, E, I, F, Fut>(
     budget: usize,
     max_in_flight: usize,
     deadline: Duration,
+    stagger: Duration,
+    attempt: F,
+) -> Result<T, RaceFailure<E>>
+where
+    I: IntoIterator<Item = C>,
+    F: FnMut(C) -> Option<Fut>,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    race(
+        candidates,
+        budget,
+        max_in_flight,
+        Some(deadline),
+        stagger,
+        attempt,
+    )
+    .await
+}
+
+/// The staggered any-candidate race behind [`race_candidates`] and
+/// [`race_with_refill`]: one `FuturesUnordered` driver with the attempt `budget`,
+/// the in-flight `max_in_flight` width cap, and an optional wall-clock `deadline`
+/// parameterised. Keeping the drop-on-resolve and refill-on-failure invariants in
+/// one loop is the point; the two public entry points fix these parameters. An
+/// unbounded budget, unbounded width, and absent deadline reproduce
+/// [`race_candidates`]; a `Some` deadline surfaces [`RaceFailure::TimedOut`] when
+/// the clock runs out with no failure to report.
+async fn race<C, T, E, I, F, Fut>(
+    candidates: I,
+    budget: usize,
+    max_in_flight: usize,
+    deadline: Option<Duration>,
     stagger: Duration,
     mut attempt: F,
 ) -> Result<T, RaceFailure<E>>
@@ -198,7 +214,13 @@ where
     }
 
     let mut stagger_tick = Delay::new(stagger).fuse();
-    let mut deadline_tick = Delay::new(deadline).fuse();
+    // No deadline: a never-ready arm the select never wakes on, so the race is
+    // bounded only by the budget and the candidate source.
+    let mut deadline_tick = match deadline {
+        Some(deadline) => Either::Left(Delay::new(deadline)),
+        None => Either::Right(future::pending::<()>()),
+    }
+    .fuse();
 
     loop {
         futures::select! {
