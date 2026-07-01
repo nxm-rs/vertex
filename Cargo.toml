@@ -146,13 +146,13 @@ indexing_slicing = "warn"
 # BatchStore/StoreValidator/SnapshotStore conversion plus nectar-mantaray and
 # nectar-postage-usage's `client`/`issuer`/`seal` features that the browser
 # upload/download path (bin/swarm-demo) depends on.
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "dd8778fce2d87ecddf1e7b3cf730e5e8e9808b13" }
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "8e8e8ae759c6f4c7f80c23442d9bb466e8a21341" }
 
 digest = "0.10"
 
