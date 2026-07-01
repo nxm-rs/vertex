@@ -580,7 +580,7 @@ pub struct NodeRunParts {
 /// the RPC chunk surface both client entry points expose; content integrity is
 /// enforced during retrieval decode, so no download-side wrapper sits over it.
 pub type NativeChunkProvider = NetworkChunkProvider<
-    Arc<Identity>,
+    TopologyHandle<Arc<Identity>>,
     Arc<PeerSelector>,
     Arc<PeerInflightLimiter>,
     Arc<RetrievalLatency>,
