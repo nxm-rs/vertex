@@ -4,9 +4,9 @@ use core::future::Future;
 use std::sync::Arc;
 use std::vec::Vec;
 
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, NetworkId};
 
-use crate::{PeerReporter, SwarmIdentity};
+use crate::PeerReporter;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 
 /// Bin sizes for topology routing (one per proximity order).
@@ -21,11 +21,11 @@ pub trait SwarmTopologyBins: Send + Sync {
 /// Node identity and state within the topology.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmTopologyState: Send + Sync {
-    /// The identity type for this topology.
-    type Identity: SwarmIdentity;
+    /// The node's overlay address.
+    fn overlay_address(&self) -> OverlayAddress;
 
-    /// Get the identity.
-    fn identity(&self) -> &Self::Identity;
+    /// The network id this node participates in, fixed at construction.
+    fn network_id(&self) -> NetworkId;
 
     /// Get the current neighborhood depth.
     fn depth(&self) -> NeighborhoodDepth;
@@ -40,11 +40,6 @@ pub trait SwarmTopologyState: Send + Sync {
     /// attacker-controlled bar (see the pushsync receipt depth policy). Returns
     /// true once the neighbourhood is saturated.
     fn neighbourhood_credible(&self) -> bool;
-
-    /// Get the node's overlay address.
-    fn overlay_address(&self) -> OverlayAddress {
-        self.identity().overlay_address()
-    }
 }
 
 /// Access to the peer-scoring authority behind the topology.

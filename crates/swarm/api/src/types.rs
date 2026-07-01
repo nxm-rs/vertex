@@ -26,7 +26,7 @@ pub trait SwarmPrimitives: Send + Sync + 'static {
 /// Extends primitives with topology (peer discovery service).
 pub trait SwarmNetworkTypes: SwarmPrimitives {
     /// Peer discovery and routing.
-    type Topology: SwarmTopologyState<Identity = <Self as SwarmPrimitives>::Identity>
+    type Topology: SwarmTopologyState
         + SwarmTopologyRouting
         + SwarmTopologyPeers
         + SwarmTopologyStats;

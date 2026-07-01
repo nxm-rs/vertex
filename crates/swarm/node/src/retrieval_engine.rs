@@ -17,10 +17,9 @@ use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::OwnedSemaphorePermit;
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, OverlayAddress, SwarmError, SwarmIdentity,
-    SwarmResult, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
+    Bin, ChunkAddress, ChunkRetrievalResult, OverlayAddress, SwarmError, SwarmResult,
+    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
 };
-use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::time::Duration;
 
 use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
@@ -129,6 +128,25 @@ const PRIMARY_ROUTE_DEADLINE: Duration = Duration::from_secs(2);
 /// Exactly one metered attempt is in flight at a time on the primary path. The
 /// staggered fan-out is reserved for the fallback.
 const PRIMARY_ROUTE_SINGLE_FLIGHT: Duration = Duration::from_secs(3600);
+
+/// Topology surface the retrieval engine and native push path read.
+///
+/// A marker bundling the four topology query traits dispatch needs into one
+/// object-safe trait, so the engine holds a single `Arc<dyn RetrievalTopology>`
+/// rather than a generic per identity type. Every method it calls belongs to a
+/// sub-trait; the one non-trait value the engine needs, the routing table's max
+/// bin, is a construction constant carried as an engine field, not a query. The
+/// blanket impl means the node's real handle and a test mock both qualify with no
+/// bespoke impl.
+pub trait RetrievalTopology:
+    SwarmTopologyState + SwarmTopologyRouting + SwarmTopologyPeers + SwarmTopologyReporting
+{
+}
+
+impl<T> RetrievalTopology for T where
+    T: SwarmTopologyState + SwarmTopologyRouting + SwarmTopologyPeers + SwarmTopologyReporting
+{
+}
 
 /// Economic ordering of retrieval and pushsync candidates.
 ///
@@ -273,10 +291,13 @@ struct RaceBounds {
 /// [`SwarmError::RetrievalExhausted`]: forwarding retrieval has no authoritative
 /// negative, so the engine never adjudicates absence.
 #[derive(Clone)]
-pub struct RetrievalEngine<I: SwarmIdentity, O: CandidateOrdering, G: InflightLimit, L: LatencyHint>
-{
+pub struct RetrievalEngine<O: CandidateOrdering, G: InflightLimit, L: LatencyHint> {
     client_handle: ClientHandle,
-    topology: TopologyHandle<I>,
+    topology: Arc<dyn RetrievalTopology>,
+    /// The routing table's highest bin, the ceiling for the forwarding-bin route.
+    /// A spec constant fixed at construction, so it is a field, not a per-request
+    /// topology query.
+    max_bin: Bin,
     ordering: O,
     inflight: G,
     latency: L,
@@ -287,9 +308,8 @@ pub struct RetrievalEngine<I: SwarmIdentity, O: CandidateOrdering, G: InflightLi
     settlement: Arc<dyn SettlementTrigger>,
 }
 
-impl<I, O, G, L> RetrievalEngine<I, O, G, L>
+impl<O, G, L> RetrievalEngine<O, G, L>
 where
-    I: SwarmIdentity,
     O: CandidateOrdering,
     G: InflightLimit,
     L: LatencyHint,
@@ -297,7 +317,8 @@ where
     /// Build an engine over its capabilities.
     pub fn new(
         client_handle: ClientHandle,
-        topology: TopologyHandle<I>,
+        topology: Arc<dyn RetrievalTopology>,
+        max_bin: Bin,
         ordering: O,
         inflight: G,
         latency: L,
@@ -306,6 +327,7 @@ where
         Self {
             client_handle,
             topology,
+            max_bin,
             ordering,
             inflight,
             latency,
@@ -313,9 +335,9 @@ where
         }
     }
 
-    /// The topology handle, for the native push path's closest-storer dispatch;
+    /// The topology, for the native push path's closest-storer dispatch;
     /// retrieval reaches topology through the engine's own dispatch.
-    pub(crate) fn topology(&self) -> &TopologyHandle<I> {
+    pub(crate) fn topology(&self) -> &Arc<dyn RetrievalTopology> {
         &self.topology
     }
 
@@ -427,7 +449,7 @@ where
         // the route here; a gated route falls through to the staggered fallback,
         // which spills to a wider headroom slice.
         let local = self.topology.overlay_address();
-        let max_bin = self.topology.max_bin().get();
+        let max_bin = self.max_bin.get();
         let bin_candidates =
             bin_routed_order(&chunk_address, &local, max_bin, RETRIEVE_WIDTH, |bin| {
                 self.topology.connected_peers_in_bin(bin)
@@ -1060,6 +1082,96 @@ mod tests {
                 spill_dispatched.load(Ordering::SeqCst),
                 0,
                 "the spill phase never ran after a close deadline"
+            );
+        }
+    }
+
+    /// The fully-gated settle-drive: when the band refuses every candidate, the
+    /// fallback must drive a settle on the closest gated peers and re-select,
+    /// bounded, rather than exhaust having contacted nobody. Testable here only
+    /// because the engine is generic over [`RetrievalTopology`], so a mock stands
+    /// in for the real handle.
+    mod settle_drive {
+        use std::num::NonZeroUsize;
+        use std::sync::{Arc, Mutex};
+
+        use vertex_swarm_api::{Bin, ChunkAddress, OverlayAddress, SwarmError};
+        use vertex_swarm_test_utils::MockTopology;
+
+        use super::super::{
+            CandidateOrdering, NoLatencyHint, RETRIEVE_SETTLE_DRIVES, RetrievalEngine,
+            RetrievalTopology,
+        };
+        use crate::ClientHandle;
+        use crate::inflight::PeerInflightLimiter;
+        use crate::selection::SettlementTrigger;
+
+        fn overlay(byte: u8) -> OverlayAddress {
+            OverlayAddress::from([byte; 32])
+        }
+
+        /// Ordering that gates every candidate: the fully-refused band.
+        #[derive(Clone)]
+        struct GateAll;
+        impl CandidateOrdering for GateAll {
+            fn order(&self, _: Vec<OverlayAddress>, _: &ChunkAddress) -> Vec<OverlayAddress> {
+                Vec::new()
+            }
+            fn order_closest_admissible(
+                &self,
+                _: Vec<OverlayAddress>,
+                _: &ChunkAddress,
+            ) -> Vec<OverlayAddress> {
+                Vec::new()
+            }
+        }
+
+        /// Records every peer the settle-drive fires on.
+        #[derive(Clone, Default)]
+        struct RecordingSettle {
+            calls: Arc<Mutex<Vec<OverlayAddress>>>,
+        }
+        impl SettlementTrigger for RecordingSettle {
+            fn trigger_settlement(&self, peer: OverlayAddress) {
+                self.calls.lock().unwrap().push(peer);
+            }
+        }
+
+        #[tokio::test]
+        async fn a_fully_gated_fallback_drives_settles_then_exhausts() {
+            // Every candidate is banded out, so the fallback finds no admissible
+            // close or spill peer. It must drive a settle on the gated set each
+            // round, bounded by the drive budget, then surface the honest
+            // RetrievalExhausted rather than exhaust having contacted nobody.
+            let peers: Vec<OverlayAddress> = (1..=4).map(overlay).collect();
+            // The mock's `closest_to` returns this set (its `connected_peers_in_bin`
+            // is empty, so the primary bin route yields nothing and the fallback
+            // drives the settle).
+            let topology: Arc<dyn RetrievalTopology> =
+                Arc::new(MockTopology::new(4, 4, 0).with_closest(peers.clone()));
+            let settle = RecordingSettle::default();
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            let engine = RetrievalEngine::new(
+                ClientHandle::new(tx),
+                topology,
+                Bin::MAX,
+                GateAll,
+                PeerInflightLimiter::new(NonZeroUsize::new(4).unwrap()),
+                NoLatencyHint,
+                Arc::new(settle.clone()),
+            );
+
+            let result = engine.retrieve(&ChunkAddress::from([0x42; 32])).await;
+
+            assert!(
+                matches!(result, Err(SwarmError::RetrievalExhausted { .. })),
+                "a fully-gated retrieval exhausts, never claims absence"
+            );
+            let calls = settle.calls.lock().unwrap();
+            assert_eq!(
+                calls.len(),
+                RETRIEVE_SETTLE_DRIVES * peers.len(),
+                "each of the bounded drive rounds settles the full gated set"
             );
         }
     }

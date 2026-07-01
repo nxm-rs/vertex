@@ -6,15 +6,16 @@ use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use tracing::warn;
 use vertex_swarm_api::{
-    ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
-    SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmLocalStore, SwarmResult,
-    SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
+    Bin, ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
+    SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmLocalStore, SwarmResult,
+    SwarmScoringEvent,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_topology::TopologyHandle;
 
 use crate::ClientHandle;
-use crate::retrieval_engine::{CandidateOrdering, InflightLimit, LatencyHint, RetrievalEngine};
+use crate::retrieval_engine::{
+    CandidateOrdering, InflightLimit, LatencyHint, RetrievalEngine, RetrievalTopology,
+};
 use crate::selection::SettlementTrigger;
 
 /// Report source for shallow/malformed receipts caught on the origin upload
@@ -40,23 +41,21 @@ const PUSH_CANDIDATE_COUNT: usize = 5;
 /// forwarding retrieval has no authoritative negative, so absence is never
 /// claimed.
 #[derive(Clone)]
-pub struct NetworkChunkProvider<I, O, G, L>
+pub struct NetworkChunkProvider<O, G, L>
 where
-    I: SwarmIdentity + 'static,
     O: CandidateOrdering + 'static,
     G: InflightLimit + 'static,
     L: LatencyHint + 'static,
 {
-    engine: RetrievalEngine<I, O, G, L>,
+    engine: RetrievalEngine<O, G, L>,
     /// The node's own chunk cache, consulted before racing the swarm so a
     /// duplicate origin retrieval of a cached content chunk serves locally.
     /// `None` for an embedder that wires a cacheless provider.
     store: Option<Arc<dyn SwarmLocalStore>>,
 }
 
-impl<I, O, G, L> NetworkChunkProvider<I, O, G, L>
+impl<O, G, L> NetworkChunkProvider<O, G, L>
 where
-    I: SwarmIdentity + 'static,
     O: CandidateOrdering + 'static,
     G: InflightLimit + 'static,
     L: LatencyHint + 'static,
@@ -64,9 +63,14 @@ where
     /// Build the provider over the three retrieval capabilities: candidate
     /// `ordering`, the per-peer `inflight` cap, and the per-PO `latency`
     /// estimate. `store` is the node's own cache, read before the swarm race.
+    // A wiring constructor over the node's already-built collaborators; grouping
+    // them into a params struct would only move the same fields behind one more
+    // type.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client_handle: ClientHandle,
-        topology: TopologyHandle<I>,
+        topology: Arc<dyn RetrievalTopology>,
+        max_bin: Bin,
         ordering: O,
         inflight: G,
         latency: L,
@@ -77,6 +81,7 @@ where
             engine: RetrievalEngine::new(
                 client_handle,
                 topology,
+                max_bin,
                 ordering,
                 inflight,
                 latency,
@@ -88,9 +93,8 @@ where
 }
 
 #[async_trait]
-impl<I, O, G, L> SwarmChunkProvider for NetworkChunkProvider<I, O, G, L>
+impl<O, G, L> SwarmChunkProvider for NetworkChunkProvider<O, G, L>
 where
-    I: SwarmIdentity + 'static,
     O: CandidateOrdering + 'static,
     G: InflightLimit + 'static,
     // The retrieval race holds the in-flight permit across the request await, so
@@ -125,9 +129,8 @@ where
     }
 }
 
-impl<I, O, G, L> NetworkChunkProvider<I, O, G, L>
+impl<O, G, L> NetworkChunkProvider<O, G, L>
 where
-    I: SwarmIdentity + 'static,
     O: CandidateOrdering + 'static,
     G: InflightLimit + 'static,
     L: LatencyHint + 'static,
@@ -161,7 +164,7 @@ where
         // error below).
         let local_depth = self.engine.topology().depth();
         let neighbourhood_credible = self.engine.topology().neighbourhood_credible();
-        let reporter = self.engine.topology().peer_manager();
+        let reporter = self.engine.topology().reporter();
 
         // Try each closest peer in order and return the first receipt that
         // verifies. A shallow receipt is rejected, the responding peer scored
@@ -193,7 +196,7 @@ where
                         peer,
                         local_depth,
                         neighbourhood_credible,
-                        reporter,
+                        reporter.as_ref(),
                     ) {
                         DepthVerdict::Verified => return Ok(push_receipt_of(receipt)),
                         DepthVerdict::Shallow(err) => {
@@ -251,9 +254,8 @@ fn push_receipt_of(receipt: Receipt) -> PushReceipt {
 }
 
 #[async_trait]
-impl<I, O, G, L> SwarmChunkSender for NetworkChunkProvider<I, O, G, L>
+impl<O, G, L> SwarmChunkSender for NetworkChunkProvider<O, G, L>
 where
-    I: SwarmIdentity + 'static,
     O: CandidateOrdering + 'static,
     G: InflightLimit + 'static,
     L: LatencyHint + 'static,
