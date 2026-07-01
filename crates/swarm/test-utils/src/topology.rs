@@ -1,9 +1,10 @@
 //! Mock topology implementations for testing.
 
-use nectar_primitives::{ChunkAddress, SwarmAddress};
+use nectar_primitives::{ChunkAddress, NetworkId, SwarmAddress};
 use std::sync::Arc;
 use vertex_swarm_api::{
-    SwarmIdentity, SwarmNodeType, SwarmTopologyBins, SwarmTopologyPeers, SwarmTopologyRouting,
+    PeerReporter, ReportSource, SwarmIdentity, SwarmNodeType, SwarmScoringEvent, SwarmSpec,
+    SwarmTopologyBins, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
     SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_identity::Identity;
@@ -143,10 +144,12 @@ impl SwarmTopologyBins for MockTopology {
 }
 
 impl SwarmTopologyState for MockTopology {
-    type Identity = Identity;
+    fn overlay_address(&self) -> OverlayAddress {
+        self.identity.overlay_address()
+    }
 
-    fn identity(&self) -> &Self::Identity {
-        self.identity.as_ref()
+    fn network_id(&self) -> NetworkId {
+        self.identity.spec().network_id()
     }
 
     fn depth(&self) -> NeighborhoodDepth {
@@ -196,6 +199,26 @@ impl SwarmTopologyStats for MockTopology {
 
     fn stored_peers_count(&self) -> usize {
         self.stored
+    }
+}
+
+impl SwarmTopologyReporting for MockTopology {
+    fn reporter(&self) -> Arc<dyn PeerReporter> {
+        Arc::new(NoopReporter)
+    }
+}
+
+/// A no-op peer reporter: components under test that reach the mock's reporter do
+/// not exercise scoring.
+struct NoopReporter;
+
+impl PeerReporter for NoopReporter {
+    fn report_peer(
+        &self,
+        _overlay: &OverlayAddress,
+        _event: SwarmScoringEvent,
+        _source: ReportSource,
+    ) {
     }
 }
 

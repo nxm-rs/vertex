@@ -17,11 +17,9 @@ use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::OwnedSemaphorePermit;
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, NeighborhoodDepth, OverlayAddress, PeerReporter,
-    SwarmError, SwarmIdentity, SwarmResult, SwarmTopologyPeers, SwarmTopologyReporting,
-    SwarmTopologyRouting, SwarmTopologyState,
+    Bin, ChunkAddress, ChunkRetrievalResult, OverlayAddress, SwarmError, SwarmResult,
+    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
 };
-use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::time::Duration;
 
 use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
@@ -133,66 +131,21 @@ const PRIMARY_ROUTE_SINGLE_FLIGHT: Duration = Duration::from_secs(3600);
 
 /// Topology surface the retrieval engine and native push path read.
 ///
-/// A bundle of the routing, state, bin, and reporting queries dispatch needs, so
-/// the engine is generic over the topology as a capability alongside its ordering,
-/// in-flight, and latency seams rather than over the identity type. Blanket-impl'd
-/// for [`TopologyHandle`], so the node wires its real handle unchanged and a test
-/// wires a mock.
-#[auto_impl::auto_impl(&, Arc)]
-pub trait RetrievalTopology: Send + Sync {
-    /// Our own overlay address, the local end of every proximity measure.
-    fn overlay_address(&self) -> OverlayAddress;
-
-    /// The highest routable bin, the ceiling for the forwarding-bin route.
-    fn max_bin(&self) -> Bin;
-
-    /// Current neighbourhood depth, the push receipt's custody floor.
-    fn depth(&self) -> NeighborhoodDepth;
-
-    /// Whether the neighbourhood view is saturated enough to anchor that floor.
-    fn neighbourhood_credible(&self) -> bool;
-
-    /// The `count` connected peers closest to `address`, closest first.
-    fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress>;
-
-    /// Connected peers in `bin`, the forwarding-bin route's entry points.
-    fn connected_peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress>;
-
-    /// The peer-scoring reporter, for penalising a shallow push receipt.
-    fn reporter(&self) -> Arc<dyn PeerReporter>;
+/// A marker bundling the four topology query traits dispatch needs into one
+/// object-safe trait, so the engine holds a single `Arc<dyn RetrievalTopology>`
+/// rather than a generic per identity type. Every method it calls belongs to a
+/// sub-trait; the one non-trait value the engine needs, the routing table's max
+/// bin, is a construction constant carried as an engine field, not a query. The
+/// blanket impl means the node's real handle and a test mock both qualify with no
+/// bespoke impl.
+pub trait RetrievalTopology:
+    SwarmTopologyState + SwarmTopologyRouting + SwarmTopologyPeers + SwarmTopologyReporting
+{
 }
 
-impl<I: SwarmIdentity> RetrievalTopology for TopologyHandle<I> {
-    fn overlay_address(&self) -> OverlayAddress {
-        SwarmTopologyState::overlay_address(self)
-    }
-
-    fn max_bin(&self) -> Bin {
-        // Inherent method on the handle; method-call syntax resolves to it over
-        // this trait's same-named method (inherent takes precedence), so this is
-        // a delegation, not recursion.
-        self.max_bin()
-    }
-
-    fn depth(&self) -> NeighborhoodDepth {
-        SwarmTopologyState::depth(self)
-    }
-
-    fn neighbourhood_credible(&self) -> bool {
-        SwarmTopologyState::neighbourhood_credible(self)
-    }
-
-    fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
-        SwarmTopologyRouting::closest_to(self, address, count)
-    }
-
-    fn connected_peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
-        SwarmTopologyPeers::connected_peers_in_bin(self, bin)
-    }
-
-    fn reporter(&self) -> Arc<dyn PeerReporter> {
-        SwarmTopologyReporting::reporter(self)
-    }
+impl<T> RetrievalTopology for T where
+    T: SwarmTopologyState + SwarmTopologyRouting + SwarmTopologyPeers + SwarmTopologyReporting
+{
 }
 
 /// Economic ordering of retrieval and pushsync candidates.
@@ -338,14 +291,13 @@ struct RaceBounds {
 /// [`SwarmError::RetrievalExhausted`]: forwarding retrieval has no authoritative
 /// negative, so the engine never adjudicates absence.
 #[derive(Clone)]
-pub struct RetrievalEngine<
-    T: RetrievalTopology,
-    O: CandidateOrdering,
-    G: InflightLimit,
-    L: LatencyHint,
-> {
+pub struct RetrievalEngine<O: CandidateOrdering, G: InflightLimit, L: LatencyHint> {
     client_handle: ClientHandle,
-    topology: T,
+    topology: Arc<dyn RetrievalTopology>,
+    /// The routing table's highest bin, the ceiling for the forwarding-bin route.
+    /// A spec constant fixed at construction, so it is a field, not a per-request
+    /// topology query.
+    max_bin: Bin,
     ordering: O,
     inflight: G,
     latency: L,
@@ -356,9 +308,8 @@ pub struct RetrievalEngine<
     settlement: Arc<dyn SettlementTrigger>,
 }
 
-impl<T, O, G, L> RetrievalEngine<T, O, G, L>
+impl<O, G, L> RetrievalEngine<O, G, L>
 where
-    T: RetrievalTopology,
     O: CandidateOrdering,
     G: InflightLimit,
     L: LatencyHint,
@@ -366,7 +317,8 @@ where
     /// Build an engine over its capabilities.
     pub fn new(
         client_handle: ClientHandle,
-        topology: T,
+        topology: Arc<dyn RetrievalTopology>,
+        max_bin: Bin,
         ordering: O,
         inflight: G,
         latency: L,
@@ -375,6 +327,7 @@ where
         Self {
             client_handle,
             topology,
+            max_bin,
             ordering,
             inflight,
             latency,
@@ -384,7 +337,7 @@ where
 
     /// The topology, for the native push path's closest-storer dispatch;
     /// retrieval reaches topology through the engine's own dispatch.
-    pub(crate) fn topology(&self) -> &T {
+    pub(crate) fn topology(&self) -> &Arc<dyn RetrievalTopology> {
         &self.topology
     }
 
@@ -496,7 +449,7 @@ where
         // the route here; a gated route falls through to the staggered fallback,
         // which spills to a wider headroom slice.
         let local = self.topology.overlay_address();
-        let max_bin = self.topology.max_bin().get();
+        let max_bin = self.max_bin.get();
         let bin_candidates =
             bin_routed_order(&chunk_address, &local, max_bin, RETRIEVE_WIDTH, |bin| {
                 self.topology.connected_peers_in_bin(bin)
@@ -1142,10 +1095,8 @@ mod tests {
         use std::num::NonZeroUsize;
         use std::sync::{Arc, Mutex};
 
-        use vertex_swarm_api::{
-            Bin, ChunkAddress, NeighborhoodDepth, OverlayAddress, PeerReporter, ReportSource,
-            SwarmError, SwarmScoringEvent,
-        };
+        use vertex_swarm_api::{Bin, ChunkAddress, OverlayAddress, SwarmError};
+        use vertex_swarm_test_utils::MockTopology;
 
         use super::super::{
             CandidateOrdering, NoLatencyHint, RETRIEVE_SETTLE_DRIVES, RetrievalEngine,
@@ -1157,41 +1108,6 @@ mod tests {
 
         fn overlay(byte: u8) -> OverlayAddress {
             OverlayAddress::from([byte; 32])
-        }
-
-        /// A topology whose every routing query returns the same connected set.
-        #[derive(Clone)]
-        struct MockTopology {
-            peers: Vec<OverlayAddress>,
-        }
-
-        impl RetrievalTopology for MockTopology {
-            fn overlay_address(&self) -> OverlayAddress {
-                overlay(0xff)
-            }
-            fn max_bin(&self) -> Bin {
-                Bin::MAX
-            }
-            fn depth(&self) -> NeighborhoodDepth {
-                NeighborhoodDepth::new(Bin::MAX)
-            }
-            fn neighbourhood_credible(&self) -> bool {
-                false
-            }
-            fn closest_to(&self, _address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
-                self.peers.iter().copied().take(count).collect()
-            }
-            fn connected_peers_in_bin(&self, _bin: Bin) -> Vec<OverlayAddress> {
-                self.peers.clone()
-            }
-            fn reporter(&self) -> Arc<dyn PeerReporter> {
-                Arc::new(NoopReporter)
-            }
-        }
-
-        struct NoopReporter;
-        impl PeerReporter for NoopReporter {
-            fn report_peer(&self, _: &OverlayAddress, _: SwarmScoringEvent, _: ReportSource) {}
         }
 
         /// Ordering that gates every candidate: the fully-refused band.
@@ -1228,13 +1144,17 @@ mod tests {
             // round, bounded by the drive budget, then surface the honest
             // RetrievalExhausted rather than exhaust having contacted nobody.
             let peers: Vec<OverlayAddress> = (1..=4).map(overlay).collect();
+            // The mock's `closest_to` returns this set (its `connected_peers_in_bin`
+            // is empty, so the primary bin route yields nothing and the fallback
+            // drives the settle).
+            let topology: Arc<dyn RetrievalTopology> =
+                Arc::new(MockTopology::new(4, 4, 0).with_closest(peers.clone()));
             let settle = RecordingSettle::default();
             let (tx, _rx) = tokio::sync::mpsc::channel(16);
             let engine = RetrievalEngine::new(
                 ClientHandle::new(tx),
-                MockTopology {
-                    peers: peers.clone(),
-                },
+                topology,
+                Bin::MAX,
                 GateAll,
                 PeerInflightLimiter::new(NonZeroUsize::new(4).unwrap()),
                 NoLatencyHint,

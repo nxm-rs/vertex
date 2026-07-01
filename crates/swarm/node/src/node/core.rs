@@ -51,7 +51,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use crate::retrieval_latency::RetrievalLatency;
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
-    PeerInflightLimiter, PeerSelector, SettlementTrigger,
+    PeerInflightLimiter, PeerSelector, RetrievalTopology, SettlementTrigger,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
@@ -579,12 +579,8 @@ pub struct NodeRunParts {
 /// ordering, the per-peer in-flight cap, and the per-PO latency estimate. This is
 /// the RPC chunk surface both client entry points expose; content integrity is
 /// enforced during retrieval decode, so no download-side wrapper sits over it.
-pub type NativeChunkProvider = NetworkChunkProvider<
-    TopologyHandle<Arc<Identity>>,
-    Arc<PeerSelector>,
-    Arc<PeerInflightLimiter>,
-    Arc<RetrievalLatency>,
->;
+pub type NativeChunkProvider =
+    NetworkChunkProvider<Arc<PeerSelector>, Arc<PeerInflightLimiter>, Arc<RetrievalLatency>>;
 
 /// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
 /// the chunk provider, the shared accounting and throttled client handle
@@ -772,9 +768,13 @@ where
         core.client_handle.clone(),
     );
 
+    // The routing table's max bin is a spec constant; read it once here and hand
+    // it to the engine as a field rather than a per-request topology query.
+    let max_bin = topology.max_bin();
     let chunks = NetworkChunkProvider::new(
         core.origin_handle.clone(),
-        topology.clone(),
+        Arc::new(topology.clone()) as Arc<dyn RetrievalTopology>,
+        max_bin,
         Arc::clone(&core.selector),
         Arc::clone(&core.inflight),
         Arc::clone(&core.retrieval_latency),

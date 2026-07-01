@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use libp2p::{Multiaddr, PeerId};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, NetworkId};
 use tokio::sync::{broadcast, mpsc};
 use vertex_swarm_api::{
     PeerReporter, SwarmIdentity, SwarmSpec, SwarmTopologyBins, SwarmTopologyCommands,
@@ -325,10 +325,12 @@ impl<I: SwarmIdentity> SwarmTopologyBins for TopologyHandle<I> {
 }
 
 impl<I: SwarmIdentity> SwarmTopologyState for TopologyHandle<I> {
-    type Identity = I;
+    fn overlay_address(&self) -> OverlayAddress {
+        self.identity.overlay_address()
+    }
 
-    fn identity(&self) -> &Self::Identity {
-        &self.identity
+    fn network_id(&self) -> NetworkId {
+        self.identity.spec().network_id()
     }
 
     fn depth(&self) -> NeighborhoodDepth {

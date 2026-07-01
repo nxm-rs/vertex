@@ -16,7 +16,7 @@ use nectar_primitives::ChunkAddress;
 use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender, SwarmClientAccounting};
 use vertex_swarm_node::{
     AccountingSettlement, LaunchedClient, NetworkChunkProvider, NoLatencyHint, ProximityOnly,
-    SettlementTrigger,
+    RetrievalTopology, SettlementTrigger,
 };
 use wasm_bindgen::prelude::*;
 
@@ -53,9 +53,12 @@ impl SwarmClient {
         let settlement: Arc<dyn SettlementTrigger> = Arc::new(AccountingSettlement::new(
             launched.accounting().bandwidth().clone(),
         ));
+        let max_bin = launched.topology().max_bin();
+        let topology: Arc<dyn RetrievalTopology> = Arc::new(launched.topology().clone());
         let routing = NetworkChunkProvider::new(
             client,
-            launched.topology().clone(),
+            topology,
+            max_bin,
             ProximityOnly,
             launched.inflight().clone(),
             NoLatencyHint,

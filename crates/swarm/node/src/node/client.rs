@@ -190,10 +190,8 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             + 'static,
         A: vertex_swarm_api::SwarmClientAccounting + Send + Sync + 'static,
     {
-        use vertex_swarm_api::SwarmSpec;
-
         let local = self.overlay_address();
-        let network_id = topology.identity().spec().network_id();
+        let network_id = topology.network_id();
         let reporter = topology.reporter();
         // Network id recovers an inbound receipt's signer; set it before any
         // handler is created (handlers clone the config at connection setup).
