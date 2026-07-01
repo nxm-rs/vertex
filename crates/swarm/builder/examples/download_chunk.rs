@@ -21,7 +21,7 @@ use vertex_swarm_api::{
     ChunkAddress, HasChunkClient, HasTopology, SwarmChunkProvider, SwarmNodeType,
     SwarmTopologyCommands,
 };
-use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig};
+use vertex_swarm_builder::ClientConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
@@ -34,17 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec = init_dev();
     let identity = Arc::new(Identity::random(spec.clone(), SwarmNodeType::Client));
 
-    let verify = ChunkVerifyConfig {
-        verify_content: true,
-        verify_stamp: false,
-    };
     let config = ClientConfig::new(
         spec,
         identity,
         NetworkConfig::default(),
         Default::default(),
         Default::default(),
-        verify,
         ChainConfig::default(),
         SwapConfig::default(),
     );

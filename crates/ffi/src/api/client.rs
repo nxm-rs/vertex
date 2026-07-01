@@ -19,7 +19,7 @@ use vertex_swarm_api::{
     ChunkAddress, HasChunkClient, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider,
     SwarmError,
 };
-use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, VerifiedChunkProvider};
+use vertex_swarm_builder::{ClientConfig, NativeChunkProvider};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
@@ -40,7 +40,7 @@ use crate::error::{FfiError, FfiResult};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The concrete chunk provider the client builder produces for a client node.
-type ClientChunks = VerifiedChunkProvider;
+type ClientChunks = NativeChunkProvider;
 
 /// A running embedded Swarm client. Opaque to the host; owns the runtime that
 /// drives the node.
@@ -77,7 +77,6 @@ impl VertexClient {
             network,
             Default::default(),
             Default::default(),
-            ChunkVerifyConfig::default(),
             ChainConfig::default(),
             SwapConfig::default(),
         );
@@ -96,7 +95,7 @@ impl VertexClient {
                 reason: e.to_string(),
             })?;
 
-        // The verifying, selector-aware chunk provider the client components hold.
+        // The selector-aware chunk provider the client components hold.
         let chunks: ClientChunks = handle.components().chunk_client().clone();
 
         Ok(VertexClient {

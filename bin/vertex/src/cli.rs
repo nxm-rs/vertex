@@ -9,7 +9,7 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_node_core::version;
 #[cfg(feature = "storer")]
 use vertex_swarm_builder::StorerConfig;
-use vertex_swarm_builder::{BootnodeConfig, ChunkVerifyConfig, ClientConfig};
+use vertex_swarm_builder::{BootnodeConfig, ClientConfig};
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_primitives::SwarmNodeType;
@@ -128,12 +128,6 @@ pub async fn run() -> Result<()> {
             .with_agent_version(version::AGENT_VERSION.clone());
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
 
-        let retrieval = config.protocol.retrieval();
-        let verify = ChunkVerifyConfig {
-            verify_content: retrieval.verify_content,
-            verify_stamp: retrieval.verify_stamp,
-        };
-
         // Dispatch based on node type. Every node type flows through the same
         // shell: build the validated config, then `with_protocol().launch()`.
         match node_type {
@@ -143,16 +137,8 @@ pub async fn run() -> Result<()> {
                 let chain = config.protocol.chain_config();
                 let swap = config.protocol.swap_config();
 
-                let node_config = ClientConfig::new(
-                    spec,
-                    identity,
-                    network,
-                    bandwidth,
-                    local_store,
-                    verify,
-                    chain,
-                    swap,
-                );
+                let node_config =
+                    ClientConfig::new(spec, identity, network, bandwidth, local_store, chain, swap);
 
                 builder
                     .with_protocol(node_config)
@@ -188,7 +174,6 @@ pub async fn run() -> Result<()> {
                     bandwidth,
                     local_store,
                     storage,
-                    verify,
                     chain,
                     swap,
                 );

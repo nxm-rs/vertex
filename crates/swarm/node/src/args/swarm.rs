@@ -12,7 +12,7 @@ use vertex_swarm_primitives::SwarmNodeType;
 #[cfg(feature = "storer")]
 use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::{ChainArgs, NetworkArgs, RetrievalArgs, SwapArgs, SwarmSpecArgs};
+use super::{ChainArgs, NetworkArgs, SwapArgs, SwarmSpecArgs};
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -79,10 +79,6 @@ pub struct ProtocolArgs {
     /// Bandwidth accounting (includes pricing via `--bandwidth.base-price`).
     #[command(flatten)]
     pub bandwidth: BandwidthArgs,
-
-    /// Chunk retrieval verification.
-    #[command(flatten)]
-    pub retrieval: RetrievalArgs,
 
     #[command(flatten)]
     pub localstore: LocalStoreArgs,

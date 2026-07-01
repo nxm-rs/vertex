@@ -26,9 +26,9 @@ mod staggered_race;
 
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
-    ClientNodeBuilder, ClientNodeParts, ClientTailParams, LaunchedClient, NodeBuildError,
-    NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn, SettlementEventSenders,
-    SharedAccounting, VerifiedChunkProvider, assemble_client_core, build_client_core_tail,
+    ClientNodeBuilder, ClientNodeParts, ClientTailParams, LaunchedClient, NativeChunkProvider,
+    NodeBuildError, NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn,
+    SettlementEventSenders, SharedAccounting, assemble_client_core, build_client_core_tail,
     single_task, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,7 +60,7 @@ pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTr
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, race_with_refill};
 
 pub use bootnodes::BootnodeProvider;
-pub use chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
+pub use chunks::NetworkChunkProvider;
 pub use node::stats::StatsConfig;
 pub use node::task::spawn_stats_task;
 pub use retrieval_engine::{

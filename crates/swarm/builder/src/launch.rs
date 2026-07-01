@@ -15,8 +15,8 @@ use vertex_swarm_api::{
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{
-    BootNode, ChunkVerifyConfig, ClientNode, ClientNodeParts, ClientTailParams, NodeRunParts,
-    RunTaskFn, VerifiedChunkProvider, build_client_core_tail, single_task,
+    BootNode, ClientNode, ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts,
+    RunTaskFn, build_client_core_tail, single_task,
 };
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
@@ -195,7 +195,6 @@ pub(crate) struct ClientNodeParams<'a> {
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
     pub(crate) bandwidth: &'a DefaultBandwidthConfig,
-    pub(crate) verify: ChunkVerifyConfig,
     #[cfg(feature = "swap")]
     pub(crate) chain: &'a ChainConfig,
     #[cfg(feature = "swap")]
@@ -297,7 +296,7 @@ impl NodeAssembly for ClientAssembly {
 ///
 /// Resolves the chain precondition, opens the database, and builds the peer
 /// store, then delegates the wasm-clean wiring (accounting, settlement, the
-/// verified chunk provider, service spawning) to [`build_client_core_tail`]. The
+/// chunk provider, service spawning) to [`build_client_core_tail`]. The
 /// node-type-specific local store and node assembly are injected through
 /// `assembly`, invoked by the tail over the prepared settlement event sinks.
 pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
@@ -354,7 +353,6 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         spec: params.spec,
         identity: params.identity,
         bandwidth,
-        verify: params.verify,
         #[cfg(feature = "swap")]
         swap: ClientSwapParams {
             enable: params.swap.enable,
@@ -483,7 +481,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
 
 impl SwarmLaunchConfig for ClientConfig {
     type Types = ClientLaunchTypes;
-    type Providers = ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>;
+    type Providers = ClientComponents<TopologyHandle<Arc<Identity>>, NativeChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -503,7 +501,7 @@ pub(crate) async fn build_client(
 ) -> Result<
     (
         NodeTaskFn,
-        ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>,
+        ClientComponents<TopologyHandle<Arc<Identity>>, NativeChunkProvider>,
     ),
     SwarmNodeError,
 > {
@@ -516,7 +514,6 @@ pub(crate) async fn build_client(
             identity: config.identity(),
             network: config.network(),
             bandwidth: config.bandwidth(),
-            verify: config.verify(),
             #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]

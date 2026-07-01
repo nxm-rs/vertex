@@ -22,7 +22,6 @@ use crate::config::{BootnodeConfig, ClientConfig};
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode};
 use crate::launch::CacheSeam;
-use vertex_swarm_node::ChunkVerifyConfig;
 
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>
@@ -69,7 +68,6 @@ where
             base: self,
             accounting,
             local_store: LocalStoreConfig::default(),
-            verify: ChunkVerifyConfig::default(),
             chain: ChainConfig::default(),
             swap: SwapConfig::default(),
             cache: None,
@@ -87,7 +85,6 @@ where
     pub(crate) base: NodeBuilder<I, N>,
     pub(crate) accounting: A,
     pub(crate) local_store: LocalStoreConfig,
-    pub(crate) verify: ChunkVerifyConfig,
     pub(crate) chain: ChainConfig,
     pub(crate) swap: SwapConfig,
     /// `None` builds the default in-memory cache sized from `local_store`.
@@ -102,12 +99,6 @@ where
 {
     pub fn spec(&self) -> &Arc<Spec> {
         self.base.spec()
-    }
-
-    /// Set the verification checks applied to downloaded chunks.
-    pub fn with_verify(mut self, verify: ChunkVerifyConfig) -> Self {
-        self.verify = verify;
-        self
     }
 
     /// Set the chain configuration (RPC endpoint and transaction tuning).
@@ -198,11 +189,8 @@ impl DefaultClientBuilder {
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
         bandwidth: DefaultBandwidthConfig,
-        verify: ChunkVerifyConfig,
     ) -> Self {
-        NodeBuilder::new(spec, identity, network)
-            .with_accounting(bandwidth)
-            .with_verify(verify)
+        NodeBuilder::new(spec, identity, network).with_accounting(bandwidth)
     }
 
     pub fn from_config(config: ClientConfig) -> Self {
@@ -211,7 +199,6 @@ impl DefaultClientBuilder {
             config.identity().clone(),
             config.network().clone(),
             config.bandwidth().clone(),
-            config.verify(),
         )
         .with_local_store(config.local_store().clone())
         .with_chain(config.chain().clone())
@@ -227,7 +214,6 @@ impl DefaultClientBuilder {
             self.base.network,
             self.accounting,
             self.local_store,
-            self.verify,
             self.chain,
             self.swap,
         )

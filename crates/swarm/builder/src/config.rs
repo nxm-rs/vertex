@@ -17,7 +17,6 @@ use vertex_node_api::NodeBuildsProtocol;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
-use vertex_swarm_node::ChunkVerifyConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
@@ -89,23 +88,17 @@ pub struct ClientConfig {
     network: NetworkConfig<KademliaConfig>,
     bandwidth: DefaultBandwidthConfig,
     local_store: LocalStoreConfig,
-    verify: ChunkVerifyConfig,
     chain: ChainConfig,
     swap: SwapConfig,
 }
 
 impl ClientConfig {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a client aggregates every validated config section"
-    )]
     pub fn new(
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
         bandwidth: DefaultBandwidthConfig,
         local_store: LocalStoreConfig,
-        verify: ChunkVerifyConfig,
         chain: ChainConfig,
         swap: SwapConfig,
     ) -> Self {
@@ -115,7 +108,6 @@ impl ClientConfig {
             network,
             bandwidth,
             local_store,
-            verify,
             chain,
             swap,
         }
@@ -128,11 +120,6 @@ impl ClientConfig {
     /// Cache sizing for the client's in-memory local store.
     pub fn local_store(&self) -> &LocalStoreConfig {
         &self.local_store
-    }
-
-    /// Verification checks applied to downloaded chunks.
-    pub fn verify(&self) -> ChunkVerifyConfig {
-        self.verify
     }
 
     pub fn chain(&self) -> &ChainConfig {

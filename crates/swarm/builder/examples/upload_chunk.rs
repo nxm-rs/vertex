@@ -25,7 +25,7 @@ use vertex_swarm_api::{
     AnyChunk, Chunk, ChunkAddress, ContentChunk, HasChunkClient, HasTopology, StampedChunk,
     SwarmChunkSender, SwarmNodeType, SwarmTopologyCommands,
 };
-use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig};
+use vertex_swarm_builder::ClientConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
@@ -57,7 +57,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NetworkConfig::default(),
         Default::default(),
         Default::default(),
-        ChunkVerifyConfig::default(),
         ChainConfig::default(),
         SwapConfig::default(),
     );
