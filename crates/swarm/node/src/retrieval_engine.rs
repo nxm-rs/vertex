@@ -9,6 +9,7 @@
 //! browser supplies the zero-sized null objects [`ProximityOnly`] and
 //! [`NoLatencyHint`] but the same real [`PeerInflightLimiter`].
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use metrics::{counter, histogram};
@@ -66,6 +67,19 @@ pub(crate) const RETRIEVE_DEADLINE: Duration = Duration::from_secs(30);
 /// larger set of slightly-farther peers still holds forgiveness headroom and
 /// forwards the chunk just the same.
 const RETRIEVE_SPILL_WIDTH: usize = 128;
+
+/// Attempt budget for the farther-ring spill phase: the second race a difficult
+/// chunk falls to when its whole close set fails on the wire.
+///
+/// Bounded on its own so the two phases' combined metered fan-out stays a small
+/// multiple, never a runaway. The alternative to spending it is failing the
+/// chunk outright and having the consumer re-stream, which costs more attempts
+/// still.
+const RETRIEVE_SPILL_BUDGET: usize = RETRIEVE_ATTEMPT_BUDGET;
+
+/// Wall-clock bound on the farther-ring spill race, separate from the close
+/// race's deadline so the spill phase cannot itself stall the pipeline slot.
+const RETRIEVE_SPILL_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Attempts the bin-bucket primary route dispatches before handing off to the
 /// staggered fallback.
@@ -135,9 +149,10 @@ pub trait InflightLimit: Send + Sync {
     /// cancelled losing attempt.
     type Permit: vertex_tasks::MaybeSend + 'static;
 
-    /// Filter proximity-ordered `candidates` to those with a free slot,
-    /// returning the survivors and whether the race should enforce the cap. When
-    /// every candidate is at its cap the full list is returned with the cap not
+    /// Order proximity-ordered `candidates` free-slot peers first, busy peers as
+    /// a tail, and report whether the race should enforce the cap. No candidate
+    /// is dropped: a busy-but-good holder stays reachable as a last resort. The
+    /// tail is only ever contacted after the free leaders fail, so the cap is not
     /// enforced (degraded service beats failing the request).
     fn available(&self, candidates: Vec<OverlayAddress>) -> (Vec<OverlayAddress>, bool);
 
@@ -149,19 +164,18 @@ impl InflightLimit for PeerInflightLimiter {
     type Permit = OwnedSemaphorePermit;
 
     fn available(&self, candidates: Vec<OverlayAddress>) -> (Vec<OverlayAddress>, bool) {
-        let survivors: Vec<OverlayAddress> = candidates
-            .iter()
-            .copied()
-            .filter(|peer| self.has_free_slot(peer))
-            .collect();
-        // The cap is enforced only when free-slot peers were found: the all-busy
-        // fall-through returns the full list so the race still attempts,
-        // best-effort.
-        if survivors.is_empty() {
-            (candidates, false)
-        } else {
-            (survivors, true)
-        }
+        // Free-slot peers lead; busy peers are appended as a tail rather than
+        // dropped. The staggered race dispatches the free leaders first and
+        // resolves on the first success, so an easy chunk with a free holder never
+        // reaches the tail (no extra over-fetch); only a difficult chunk whose
+        // leaders all fail reaches the busy-but-good holders best-effort,
+        // dispatching over their cap as the bounded last resort that actually
+        // reaches the holder. Free-first ordering is what keeps the tail a last
+        // resort, so the cap is never enforced.
+        let (free, busy): (Vec<OverlayAddress>, Vec<OverlayAddress>) = candidates
+            .into_iter()
+            .partition(|peer| self.has_free_slot(peer));
+        (free.into_iter().chain(busy).collect(), false)
     }
 
     fn try_acquire(&self, peer: &OverlayAddress) -> Option<Self::Permit> {
@@ -440,33 +454,79 @@ where
         // to the no-connected-peers path below, the same RetrievalExhausted a
         // no-peers failure yields, and the consumer re-streams.
         let closest_peers = self.order_with_spill(closest_peers, address);
-        let (candidates, enforce_cap) = self.inflight.available(closest_peers);
+        let (close_candidates, _enforce_cap) = self.inflight.available(closest_peers);
 
-        // Pace the staggered fan-out to the live round trip rather than a fixed
-        // constant. Each candidate's expected latency is read from the per-PO
-        // estimate at its proximity to the chunk (the forwarding distance that
-        // dominates retrieval latency). Cold buckets fall back to the constant, so
-        // this is never slower, only faster on low-RTT distances.
-        let stagger = adaptive_stagger(
-            candidates
+        // Farther-ring spill: when the whole close set fails on the wire (not
+        // merely gated), widen to the admissible peers of a larger slice, minus
+        // the close peers already raced, so the second race reaches holders beyond
+        // the close set rather than re-racing the same failing peers. A gated
+        // close set already spilled to this slice above, so its already-raced set
+        // covers the slice and the difference is empty.
+        let raced: HashSet<OverlayAddress> = close_candidates.iter().copied().collect();
+        let wide = self
+            .topology
+            .closest_to(&chunk_address, RETRIEVE_SPILL_WIDTH);
+        let wide = self.ordering.order_closest_admissible(wide, address);
+        let spill_ring: Vec<OverlayAddress> = wide
+            .into_iter()
+            .filter(|peer| !raced.contains(peer))
+            .collect();
+        let (spill_candidates, _spill_enforce_cap) = self.inflight.available(spill_ring);
+
+        // Pace each phase's staggered fan-out to the live round trip rather than a
+        // fixed constant. Each candidate's expected latency is read from the
+        // per-PO estimate at its proximity to the chunk (the forwarding distance
+        // that dominates retrieval latency). Cold buckets fall back to the
+        // constant, so this is never slower, only faster on low-RTT distances.
+        let close_stagger = adaptive_stagger(
+            close_candidates
+                .iter()
+                .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
+        );
+        let spill_stagger = adaptive_stagger(
+            spill_candidates
                 .iter()
                 .map(|peer| self.latency.estimate(chunk_address.proximity(peer).get())),
         );
 
-        let outcome = self
-            .race_attempts(
-                candidates,
-                chunk_address,
-                RaceBounds {
-                    budget: RETRIEVE_ATTEMPT_BUDGET,
-                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
-                    deadline: RETRIEVE_DEADLINE,
-                    stagger,
-                },
-                enforce_cap,
-                &attempts,
-            )
-            .await;
+        // One dispatch closure feeds both phases. The in-flight cap is not
+        // enforced here (see `available`): a busy-but-good holder is dispatched
+        // best-effort, but only after the free leaders are exhausted, so the easy
+        // chunk still serves from a free peer with no extra over-fetch. The permit
+        // still rides each request future and releases on drop, including a
+        // cancelled losing attempt.
+        let dispatch = |peer_overlay: OverlayAddress| {
+            let permit = self.inflight.try_acquire(&peer_overlay);
+            attempts.fetch_add(1, Ordering::Relaxed);
+            // `originated = true`: our own retrieval, so the client service debits
+            // the serving peer on delivery.
+            let request = self
+                .client_handle
+                .retrieve_chunk(peer_overlay, chunk_address, true);
+            Some(async move {
+                let _permit = permit;
+                request.await
+            })
+        };
+
+        let outcome = race_close_then_spill(
+            close_candidates,
+            spill_candidates,
+            RaceBounds {
+                budget: RETRIEVE_ATTEMPT_BUDGET,
+                max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                deadline: RETRIEVE_DEADLINE,
+                stagger: close_stagger,
+            },
+            RaceBounds {
+                budget: RETRIEVE_SPILL_BUDGET,
+                max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                deadline: RETRIEVE_SPILL_DEADLINE,
+                stagger: spill_stagger,
+            },
+            dispatch,
+        )
+        .await;
 
         let dispatched = attempts.load(Ordering::Relaxed);
         histogram!("swarm.client.retrieval_attempts").record(dispatched as f64);
@@ -495,6 +555,53 @@ where
             // exhausted without serving the chunk. The which-attempt and
             // last-error detail lives in the metrics and debug log above.
             Err(_) => Err(SwarmError::RetrievalExhausted { address: *address }),
+        }
+    }
+}
+
+/// Race the `close` set for the chunk, and on race-exhaustion widen to the
+/// farther `spill` ring, reusing one dispatch closure and its shared attempt
+/// counter.
+///
+/// A close-race deadline is terminal: the wall clock is spent, so widening would
+/// only overrun it. Only an all-failed or no-candidates close race spills, which
+/// is the difficult-chunk case where a present close set could not serve the
+/// chunk but a farther holder still might. Each phase carries its own
+/// [`RaceBounds`], so the spill's metered fan-out is bounded independently of the
+/// close race rather than double-counting a shared budget.
+async fn race_close_then_spill<C, T, E, F, Fut>(
+    close: impl IntoIterator<Item = C>,
+    spill: impl IntoIterator<Item = C>,
+    close_bounds: RaceBounds,
+    spill_bounds: RaceBounds,
+    mut attempt: F,
+) -> Result<T, RaceFailure<E>>
+where
+    F: FnMut(C) -> Option<Fut>,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let close_outcome = race_with_refill(
+        close,
+        close_bounds.budget,
+        close_bounds.max_in_flight,
+        close_bounds.deadline,
+        close_bounds.stagger,
+        &mut attempt,
+    )
+    .await;
+    match close_outcome {
+        Ok(value) => Ok(value),
+        Err(RaceFailure::TimedOut) => Err(RaceFailure::TimedOut),
+        Err(RaceFailure::AllFailed(_) | RaceFailure::NoCandidates) => {
+            race_with_refill(
+                spill,
+                spill_bounds.budget,
+                spill_bounds.max_in_flight,
+                spill_bounds.deadline,
+                spill_bounds.stagger,
+                &mut attempt,
+            )
+            .await
         }
     }
 }
@@ -721,11 +828,16 @@ mod tests {
 
     mod inflight_available {
         use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         use nectar_primitives::SwarmAddress;
 
-        use super::super::InflightLimit;
-        use crate::PeerInflightLimiter;
+        use super::super::{
+            InflightLimit, RETRIEVE_ATTEMPT_BUDGET, RETRIEVE_DEADLINE, RETRIEVE_MAX_IN_FLIGHT,
+            RETRIEVE_SPILL_BUDGET, RETRIEVE_SPILL_DEADLINE, RaceBounds, race_close_then_spill,
+        };
+        use crate::{PeerInflightLimiter, RETRIEVAL_STAGGER, RaceFailure};
 
         const CAP_ONE: NonZeroUsize = match NonZeroUsize::new(1) {
             Some(cap) => cap,
@@ -737,35 +849,151 @@ mod tests {
         }
 
         #[test]
-        fn available_drops_a_capped_head() {
+        fn available_surfaces_a_busy_peer_as_a_tail() {
             let limiter = PeerInflightLimiter::new(CAP_ONE);
             let busy = overlay(1);
             let _held = limiter.try_acquire(&busy).expect("first slot");
 
-            let (survivors, enforce_cap) = limiter.available(vec![busy, overlay(2), overlay(3)]);
+            let (ordered, enforce_cap) = limiter.available(vec![busy, overlay(2), overlay(3)]);
             assert_eq!(
-                survivors,
-                vec![overlay(2), overlay(3)],
-                "the capped head is skipped, the next-closest free peers remain"
+                ordered,
+                vec![overlay(2), overlay(3), busy],
+                "the free peers lead, the busy peer is appended as a tail, never dropped"
             );
-            assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
+            assert!(
+                !enforce_cap,
+                "free-first ordering keeps the tail a last resort, so the cap is not enforced"
+            );
         }
 
         #[test]
-        fn available_falls_through_when_every_candidate_is_capped() {
+        fn available_returns_the_full_list_when_every_candidate_is_capped() {
             let limiter = PeerInflightLimiter::new(CAP_ONE);
             let candidates = vec![overlay(1), overlay(2)];
             let _h1 = limiter.try_acquire(&overlay(1)).expect("slot a");
             let _h2 = limiter.try_acquire(&overlay(2)).expect("slot b");
 
-            let (survivors, enforce_cap) = limiter.available(candidates.clone());
+            let (ordered, enforce_cap) = limiter.available(candidates.clone());
             assert_eq!(
-                survivors, candidates,
-                "all-busy falls through to the full list rather than failing"
+                ordered, candidates,
+                "an all-busy set keeps every peer rather than failing"
             );
             assert!(
                 !enforce_cap,
-                "the all-busy fall-through is best-effort, not cap-enforced"
+                "the all-busy list is best-effort, not cap-enforced"
+            );
+        }
+
+        /// A present-but-failing close set spills to a farther holder that is busy
+        /// at its in-flight cap: `available` surfaces the busy holder as a tail
+        /// (Part A) and the spill race reaches it best-effort after the close race
+        /// exhausts (Part B), so the difficult chunk is served rather than failing.
+        #[tokio::test]
+        async fn failing_close_set_spills_to_a_busy_farther_holder() {
+            let limiter = PeerInflightLimiter::new(CAP_ONE);
+            let failing_close = overlay(1);
+            let holder = overlay(2);
+            // The farther holder is at its cap when the race begins.
+            let _held = limiter.try_acquire(&holder).expect("saturate the holder");
+
+            // The busy holder is surfaced (never dropped), as a tail, cap off.
+            let (spill, enforce_cap) = limiter.available(vec![holder]);
+            assert_eq!(
+                spill,
+                vec![holder],
+                "the busy holder is surfaced, not dropped"
+            );
+            assert!(!enforce_cap, "the busy tail is best-effort, the cap is off");
+
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&attempts);
+            let limiter_ref = &limiter;
+            let outcome = race_close_then_spill(
+                vec![failing_close],
+                spill,
+                RaceBounds {
+                    budget: RETRIEVE_ATTEMPT_BUDGET,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: RETRIEVE_DEADLINE,
+                    stagger: RETRIEVAL_STAGGER,
+                },
+                RaceBounds {
+                    budget: RETRIEVE_SPILL_BUDGET,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: RETRIEVE_SPILL_DEADLINE,
+                    stagger: RETRIEVAL_STAGGER,
+                },
+                |peer: SwarmAddress| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    // Best-effort dispatch: the busy holder has no free permit, but
+                    // the enforce-off race still contacts it.
+                    let _permit = limiter_ref.try_acquire(&peer);
+                    Some(async move {
+                        if peer == holder {
+                            Ok(holder)
+                        } else {
+                            Err("close entry point could not serve it")
+                        }
+                    })
+                },
+            )
+            .await;
+
+            assert_eq!(
+                outcome.ok(),
+                Some(holder),
+                "the spill reaches the busy farther holder the close set never held"
+            );
+        }
+
+        /// A close race that only times out does not spill: the wall clock is
+        /// spent, so widening would overrun it.
+        #[tokio::test]
+        async fn a_close_deadline_is_terminal_and_does_not_spill() {
+            use futures_timer::Delay;
+            use std::time::Duration;
+
+            let spill_dispatched = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&spill_dispatched);
+            let outcome: Result<u32, RaceFailure<&str>> = race_close_then_spill(
+                vec![0u32],
+                vec![1u32],
+                RaceBounds {
+                    budget: 4,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: Duration::from_millis(100),
+                    stagger: Duration::from_secs(3600),
+                },
+                RaceBounds {
+                    budget: 4,
+                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
+                    deadline: Duration::from_secs(1),
+                    stagger: RETRIEVAL_STAGGER,
+                },
+                |candidate: u32| {
+                    if candidate == 1 {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Some(async move {
+                        // The close candidate withholds past its deadline; the spill
+                        // candidate would serve if ever reached.
+                        if candidate == 0 {
+                            Delay::new(Duration::from_secs(30)).await;
+                        }
+                        Ok::<u32, &str>(candidate)
+                    })
+                },
+            )
+            .await;
+
+            assert!(
+                matches!(outcome, Err(RaceFailure::TimedOut)),
+                "a timed-out close race is terminal"
+            );
+            assert_eq!(
+                spill_dispatched.load(Ordering::SeqCst),
+                0,
+                "the spill phase never ran after a close deadline"
             );
         }
     }
