@@ -1,26 +1,21 @@
 //! RPC provider implementations for Swarm nodes.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tracing::warn;
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
+    ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
     SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult,
-    SwarmScoringEvent, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
+    SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_topology::TopologyHandle;
-use vertex_tasks::time::Duration;
 
-use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
-use crate::{
-    ChunkTransferError, ClientHandle, PeerInflightLimiter, PeerSelector, RETRIEVAL_STAGGER,
-    RaceFailure, RetrievalResult, race_walk,
-};
+use crate::retrieval_engine::RetrievalEngine;
+use crate::retrieval_latency::RetrievalLatency;
+use crate::{ClientHandle, PeerInflightLimiter, PeerSelector};
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -29,380 +24,49 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// Proximity-ordered pool of closest connected peers the retrieval walk draws
-/// from.
+/// The native client's concrete retrieval engine: the score- and
+/// affordability-aware selector, the per-peer in-flight cap, and the per-PO
+/// latency estimate, all shared by `Arc`.
+type NativeEngine<I> =
+    RetrievalEngine<I, Arc<PeerSelector>, Arc<PeerInflightLimiter>, Arc<RetrievalLatency>>;
+
+/// Chunk provider using a shared retrieval engine for network retrieval.
 ///
-/// Wider than [`RETRIEVE_LEG_BUDGET`] so that, after skip-busy removes peers at
-/// their in-flight cap, the walk still has next-closest free-slot entry points to
-/// refill a failed leg with rather than overrunning a hot peer. Retrieval is
-/// forwarding-based, so these are connected peers only; the walk never dials.
-const RETRIEVE_WALK_WIDTH: usize = 32;
-
-/// Maximum real retrieval legs the walk dispatches per chunk before giving up.
-///
-/// A chunk whose closest few entry points miss is not absent: each leg is a
-/// distinct peer whose own forwarding chain may still reach the chunk's storers,
-/// so a sparse-bin chunk needs more than the closest few tries. Peers skipped for
-/// back-pressure before dispatch do not count against this budget, so it bounds
-/// only genuine coverage attempts and the metered bandwidth they cost. The
-/// reference node's origin ceiling is 32; this starts conservative and is raised
-/// only on the residual-failure metric below.
-const RETRIEVE_LEG_BUDGET: usize = 8;
-
-/// Maximum legs the staggered fallback keeps concurrently in flight, bounding the
-/// metered over-fetch independently of [`RETRIEVE_LEG_BUDGET`].
-///
-/// A losing race leg is not cancelled downstream: the serving chain forwards and
-/// delivers regardless, so every overlapping leg is real duplicate bandwidth and
-/// cost. The stagger grows the in-flight set one leg per tick, so a withhold-storm
-/// would otherwise reach the full budget concurrently. This caps the simultaneous
-/// legs at a handful while [`RETRIEVE_LEG_BUDGET`] still bounds the lifetime total;
-/// a failed leg refills at once, replacing a freed slot rather than widening, so
-/// the walk keeps its reach.
-const RETRIEVE_WALK_MAX_IN_FLIGHT: usize = 3;
-
-/// Wall-clock bound on the whole retrieval walk across its refilled legs, so a
-/// run of slow or withholding entry points cannot hold a download-pipeline slot
-/// indefinitely. Matches the per-request retrieval lifetime.
-const RETRIEVE_WALK_DEADLINE: Duration = Duration::from_secs(30);
-
-/// Wider topology slice the retrieval fallback spills to when the close set is
-/// fully gated.
-///
-/// The closest peers to a chunk carry a download's debt and gate first; a far
-/// larger set of slightly-farther peers still holds forgiveness headroom and
-/// forwards the chunk just the same. Routing a gated chunk there keeps the
-/// pipeline slot moving instead of parking it while the close set's debt drains.
-const RETRIEVE_SPILL_WIDTH: usize = 128;
-
-/// Legs the bin-bucket primary route dispatches before handing off to the
-/// staggered fallback.
-///
-/// The primary routes a chunk to its Kademlia forwarding bin and tries the
-/// in-headroom connected peers there (then the adjacent bins) one at a time. A
-/// peer already sharing the chunk's prefix forwards over fewer hops, so the
-/// closest few are the high-probability entry points; past that the difficult
-/// chunk is better served by the wider staggered fallback than by more
-/// single-flight bin tries. Bounds the metered legs the primary spends.
-const PRIMARY_ROUTE_BUDGET: usize = 4;
-
-/// Wall-clock bound on the whole bin-bucket primary route.
-///
-/// The primary is single-flight, so a withholding head holds the one in-flight
-/// leg with no overlapping leg to overtake it. This deadline hands a stuck route
-/// off to the staggered fallback rather than stalling the chunk's pipeline slot;
-/// the forwarding bin's peers are close, so a genuine answer arrives well inside
-/// it and only a stuck route pays the full wait.
-const PRIMARY_ROUTE_DEADLINE: Duration = Duration::from_secs(2);
-
-/// Stagger for the primary route, set beyond [`PRIMARY_ROUTE_DEADLINE`] so it
-/// never fires: the primary is strict single-flight.
-///
-/// Exactly one metered leg is in flight at a time, so the happy path delivers a
-/// chunk with no concurrent second leg and over-fetches nothing. A leg advances
-/// only on an explicit failure (the bin spill), and a withholding head falls
-/// through to the staggered fallback at the deadline instead of being raced. The
-/// staggered fan-out that trades a second metered leg for failover latency is
-/// reserved for that fallback, never the primary.
-const PRIMARY_ROUTE_SINGLE_FLIGHT: Duration = Duration::from_secs(3600);
-
-/// Tuning for one staggered walk phase: the lifetime leg `budget`, the
-/// concurrent-leg width `max_in_flight`, the wall-clock `deadline`, and the
-/// per-leg `stagger`.
-struct WalkBounds {
-    budget: usize,
-    max_in_flight: usize,
-    deadline: Duration,
-    stagger: Duration,
-}
-
-/// Chunk provider using ClientHandle for network retrieval.
+/// Every retrieval terminal surfaces as [`SwarmError::RetrievalExhausted`];
+/// forwarding retrieval has no authoritative negative, so absence is never
+/// claimed.
 #[derive(Clone)]
 pub struct NetworkChunkProvider<I: SwarmIdentity> {
-    client_handle: ClientHandle,
-    topology: TopologyHandle<I>,
-    selector: Option<Arc<PeerSelector>>,
-    inflight: Option<Arc<PeerInflightLimiter>>,
-    retrieval_latency: Option<Arc<RetrievalLatency>>,
+    engine: NativeEngine<I>,
 }
 
 impl<I: SwarmIdentity> NetworkChunkProvider<I> {
-    pub fn new(client_handle: ClientHandle, topology: TopologyHandle<I>) -> Self {
+    /// Build the provider over the three retrieval capabilities the native
+    /// client always wires: the candidate `selector`, the per-peer `inflight`
+    /// cap, and the per-PO `retrieval_latency` estimate.
+    pub(crate) fn new(
+        client_handle: ClientHandle,
+        topology: TopologyHandle<I>,
+        selector: Arc<PeerSelector>,
+        inflight: Arc<PeerInflightLimiter>,
+        retrieval_latency: Arc<RetrievalLatency>,
+    ) -> Self {
         Self {
-            client_handle,
-            topology,
-            selector: None,
-            inflight: None,
-            retrieval_latency: None,
+            engine: RetrievalEngine::new(
+                client_handle,
+                topology,
+                selector,
+                inflight,
+                retrieval_latency,
+            ),
         }
-    }
-
-    /// Pace the staggered fallback to the live round trip via the shared per-PO
-    /// latency estimate. The same instance the client service records into.
-    pub(crate) fn with_retrieval_latency(mut self, latency: Arc<RetrievalLatency>) -> Self {
-        self.retrieval_latency = Some(latency);
-        self
-    }
-
-    /// Order retrieval and pushsync candidates with `selector` (score- and
-    /// affordability-aware) instead of plain proximity order.
-    pub fn with_selector(mut self, selector: Arc<PeerSelector>) -> Self {
-        self.selector = Some(selector);
-        self
-    }
-
-    /// Cap concurrent outbound retrieval substreams per peer, skipping a peer at
-    /// its cap in favour of the next-closest candidate with a free slot.
-    pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
-        self.inflight = Some(inflight);
-        self
-    }
-
-    /// Order the close set, spilling to the closest admissible peers of a wider
-    /// slice when the close set is fully gated.
-    ///
-    /// A non-empty band over the close set returns at once (the fast path), keeping
-    /// the close set's headroom-first debt spread. When every close peer is
-    /// refused, the closest few have spent their forgiveness on this download while
-    /// a far larger ring of slightly-farther peers still carries headroom; banding
-    /// [`RETRIEVE_SPILL_WIDTH`] peers and routing the chunk to an admissible one
-    /// there forwards it just the same, without parking the pipeline slot for the
-    /// seconds a close-set debt takes to drain. The spill orders that wider slice
-    /// by plain proximity among the admissible (not headroom-first), so the closest
-    /// admissible peer leads and the chunk travels the minimum extra distance to
-    /// find capacity. If even the wider slice is fully gated the result is empty and
-    /// the caller falls through to its generic transient failure, leaving the
-    /// consumer to re-stream rather than blocking the slot on a settle drain.
-    /// Disconnect-safe: the band still hard-skips every refused peer. With no
-    /// selector the proximity order is returned unchanged.
-    fn select_or_spill(
-        &self,
-        candidates: Vec<SwarmAddress>,
-        chunk: &ChunkAddress,
-    ) -> Vec<SwarmAddress> {
-        let Some(selector) = &self.selector else {
-            return candidates;
-        };
-        let ordered = selector.order(candidates, chunk);
-        if !ordered.is_empty() {
-            return ordered;
-        }
-        let wide = self.topology.closest_to(chunk, RETRIEVE_SPILL_WIDTH);
-        selector.order_closest_admissible(wide, chunk)
-    }
-
-    /// Order `candidates` through the accounting band.
-    ///
-    /// Used by the bin-bucket primary and the pushsync path. Drops refused peers
-    /// and ranks by score; with no selector the order is unchanged. The peer a
-    /// request dispatches to is settled at the origin credit gate.
-    fn select_now(&self, candidates: Vec<SwarmAddress>, chunk: &ChunkAddress) -> Vec<SwarmAddress> {
-        match &self.selector {
-            Some(selector) => selector.order(candidates, chunk),
-            None => candidates,
-        }
-    }
-
-    /// Run one bounded staggered walk over `candidates`, dispatching each leg as
-    /// an originated retrieval that reserves the per-peer in-flight permit riding
-    /// its future. Shared by the single-flight primary route and the staggered
-    /// fallback; `legs` accumulates the metered legs across both phases.
-    ///
-    /// With `enforce_cap`, a peer that filled its in-flight slot since the
-    /// skip-busy snapshot is declined at dispatch (no leg, no budget unit) so the
-    /// cap holds on live state; without it (no limiter, or the all-busy
-    /// fall-through) the leg runs best-effort even with no permit.
-    async fn walk_legs(
-        &self,
-        candidates: Vec<SwarmAddress>,
-        chunk_address: SwarmAddress,
-        bounds: WalkBounds,
-        enforce_cap: bool,
-        legs: &AtomicUsize,
-    ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
-        race_walk(
-            candidates,
-            bounds.budget,
-            bounds.max_in_flight,
-            bounds.deadline,
-            bounds.stagger,
-            |peer_overlay| {
-                let permit = self
-                    .inflight
-                    .as_ref()
-                    .and_then(|limiter| limiter.try_acquire(&peer_overlay));
-                // A peer that filled since the skip-busy snapshot is declined so
-                // the cap holds on live state, spending no budget; best-effort
-                // (no limiter or all-busy fall-through) attempts without a permit.
-                if enforce_cap && permit.is_none() {
-                    return None;
-                }
-                legs.fetch_add(1, Ordering::Relaxed);
-                // `originated = true`: our own retrieval, so the client service
-                // debits the serving peer on delivery.
-                let request = self
-                    .client_handle
-                    .retrieve_chunk(peer_overlay, chunk_address, true);
-                Some(async move {
-                    let _permit = permit;
-                    request.await
-                })
-            },
-        )
-        .await
     }
 }
 
 #[async_trait]
 impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
-        let chunk_address = SwarmAddress::new(address.0.into());
-        let legs = AtomicUsize::new(0);
-
-        // PRIMARY: bin-bucket proximity route. Route the chunk to its Kademlia
-        // forwarding bin b = PO(local, chunk) and dispatch the best in-headroom
-        // connected peer there, spilling to the adjacent bins on saturation. A
-        // peer in bin b already shares the chunk's first b bits, so it forwards
-        // over fewer hops than a peer picked by raw closeness alone: fewer hops
-        // is lower per-chunk latency, the throughput lever. The route is
-        // single-flight (no stagger), so the happy path delivers one chunk for
-        // one metered leg and over-fetches nothing. The accounting band ranks the
-        // route here; a gated route falls through to the staggered fallback, which
-        // spills to a wider headroom slice.
-        let local = self.topology.overlay_address();
-        let max_bin = self.topology.max_bin().get();
-        let bin_candidates = bin_routed_order(
-            &chunk_address,
-            &local,
-            max_bin,
-            RETRIEVE_WALK_WIDTH,
-            |bin| self.topology.connected_peers_in_bin(bin),
-        );
-        let bin_candidates = self.select_now(bin_candidates, &chunk_address);
-        // Skip-busy: drop peers at their in-flight cap so the route leads with an
-        // in-headroom peer. The cap is the non-economic muxer guard, composed
-        // after the accounting band, never merged with it.
-        let (bin_candidates, enforce_cap) = skip_busy(bin_candidates, self.inflight.as_deref());
-
-        if !bin_candidates.is_empty() {
-            let primary = self
-                .walk_legs(
-                    bin_candidates,
-                    chunk_address,
-                    WalkBounds {
-                        budget: PRIMARY_ROUTE_BUDGET,
-                        // Single-flight: at most one metered leg in flight,
-                        // advancing the bin spill only on an explicit failure.
-                        max_in_flight: 1,
-                        deadline: PRIMARY_ROUTE_DEADLINE,
-                        stagger: PRIMARY_ROUTE_SINGLE_FLIGHT,
-                    },
-                    enforce_cap,
-                    &legs,
-                )
-                .await;
-            if let Ok(result) = primary {
-                let walked = legs.load(Ordering::Relaxed);
-                histogram!("retrieval_walk_legs").record(walked as f64);
-                counter!("retrieval_walk_total", "outcome" => "hit", "path" => "bin_route")
-                    .increment(1);
-                record_overfetch_legs(walked, "bin_route");
-                return Ok(ChunkRetrievalResult {
-                    chunk: result.chunk,
-                    stamp: result.stamp,
-                    served_by: result.peer,
-                });
-            }
-        }
-
-        // FALLBACK: the staggered bounded-refill walk over the globally closest
-        // connected peers. Reached when the bin route is gated, saturated, or its
-        // entry points all miss. Retrieval is forwarding-Kademlia with no
-        // authoritative negative on the wire: a failed or slow leg means "this
-        // entry point could not serve it", never "the chunk is absent", so the
-        // walk keeps going and only gives up on a real bound (the leg budget, the
-        // pool, or the deadline). Staggering one leg in at a time bounds the paid
-        // fan-out; each leg reserves the per-peer in-flight permit that rides its
-        // future, released on drop including a cancelled losing leg.
-        let closest_peers = self
-            .topology
-            .closest_to(&chunk_address, RETRIEVE_WALK_WIDTH);
-        // Spill to a wider in-headroom slice when every close peer is gated, so a
-        // fully gated close set routes around its spent peers rather than blocking;
-        // if even the wide slice is gated the empty result falls through to the
-        // no-connected-peers path below, the same generic transient error a
-        // no-peers failure yields, and the consumer re-streams.
-        let closest_peers = self.select_or_spill(closest_peers, &chunk_address);
-        let (candidates, enforce_cap) = skip_busy(closest_peers, self.inflight.as_deref());
-
-        // Pace the staggered fan-out to the live round trip rather than a fixed
-        // constant. Each candidate's expected latency is read from the per-PO
-        // estimate at its proximity to the chunk (the forwarding distance that
-        // dominates retrieval latency), so a near neighbourhood walks far below
-        // the ceiling and a far one stays at it. Cold buckets fall back to the
-        // constant, so this is never slower, only faster on low-RTT distances.
-        let stagger = match &self.retrieval_latency {
-            Some(latency) => adaptive_stagger(
-                candidates
-                    .iter()
-                    .map(|peer| latency.estimate(chunk_address.proximity(peer).get())),
-            ),
-            None => RETRIEVAL_STAGGER,
-        };
-
-        let outcome = self
-            .walk_legs(
-                candidates,
-                chunk_address,
-                WalkBounds {
-                    budget: RETRIEVE_LEG_BUDGET,
-                    max_in_flight: RETRIEVE_WALK_MAX_IN_FLIGHT,
-                    deadline: RETRIEVE_WALK_DEADLINE,
-                    stagger,
-                },
-                enforce_cap,
-                &legs,
-            )
-            .await;
-
-        let legs = legs.load(Ordering::Relaxed);
-        histogram!("retrieval_walk_legs").record(legs as f64);
-        let outcome_label = match &outcome {
-            Ok(_) => "hit",
-            Err(RaceFailure::NoCandidates) => "no_peers",
-            Err(RaceFailure::AllFailed(_)) => "exhausted",
-            Err(RaceFailure::TimedOut) => "timed_out",
-        };
-        counter!("retrieval_walk_total", "outcome" => outcome_label, "path" => "fallback")
-            .increment(1);
-        if outcome.is_ok() {
-            // `legs` spans both phases, so a fallback win also counts the primary
-            // legs the missed bin route already spent.
-            record_overfetch_legs(legs, "fallback");
-        }
-
-        match outcome {
-            Ok(result) => Ok(ChunkRetrievalResult {
-                chunk: result.chunk,
-                stamp: result.stamp,
-                served_by: result.peer,
-            }),
-            Err(RaceFailure::NoCandidates) => Err(SwarmError::network_msg(
-                "no connected peers available for retrieval",
-            )),
-            Err(RaceFailure::AllFailed(e)) => Err(SwarmError::AllPeersFailed {
-                address: *address,
-                attempts: legs,
-                source: Box::new(e),
-            }),
-            // The walk ran out of wall-clock time with legs still slow rather
-            // than failed: a transient condition, surfaced like a no-peers miss
-            // so the consumer re-streams the address rather than treating it as a
-            // hard not-found.
-            Err(RaceFailure::TimedOut) => Err(SwarmError::network_msg(
-                "retrieval walk deadline elapsed before any peer served the chunk",
-            )),
-        }
+        self.engine.retrieve(address).await
     }
 
     fn has_chunk(&self, _address: &ChunkAddress) -> bool {
@@ -415,17 +79,20 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     /// Push `chunk` to the storer peers closest to its address, returning the
     /// first receipt.
     ///
-    /// Walks the closest candidates in order and returns the first storer that
+    /// Tries the closest candidates in order and returns the first storer that
     /// accepts the chunk. The client handle correlates a push response to its
     /// request by chunk address alone, so the candidates are tried sequentially
     /// rather than raced.
     async fn push_to_closest(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
         let address = *chunk.address();
-        let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
+        let closest = self
+            .engine
+            .topology()
+            .closest_to(&address, PUSH_CANDIDATE_COUNT);
         // Rank by band and score, hard-skipping a refused peer; an all-gated set
         // yields an empty result and the generic no-storer outcome below. The peer
         // a push actually dispatches to is settled at the origin credit gate.
-        let closest = self.select_now(closest, &address);
+        let closest = self.engine.order(closest, &address);
         let attempts = closest.len();
 
         // The required custody depth is derived from our locally observed
@@ -436,13 +103,13 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         // verdict. The receipt's signer was already recovered at the decode
         // boundary; a malformed receipt never reaches here (it surfaces as a push
         // error below).
-        let local_depth = self.topology.depth();
-        let neighbourhood_credible = self.topology.neighbourhood_credible();
-        let reporter = self.topology.peer_manager();
+        let local_depth = self.engine.topology().depth();
+        let neighbourhood_credible = self.engine.topology().neighbourhood_credible();
+        let reporter = self.engine.topology().peer_manager();
 
         // Try each closest peer in order and return the first receipt that
         // verifies. A shallow receipt is rejected, the responding peer scored
-        // adversely, and the walk continues to the next candidate: this is the
+        // adversely, and the loop continues to the next candidate: this is the
         // retry-via-different-route dynamic the depth check exists to engage (a
         // fabricated shallow receipt no longer convinces the uploader the push
         // succeeded). An unverifiable receipt (non-credible local view) is also
@@ -459,7 +126,8 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             // `originated = true`: our own push, so the client service debits
             // the storer on receipt.
             match self
-                .client_handle
+                .engine
+                .client_handle()
                 .push_chunk(peer, chunk.clone(), true)
                 .await
             {
@@ -512,107 +180,6 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         }
 
         outcome
-    }
-}
-
-/// Build the bin-bucket proximity-routed candidate order for `chunk`.
-///
-/// Routes to the Kademlia forwarding bin `b = PO(local, chunk)` first: a peer
-/// there shares the chunk's first `b` bits, so it is at least as close to the
-/// chunk as we are and forwards over fewer hops. When that bin yields too few
-/// peers the route spills outward to the adjacent bins (`b-1`, `b+1`, `b-2`, ...)
-/// up to `width` candidates, so a sparse forwarding bin still finds an entry
-/// point. Within every bin the peers are ordered closest-to-chunk first.
-/// `peers_in_bin` returns connected peers only; retrieval never dials.
-fn bin_routed_order(
-    chunk: &SwarmAddress,
-    local: &SwarmAddress,
-    max_bin: u8,
-    width: usize,
-    peers_in_bin: impl Fn(Bin) -> Vec<SwarmAddress>,
-) -> Vec<SwarmAddress> {
-    let b = chunk.proximity(local).get().min(max_bin);
-    let mut order: Vec<SwarmAddress> = Vec::with_capacity(width);
-    for bin_index in spill_bins(b, max_bin) {
-        if order.len() >= width {
-            break;
-        }
-        let bin = Bin::new(bin_index).unwrap_or(Bin::MAX);
-        let mut in_bin = peers_in_bin(bin);
-        in_bin.sort_by_key(|peer| std::cmp::Reverse(chunk.proximity(peer)));
-        order.extend(in_bin);
-    }
-    order.truncate(width);
-    order
-}
-
-/// Bin visiting order for the bin-bucket route: the forwarding bin `b`, then
-/// outward to the nearest bins on either side (`b-1`, `b+1`, `b-2`, `b+2`, ...)
-/// within `[0, max_bin]`.
-fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
-    let mut bins = Vec::with_capacity(max_bin as usize + 1);
-    bins.push(b);
-    let mut delta = 1u8;
-    loop {
-        let mut pushed = false;
-        if let Some(lower) = b.checked_sub(delta) {
-            bins.push(lower);
-            pushed = true;
-        }
-        let upper = b.saturating_add(delta);
-        if upper > b && upper <= max_bin {
-            bins.push(upper);
-            pushed = true;
-        }
-        if !pushed {
-            break;
-        }
-        delta += 1;
-    }
-    bins
-}
-
-/// Record the metered legs a successful retrieval spent beyond the one that won.
-///
-/// Each extra leg is a failed refill or a concurrent loser the race dropped; a
-/// dropped loser is not cancelled downstream, so it still fetches and meters a
-/// duplicate. This is the dispatch-side over-fetch signal (an upper bound). The
-/// delivery-side count of duplicates that actually arrived is
-/// `swarm.client.retrieval_overfetch_delivered`, emitted by the handler.
-fn record_overfetch_legs(legs: usize, path: &'static str) {
-    if let Some(extra) = legs.checked_sub(1).filter(|extra| *extra > 0) {
-        counter!("retrieval_overfetch_legs", "path" => path).increment(extra as u64);
-    }
-}
-
-/// Filter proximity-ordered `candidates` to those with a free retrieval slot,
-/// returning the survivors and whether the walk should enforce the cap.
-///
-/// With no limiter the list is unchanged and `enforce_cap` is false. When every
-/// close candidate is at its in-flight cap the full list is returned with
-/// `enforce_cap` false (fall through, since degraded service beats failing the
-/// request, so legs run best-effort). Only when free-slot peers are found is
-/// `enforce_cap` true, so a peer that fills between this snapshot and dispatch is
-/// declined rather than run uncapped. Skip-busy happens here, at selection time,
-/// so a busy head peer is never raced and the next-closest free peer leads.
-fn skip_busy(
-    candidates: Vec<SwarmAddress>,
-    inflight: Option<&PeerInflightLimiter>,
-) -> (Vec<SwarmAddress>, bool) {
-    let Some(limiter) = inflight else {
-        return (candidates, false);
-    };
-    let survivors: Vec<SwarmAddress> = candidates
-        .iter()
-        .copied()
-        .filter(|peer| limiter.has_free_slot(peer))
-        .collect();
-    // `enforce_cap` only when free-slot peers were found: the all-busy
-    // fall-through returns the full list so the walk still attempts, best-effort.
-    if survivors.is_empty() {
-        (candidates, false)
-    } else {
-        (survivors, true)
     }
 }
 
@@ -833,9 +400,9 @@ mod tests {
 
     #[test]
     fn origin_treats_an_unverifiable_receipt_as_unconfirmed_without_reporting() {
-        // Regression for #316: with a non-credible local view (a fresh or sparse
-        // node, local_depth == 0) a shallow receipt declaring radius 0 must NOT
-        // be accepted, and the responder must NOT be penalised: the verdict is
+        // Regression for a non-credible local view (a fresh or sparse node,
+        // local_depth == 0): a shallow receipt declaring radius 0 must NOT be
+        // accepted, and the responder must NOT be penalised: the verdict is
         // unverifiable, not a finding of misbehaviour.
         let signer = PrivateKeySigner::random();
         let addr = address(0xff);
@@ -855,116 +422,6 @@ mod tests {
         );
     }
 
-    mod bin_route {
-        use std::collections::HashMap;
-
-        use super::super::{bin_routed_order, spill_bins};
-        use nectar_primitives::SwarmAddress;
-        use vertex_swarm_api::Bin;
-
-        /// An address with `byte0` set, the rest zero, so its proximity to the
-        /// zero local overlay is controllable.
-        fn addr(byte0: u8) -> SwarmAddress {
-            let mut bytes = [0u8; 32];
-            bytes[0] = byte0;
-            SwarmAddress::from(bytes)
-        }
-
-        #[test]
-        fn spill_visits_the_forwarding_bin_then_outward() {
-            // Mid bin: b, then b-1, b+1, b-2, b+2, ... clamped to [0, max].
-            assert_eq!(spill_bins(4, 8), vec![4, 3, 5, 2, 6, 1, 7, 0, 8]);
-        }
-
-        #[test]
-        fn spill_clamps_at_both_edges() {
-            // b == 0 never produces a negative bin; b == max never overshoots.
-            assert_eq!(spill_bins(0, 3), vec![0, 1, 2, 3]);
-            assert_eq!(spill_bins(3, 3), vec![3, 2, 1, 0]);
-            assert_eq!(spill_bins(0, 0), vec![0]);
-        }
-
-        #[test]
-        fn routes_to_the_forwarding_bin_first_then_spills() {
-            // local is the zero overlay; chunk 0x08 (0000_1000) shares its first
-            // four bits with local, so the forwarding bin is 4.
-            let local = addr(0x00);
-            let chunk = addr(0x08);
-            // One sentinel peer per bin, encoding the bin index in byte 1.
-            let peers = |bin: Bin| {
-                let mut bytes = [0u8; 32];
-                bytes[1] = bin.get();
-                bytes[2] = 0x01; // distinguish from local/chunk
-                vec![SwarmAddress::from(bytes)]
-            };
-
-            let order = bin_routed_order(&chunk, &local, 8, 32, peers);
-            let bins: Vec<u8> = order
-                .iter()
-                .map(|p| p.as_bytes().get(1).copied().unwrap())
-                .collect();
-            assert_eq!(
-                bins,
-                vec![4, 3, 5, 2, 6, 1, 7, 0, 8],
-                "the forwarding bin leads, then the route spills outward"
-            );
-        }
-
-        #[test]
-        fn orders_within_a_bin_by_closeness_to_the_chunk() {
-            let local = addr(0x00);
-            let chunk = addr(0x08);
-            let near = addr(0x08); // shares the chunk's prefix: high proximity
-            let far = addr(0xff); // diverges at the first bit: proximity 0
-            let b = chunk.proximity(&local).get();
-            let bin_b = b;
-            let peers = move |bin: Bin| {
-                if bin.get() == bin_b {
-                    vec![far, near]
-                } else {
-                    Vec::new()
-                }
-            };
-
-            let order = bin_routed_order(&chunk, &local, 31, 32, peers);
-            assert_eq!(
-                order,
-                vec![near, far],
-                "the closer-to-chunk peer leads its bin regardless of input order"
-            );
-        }
-
-        #[test]
-        fn respects_the_width_cap() {
-            let local = addr(0x00);
-            let chunk = addr(0x08);
-            // Three peers in every bin; a width of 5 takes only the first five.
-            let peers = |bin: Bin| {
-                (0u8..3)
-                    .map(|i| {
-                        let mut bytes = [0u8; 32];
-                        bytes[1] = bin.get();
-                        bytes[2] = i + 1;
-                        SwarmAddress::from(bytes)
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let order = bin_routed_order(&chunk, &local, 8, 5, peers);
-            assert_eq!(order.len(), 5, "width caps the candidate count");
-        }
-
-        #[test]
-        fn empty_bins_yield_no_candidates() {
-            let local = addr(0x00);
-            let chunk = addr(0x08);
-            let empty: HashMap<u8, Vec<SwarmAddress>> = HashMap::new();
-            let order = bin_routed_order(&chunk, &local, 8, 32, |bin| {
-                empty.get(&bin.get()).cloned().unwrap_or_default()
-            });
-            assert!(order.is_empty(), "no connected peers yields no route");
-        }
-    }
-
     mod staggered_race {
         use std::time::{Duration, Instant};
 
@@ -974,8 +431,8 @@ mod tests {
 
         use crate::race_candidates;
 
-        use super::super::{RETRIEVAL_STAGGER, RaceFailure};
         use super::*;
+        use crate::{RETRIEVAL_STAGGER, RaceFailure};
 
         fn test_chunk() -> nectar_primitives::AnyChunk {
             ContentChunk::new(&b"provider-race-chunk"[..])
@@ -987,7 +444,7 @@ mod tests {
         /// attempt is `client_handle.retrieve_chunk(peer, address)`, raced with a
         /// staggered start. The per-candidate pacing (the admission band and
         /// affordability check) lives inside that call, so this exercises the
-        /// provider's retrieval leg and race wiring without standing up a
+        /// provider's retrieval attempt and race wiring without standing up a
         /// topology mock.
         async fn race_over_handle(
             handle: ClientHandle,
@@ -1090,7 +547,7 @@ mod tests {
         }
     }
 
-    mod skip_busy_scheduler {
+    mod inflight_scheduler {
         use std::num::NonZeroUsize;
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -1106,11 +563,11 @@ mod tests {
 
         use crate::race_candidates;
 
-        use super::super::{
-            RETRIEVAL_STAGGER, RETRIEVE_LEG_BUDGET, RETRIEVE_WALK_DEADLINE, RaceFailure, race_walk,
-            skip_busy,
-        };
         use super::*;
+        use crate::retrieval_engine::{
+            InflightLimit, RETRIEVE_ATTEMPT_BUDGET, RETRIEVE_DEADLINE, RETRIEVE_MAX_IN_FLIGHT,
+        };
+        use crate::{RETRIEVAL_STAGGER, RaceFailure, race_with_refill};
 
         const CAP_ONE: NonZeroUsize = match NonZeroUsize::new(1) {
             Some(cap) => cap,
@@ -1122,13 +579,13 @@ mod tests {
         }
 
         fn test_chunk() -> nectar_primitives::AnyChunk {
-            ContentChunk::new(&b"skip-busy-chunk"[..])
+            ContentChunk::new(&b"inflight-chunk"[..])
                 .expect("valid content chunk")
                 .into()
         }
 
-        /// Drive the exact composition the provider builds: skip-busy filtering
-        /// at selection time, then the staggered race whose legs reserve an
+        /// Drive the exact composition the provider builds: availability
+        /// filtering at selection time, then the staggered race whose attempts reserve an
         /// in-flight permit that rides the request future and releases on drop.
         async fn race_with_limiter(
             handle: ClientHandle,
@@ -1136,7 +593,7 @@ mod tests {
             candidates: Vec<SwarmAddress>,
             address: ChunkAddress,
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
-            let (candidates, _enforce_cap) = skip_busy(candidates, Some(&limiter));
+            let (candidates, _enforce_cap) = limiter.available(candidates);
             race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
                 let permit = limiter.try_acquire(&peer);
                 let handle = handle.clone();
@@ -1148,68 +605,28 @@ mod tests {
             .await
         }
 
-        #[test]
-        fn skip_busy_without_a_limiter_keeps_every_candidate() {
-            let candidates = vec![overlay(1), overlay(2), overlay(3)];
-            assert_eq!(skip_busy(candidates.clone(), None), (candidates, false));
-        }
-
-        #[test]
-        fn skip_busy_drops_a_capped_head() {
-            let limiter = PeerInflightLimiter::new(CAP_ONE);
-            let busy = overlay(1);
-            let _held = limiter.try_acquire(&busy).expect("first slot");
-
-            let (survivors, enforce_cap) =
-                skip_busy(vec![busy, overlay(2), overlay(3)], Some(&limiter));
-            assert_eq!(
-                survivors,
-                vec![overlay(2), overlay(3)],
-                "the capped head is skipped, the next-closest free peers remain"
-            );
-            assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
-        }
-
-        #[test]
-        fn skip_busy_falls_through_when_every_candidate_is_capped() {
-            let limiter = PeerInflightLimiter::new(CAP_ONE);
-            let candidates = vec![overlay(1), overlay(2)];
-            let _h1 = limiter.try_acquire(&overlay(1)).expect("slot a");
-            let _h2 = limiter.try_acquire(&overlay(2)).expect("slot b");
-
-            let (survivors, enforce_cap) = skip_busy(candidates.clone(), Some(&limiter));
-            assert_eq!(
-                survivors, candidates,
-                "all-busy falls through to the full list rather than failing"
-            );
-            assert!(
-                !enforce_cap,
-                "the all-busy fall-through is best-effort, not cap-enforced"
-            );
-        }
-
         #[tokio::test]
-        async fn walk_budget_caps_metered_legs_below_the_free_slot_pool() {
-            // A wide pool of free-slot peers must not meter a leg each: the walk
-            // dispatches at most the leg budget, refilling a failed leg from the
+        async fn race_budget_caps_metered_attempts_below_the_free_slot_pool() {
+            // A wide pool of free-slot peers must not meter an attempt each: the race
+            // dispatches at most the attempt budget, refilling a failed attempt from the
             // next-closest peer, so the wider pool supplies coverage alternatives
             // without amplifying paid bandwidth.
             let (tx, rx) = mpsc::channel::<ClientCommand>(64);
-            drop(rx); // every retrieval fails at once: the walk spends its budget.
+            drop(rx); // every retrieval fails at once: the race spends its budget.
             let handle = ClientHandle::new(tx);
             let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
 
             let pool: Vec<SwarmAddress> = (1..=16).map(overlay).collect();
-            let (candidates, _enforce_cap) = skip_busy(pool, Some(&limiter));
+            let (candidates, _enforce_cap) = limiter.available(pool);
             assert_eq!(candidates.len(), 16, "all 16 peers have a free slot");
 
-            let legs = Arc::new(AtomicUsize::new(0));
-            let counted = Arc::clone(&legs);
-            let outcome = race_walk(
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&attempts);
+            let outcome = race_with_refill(
                 candidates,
-                RETRIEVE_LEG_BUDGET,
-                RETRIEVE_WALK_MAX_IN_FLIGHT,
-                RETRIEVE_WALK_DEADLINE,
+                RETRIEVE_ATTEMPT_BUDGET,
+                RETRIEVE_MAX_IN_FLIGHT,
+                RETRIEVE_DEADLINE,
                 RETRIEVAL_STAGGER,
                 move |peer| {
                     counted.fetch_add(1, Ordering::SeqCst);
@@ -1225,17 +642,17 @@ mod tests {
 
             assert!(matches!(outcome, Err(RaceFailure::AllFailed(_))));
             assert_eq!(
-                legs.load(Ordering::SeqCst),
-                RETRIEVE_LEG_BUDGET,
-                "the walk meters at most the leg budget across the wider free-slot pool"
+                attempts.load(Ordering::SeqCst),
+                RETRIEVE_ATTEMPT_BUDGET,
+                "the race meters at most the attempt budget across the wider free-slot pool"
             );
         }
 
         #[tokio::test]
         async fn enforce_cap_declines_a_peer_that_filled_since_the_snapshot() {
-            // A peer free at the skip-busy snapshot but saturated before its leg
-            // dispatches is declined under enforce_cap: no command reaches it and
-            // it spends no leg, so the cap holds on live state, not the stale
+            // A peer free at the availability snapshot but saturated before its
+            // attempt dispatches is declined under enforce_cap: no command reaches
+            // it and it spends no attempt, so the cap holds on live state, not the stale
             // snapshot. The next free peer serves instead.
             let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
             let handle = ClientHandle::new(tx);
@@ -1244,8 +661,8 @@ mod tests {
             let filled = overlay(1);
             let free = overlay(2);
 
-            // Skip-busy sees both peers free, so the walk enforces the cap.
-            let (candidates, enforce_cap) = skip_busy(vec![filled, free], Some(&limiter));
+            // Availability sees both peers free, so the race enforces the cap.
+            let (candidates, enforce_cap) = limiter.available(vec![filled, free]);
             assert_eq!(candidates, vec![filled, free]);
             assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
 
@@ -1255,20 +672,20 @@ mod tests {
                 .expect("saturate the first peer");
 
             let address = address(0xac);
-            let legs = Arc::new(AtomicUsize::new(0));
-            let counted = Arc::clone(&legs);
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&attempts);
             let lim = Arc::clone(&limiter);
             let race = tokio::spawn(async move {
-                race_walk(
+                race_with_refill(
                     candidates,
-                    RETRIEVE_LEG_BUDGET,
-                    RETRIEVE_WALK_MAX_IN_FLIGHT,
-                    RETRIEVE_WALK_DEADLINE,
+                    RETRIEVE_ATTEMPT_BUDGET,
+                    RETRIEVE_MAX_IN_FLIGHT,
+                    RETRIEVE_DEADLINE,
                     RETRIEVAL_STAGGER,
                     move |peer| {
                         let permit = lim.try_acquire(&peer);
                         // The enforce-cap decline: a peer with no live slot spends
-                        // no leg and is skipped for the next candidate.
+                        // no attempt and is skipped for the next candidate.
                         if enforce_cap && permit.is_none() {
                             return None;
                         }
@@ -1301,9 +718,9 @@ mod tests {
             let result = race.await.unwrap().expect("race resolves");
             assert_eq!(result.peer, free, "the free peer serves the chunk");
             assert_eq!(
-                legs.load(Ordering::SeqCst),
+                attempts.load(Ordering::SeqCst),
                 1,
-                "only the free peer spent a leg; the saturated peer was declined"
+                "only the free peer spent an attempt; the saturated peer was declined"
             );
         }
 
@@ -1350,9 +767,9 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn losing_leg_releases_its_permit_on_drop() {
-            // The head leg reserves a permit and then withholds; the staggered
-            // second wins and the head leg is dropped. Dropping it must release
+        async fn losing_attempt_releases_its_permit_on_drop() {
+            // The head attempt reserves a permit and then withholds; the staggered
+            // second wins and the head attempt is dropped. Dropping it must release
             // the head's in-flight slot, so the head is reservable again.
             let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
             let handle = ClientHandle::new(tx);
@@ -1370,13 +787,13 @@ mod tests {
                 address,
             ));
 
-            // The head leg dispatches first and reserves the head's only slot.
+            // The head attempt dispatches first and reserves the head's only slot.
             let _head_response = match rx.recv().await.expect("head command") {
                 ClientCommand::RetrieveChunk { peer, response, .. } => {
                     assert_eq!(peer, head);
                     assert!(
                         !limiter.has_free_slot(&head),
-                        "the in-flight head leg holds the head's slot"
+                        "the in-flight head attempt holds the head's slot"
                     );
                     response
                 }
@@ -1403,11 +820,11 @@ mod tests {
                 start.elapsed() < Duration::from_secs(5),
                 "resolved within the stagger, not a per-attempt deadline"
             );
-            // The losing head leg was dropped when the race resolved, releasing
+            // The losing head attempt was dropped when the race resolved, releasing
             // its permit: the head's slot is free again.
             assert!(
                 limiter.has_free_slot(&head),
-                "the cancelled head leg released its in-flight slot on drop"
+                "the cancelled head attempt released its in-flight slot on drop"
             );
             assert!(
                 limiter.try_acquire(&head).is_some(),
@@ -1422,18 +839,16 @@ mod tests {
         use super::address;
 
         #[test]
-        fn an_empty_close_set_surfaces_a_generic_transient_error() {
-            // What a fully gated (empty) selection falls through to is the same
-            // generic transient failure a genuine no-peers/no-storer case yields:
-            // retrieval a `Network` error, push a `NoStorer` error. Neither is an
+        fn a_fully_gated_set_surfaces_the_terminal_outcome() {
+            // What a fully gated (empty) selection falls through to: retrieval the
+            // honest `RetrievalExhausted` (no authoritative negative exists, so
+            // absence is never claimed), push a `NoStorer`. Neither is an
             // accounting-specific variant, so the accounting concern never reaches
             // the consumer.
-            let retrieval = SwarmError::network_msg("no connected peers available for retrieval");
-            assert!(matches!(retrieval, SwarmError::Network { .. }));
-            assert!(
-                retrieval.is_retryable(),
-                "a no-peers retrieval is transient"
-            );
+            let retrieval = SwarmError::RetrievalExhausted {
+                address: address(0xaa),
+            };
+            assert!(matches!(retrieval, SwarmError::RetrievalExhausted { .. }));
 
             let push = SwarmError::NoStorer {
                 chunk_address: address(0xaa),

@@ -54,10 +54,15 @@ impl AccountingError {
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum SwarmError {
-    /// Chunk not found in the network.
-    #[error("chunk not found: {address}")]
-    ChunkNotFound {
-        /// The address of the chunk that wasn't found.
+    /// Retrieval exhausted every reachable peer without serving the chunk.
+    ///
+    /// Forwarding retrieval has no authoritative negative on the wire, so this is
+    /// not a claim of absence: the reachable entry points were tried and none
+    /// served it, so a later request after reconnection or a topology change may
+    /// still succeed.
+    #[error("retrieval exhausted all reachable peers for chunk: {address}")]
+    RetrievalExhausted {
+        /// The address of the chunk that could not be retrieved.
         address: ChunkAddress,
     },
 
@@ -244,11 +249,6 @@ impl SwarmError {
                 | Self::AllPeersFailed { .. }
                 | Self::UnconfirmedCustody { .. }
         )
-    }
-
-    /// Whether this error indicates the requested data does not exist.
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, Self::ChunkNotFound { .. })
     }
 
     /// Whether this error indicates invalid input data.

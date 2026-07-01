@@ -25,7 +25,7 @@ The overrun bug was having only the first and not the second.
 
 ## The fix: per-peer cap + skip-busy spread
 
-Bound concurrent outbound retrieval substreams per peer with a non-blocking permit. When a peer is at its cap the scheduler SKIPS it and dispatches the chunk to the next-closest live peer that has a free slot, rather than blocking on the head peer (which would be head-of-line blocking and defeat the staggered race). The permit rides the request future and releases on drop, including a cancelled race leg. Candidate selection widens from the closest few to the closest connected peers in proximity order, filtered to those with a free slot, then fed to the existing staggered race. If every close candidate is at its cap, the dispatch falls through to the staggered race against whatever peers exist rather than erroring (degraded service beats failure).
+Bound concurrent outbound retrieval substreams per peer with a non-blocking permit. When a peer is at its cap the scheduler SKIPS it and dispatches the chunk to the next-closest live peer that has a free slot, rather than blocking on the head peer (which would be head-of-line blocking and defeat the staggered race). The permit rides the request future and releases on drop, including a cancelled race attempt. Candidate selection widens from the closest few to the closest connected peers in proximity order, filtered to those with a free slot, then fed to the existing staggered race. If every close candidate is at its cap, the dispatch falls through to the staggered race against whatever peers exist rather than erroring (degraded service beats failure).
 
 The cap is a non-economic concern, composed after economic selection. The explicit dispatch ordering is: selector decides who is eligible (proximity, not warned, affordable), skip-busy decides who has a slot, the origin credit gate bands the chosen request. The substream cap must never be merged with the affordability or debt signals.
 
@@ -58,7 +58,7 @@ nectar 0.3.0 adds wasm-ready out-of-order joiner primitives: a `ChunkGet` getter
 ## Risks
 
 - Thin peer set (browser): caps must be per-peer, never global; below a live-set threshold, fall back to the staggered race rather than refuse. Keep the browser pipeline depth small so the cap is rarely binding.
-- All close peers busy: fall through to the staggered race; a failed slot acquisition advances the candidate walk rather than erroring.
+- All close peers busy: fall through to the staggered race; a failed slot acquisition advances the candidate race rather than erroring.
 - Thundering herd on slot release: avoided by construction; a non-blocking try-acquire never parks a herd of awaiters.
 - Wide-race interaction: the last-resort race must consult the same cap or run under its own tighter cap.
 - wasm cone: the limiter stays in the node layer (not the wasm-facing stream crate); verify it builds for `wasm32-unknown-unknown`.

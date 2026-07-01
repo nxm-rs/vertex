@@ -753,10 +753,13 @@ where
         core.client_handle.clone(),
     );
 
-    let chunk_provider = NetworkChunkProvider::new(core.origin_handle.clone(), topology.clone())
-        .with_selector(Arc::clone(&core.selector))
-        .with_inflight_limiter(Arc::clone(&core.inflight))
-        .with_retrieval_latency(Arc::clone(&core.retrieval_latency));
+    let chunk_provider = NetworkChunkProvider::new(
+        core.origin_handle.clone(),
+        topology.clone(),
+        Arc::clone(&core.selector),
+        Arc::clone(&core.inflight),
+        Arc::clone(&core.retrieval_latency),
+    );
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     executor.spawn_service("swarm.client_service", core.client_service);

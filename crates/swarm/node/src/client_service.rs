@@ -106,7 +106,7 @@ impl ClientHandle {
     /// is refunded only when the request provably reaches no charge. Every chunk
     /// the server serves thus corresponds to a request we already committed, so
     /// our debt-view stays at or above the server's and our band refuses before
-    /// the server's disconnect line. A losing race leg dropped mid-flight cannot
+    /// the server's disconnect line. A losing attempt dropped mid-flight cannot
     /// un-book, because the commit already happened synchronously here.
     fn reserve_origin(
         &self,
@@ -349,9 +349,7 @@ impl ClientService {
     /// peer's slot accounting on disconnect.
     ///
     /// Must be the same [`PeerInflightLimiter`] the chunk provider reserves
-    /// against via [`NetworkChunkProvider::with_inflight_limiter`].
-    ///
-    /// [`NetworkChunkProvider::with_inflight_limiter`]: crate::NetworkChunkProvider::with_inflight_limiter
+    /// against.
     #[must_use]
     pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
         self.inflight = Some(inflight);
@@ -361,8 +359,8 @@ impl ClientService {
     /// Attach the per-PO retrieval-latency estimate so a completed originated
     /// retrieval feeds the hedge the chunk provider paces its race with.
     ///
-    /// Must be the same [`RetrievalLatency`] the chunk provider reads via
-    /// `NetworkChunkProvider::with_retrieval_latency`.
+    /// Must be the same [`RetrievalLatency`] the chunk provider reads to pace its
+    /// race.
     #[must_use]
     pub(crate) fn with_retrieval_latency(mut self, latency: Arc<RetrievalLatency>) -> Self {
         self.retrieval_latency = Some(latency);
@@ -1229,7 +1227,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_race_loser_keeps_the_dispatch_commit() {
-        // The key guarantee over commit-on-failure: a losing race leg's future is
+        // The key guarantee over commit-on-failure: a losing attempt's future is
         // dropped mid-await (its result never arrives), yet the debit stays
         // committed because the commit happened synchronously at dispatch. Under
         // the old reserve-only design the hold would drop un-applied and release,
