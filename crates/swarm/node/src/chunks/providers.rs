@@ -1,11 +1,13 @@
 //! RPC provider implementations for Swarm nodes.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use tracing::warn;
 use vertex_swarm_api::{
     ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
-    SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult,
+    SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmLocalStore, SwarmResult,
     SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
@@ -45,6 +47,10 @@ where
     L: LatencyHint + 'static,
 {
     engine: RetrievalEngine<I, O, G, L>,
+    /// The node's own chunk cache, consulted before racing the swarm so a
+    /// duplicate origin retrieval of a cached content chunk serves locally.
+    /// `None` for an embedder that wires a cacheless provider.
+    store: Option<Arc<dyn SwarmLocalStore>>,
 }
 
 impl<I, O, G, L> NetworkChunkProvider<I, O, G, L>
@@ -56,16 +62,18 @@ where
 {
     /// Build the provider over the three retrieval capabilities: candidate
     /// `ordering`, the per-peer `inflight` cap, and the per-PO `latency`
-    /// estimate.
+    /// estimate. `store` is the node's own cache, read before the swarm race.
     pub fn new(
         client_handle: ClientHandle,
         topology: TopologyHandle<I>,
         ordering: O,
         inflight: G,
         latency: L,
+        store: Option<Arc<dyn SwarmLocalStore>>,
     ) -> Self {
         Self {
             engine: RetrievalEngine::new(client_handle, topology, ordering, inflight, latency),
+            store,
         }
     }
 }
@@ -84,6 +92,21 @@ where
     L: LatencyHint + 'static,
 {
     async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
+        // Serve our own duplicate retrieval from the local cache before racing
+        // the swarm. `get` applies the single-owner TTL and only content chunks
+        // are cached, so a hit is an immutable, byte-safe content chunk; the
+        // node's own overlay stands in as the serving peer to mark a local serve.
+        if let Some(store) = &self.store
+            && let Ok(Some(cached)) = store.get(address)
+            && *cached.address() == *address
+        {
+            let (chunk, stamp) = cached.into_parts();
+            return Ok(ChunkRetrievalResult {
+                chunk,
+                stamp,
+                served_by: self.engine.topology().overlay_address(),
+            });
+        }
         self.engine.retrieve(address).await
     }
 

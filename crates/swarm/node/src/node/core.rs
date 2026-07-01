@@ -716,6 +716,10 @@ where
     })
     .await?;
 
+    // The provider reads the node's own cache before racing the swarm; it is the
+    // same store the service caches deliveries into and the handler serves from.
+    let provider_cache = client_service.store();
+
     spawn_peer_manager_task(
         Arc::clone(topology.peer_manager()),
         DEFAULT_TICK_INTERVAL,
@@ -768,6 +772,7 @@ where
         Arc::clone(&core.selector),
         Arc::clone(&core.inflight),
         Arc::clone(&core.retrieval_latency),
+        provider_cache,
     );
 
     executor.spawn_service("swarm.client_service", core.client_service);

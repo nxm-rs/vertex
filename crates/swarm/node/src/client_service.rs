@@ -372,6 +372,12 @@ impl ClientService {
         self.handle.clone()
     }
 
+    /// The attached client cache, so the chunk provider can read its own
+    /// deliveries back before racing the swarm. `None` when no store is wired.
+    pub(crate) fn store(&self) -> Option<Arc<dyn SwarmLocalStore>> {
+        self.store.clone()
+    }
+
     fn report(&self, peer: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource) {
         if let Some(reporter) = &self.reporter {
             reporter.report_peer(peer, event, source);

@@ -50,6 +50,7 @@ impl SwarmClient {
             ProximityOnly,
             launched.inflight().clone(),
             NoLatencyHint,
+            Some(launched.store().clone()),
         );
         let provider: Arc<dyn SwarmChunkProvider> = Arc::new(routing.clone());
         let sender: Arc<dyn SwarmChunkSender> = Arc::new(routing);
