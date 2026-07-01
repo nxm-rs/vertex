@@ -29,7 +29,7 @@ use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::TaskExecutor;
 
-use crate::chunks::{ChunkVerifyConfig, NetworkChunkProvider, VerifyingChunkProvider};
+use crate::chunks::NetworkChunkProvider;
 
 #[cfg(feature = "swap")]
 use alloy_chains::NamedChain;
@@ -570,20 +570,18 @@ pub struct NodeRunParts {
 }
 
 /// The native client's fully-capable provider instantiation: score/affordability
-/// ordering, the per-peer in-flight cap, and the per-PO latency estimate.
-type NativeChunkProvider = NetworkChunkProvider<
+/// ordering, the per-peer in-flight cap, and the per-PO latency estimate. This is
+/// the RPC chunk surface both client entry points expose; content integrity is
+/// enforced during retrieval decode, so no download-side wrapper sits over it.
+pub type NativeChunkProvider = NetworkChunkProvider<
     Arc<Identity>,
     Arc<PeerSelector>,
     Arc<PeerInflightLimiter>,
     Arc<RetrievalLatency>,
 >;
 
-/// Network chunk provider wrapped with config-gated download verification: the
-/// RPC chunk surface both client entry points expose.
-pub type VerifiedChunkProvider = VerifyingChunkProvider<NativeChunkProvider>;
-
 /// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
-/// the verified chunk provider, the shared accounting and throttled client handle
+/// the chunk provider, the shared accounting and throttled client handle
 /// (for an embedder that observes them), and the node-type-specific provider store
 /// (`()` for a client, the serve view plus reserve for a storer).
 pub struct ClientNodeParts<P> {
@@ -591,8 +589,8 @@ pub struct ClientNodeParts<P> {
     pub task: NodeRunTaskFn,
     /// The node's topology handle.
     pub topology: TopologyHandle<Arc<Identity>>,
-    /// The selection-aware verified chunk provider.
-    pub chunks: VerifiedChunkProvider,
+    /// The selection-aware chunk provider.
+    pub chunks: NativeChunkProvider,
     /// The per-peer retrieval in-flight limiter, shared with the service that
     /// forgets a peer on disconnect. Exposed so an embedder driving its own
     /// engine (the browser provider) caps against the same instance.
@@ -642,8 +640,6 @@ pub struct ClientTailParams<'a> {
     pub identity: &'a Arc<Identity>,
     /// Bandwidth config driving accounting, pricing, and the self-throttle.
     pub bandwidth: &'a DefaultBandwidthConfig,
-    /// Verification checks applied to downloaded chunks.
-    pub verify: ChunkVerifyConfig,
     /// SWAP settlement parameters.
     #[cfg(feature = "swap")]
     pub swap: ClientSwapParams,
@@ -652,7 +648,7 @@ pub struct ClientTailParams<'a> {
 /// Shared client launch tail for the client- and storer-backed node types.
 ///
 /// Wires accounting (violations to the peer manager, SWAP settlement when
-/// enabled) and the selection-aware verified chunk provider, then spawns the
+/// enabled) and the selection-aware chunk provider, then spawns the
 /// client and settlement services and the peer-manager tick. `build_node` builds
 /// the concrete node over the settlement event sinks and returns its run parts
 /// plus the node-type provider store; the tail is agnostic to whether that node
@@ -766,14 +762,13 @@ where
         core.client_handle.clone(),
     );
 
-    let chunk_provider = NetworkChunkProvider::new(
+    let chunks = NetworkChunkProvider::new(
         core.origin_handle.clone(),
         topology.clone(),
         Arc::clone(&core.selector),
         Arc::clone(&core.inflight),
         Arc::clone(&core.retrieval_latency),
     );
-    let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     executor.spawn_service("swarm.client_service", core.client_service);
 

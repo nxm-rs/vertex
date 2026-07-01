@@ -45,8 +45,7 @@ use crate::launch::{
 };
 use crate::node::{ClientNodeBuilder, NodeBuilder};
 use crate::protocol::SwarmProtocol;
-use vertex_swarm_node::ChunkVerifyConfig;
-use vertex_swarm_node::{NodeRunParts, RunTaskFn, VerifiedChunkProvider, single_task};
+use vertex_swarm_node::{NativeChunkProvider, NodeRunParts, RunTaskFn, single_task};
 
 /// A reserve override supplied through the builder. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.
@@ -71,7 +70,6 @@ pub struct StorerConfig {
     bandwidth: DefaultBandwidthConfig,
     local_store: LocalStoreConfig,
     storage: StorageConfig,
-    verify: ChunkVerifyConfig,
     chain: ChainConfig,
     swap: SwapConfig,
 }
@@ -88,7 +86,6 @@ impl StorerConfig {
         bandwidth: DefaultBandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
-        verify: ChunkVerifyConfig,
         chain: ChainConfig,
         swap: SwapConfig,
     ) -> Self {
@@ -99,7 +96,6 @@ impl StorerConfig {
             bandwidth,
             local_store,
             storage,
-            verify,
             chain,
             swap,
         }
@@ -119,11 +115,6 @@ impl StorerConfig {
 
     pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
         &self.bandwidth
-    }
-
-    /// Verification checks applied to downloaded chunks.
-    pub fn verify(&self) -> ChunkVerifyConfig {
-        self.verify
     }
 
     pub fn local_store(&self) -> &LocalStoreConfig {
@@ -255,11 +246,8 @@ impl DefaultStorerBuilder {
         bandwidth: DefaultBandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
-        verify: ChunkVerifyConfig,
     ) -> Self {
-        let client = NodeBuilder::new(spec, identity, network)
-            .with_accounting(bandwidth)
-            .with_verify(verify);
+        let client = NodeBuilder::new(spec, identity, network).with_accounting(bandwidth);
         Self::from_client(client, local_store, storage)
     }
 
@@ -273,7 +261,6 @@ impl DefaultStorerBuilder {
             config.bandwidth().clone(),
             config.local_store().clone(),
             config.storage().clone(),
-            config.verify(),
         );
         builder.client = builder.client.with_chain(chain).with_swap(swap);
         builder
@@ -288,7 +275,6 @@ impl DefaultStorerBuilder {
             self.client.accounting,
             self.local_store,
             self.storage,
-            self.client.verify,
             self.client.chain,
             self.client.swap,
         )
@@ -327,11 +313,11 @@ impl SwarmLaunchConfig for StorerConfig {
     }
 }
 
-/// Shared storer RPC provider bundle: topology, the verified chunk provider, the
-/// serve view, and the reserve.
+/// Shared storer RPC provider bundle: topology, the chunk provider, the serve
+/// view, and the reserve.
 type StorerProviders = StorerComponents<
     TopologyHandle<Arc<Identity>>,
-    VerifiedChunkProvider,
+    NativeChunkProvider,
     Arc<dyn SwarmLocalStore>,
     Arc<dyn BinCursorStore>,
 >;
@@ -366,7 +352,6 @@ pub(crate) async fn build_storer(
             identity: config.identity(),
             network: config.network(),
             bandwidth: config.bandwidth(),
-            verify: config.verify(),
             #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]

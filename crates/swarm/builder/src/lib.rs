@@ -55,11 +55,10 @@ pub use protocol::SwarmProtocol;
 // Build outputs
 pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
-// Chunk providers: the network retrieval/push provider and its config-gated
-// download-verification wrapper live in `vertex-swarm-node` (the wasm-clean cone
-// both client entry points share); re-exported here so the existing builder
-// import paths stay stable.
-pub use vertex_swarm_node::{ChunkVerifyConfig, VerifiedChunkProvider, VerifyingChunkProvider};
+// Chunk provider: the network retrieval/push provider lives in
+// `vertex-swarm-node` (the wasm-clean cone both client entry points share);
+// re-exported here so the existing builder import paths stay stable.
+pub use vertex_swarm_node::NativeChunkProvider;
 
 // Configs
 pub use config::{BootnodeConfig, ClientConfig};

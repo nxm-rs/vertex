@@ -3,7 +3,7 @@
 //! [`ClientLauncher`] is the lightweight entry point shared by native embedders
 //! and the browser client: no database, no RPC server. It assembles a dial-only
 //! [`ClientNode`] over a handful of network knobs and delegates the shared
-//! client wiring (accounting, settlement, the verified chunk provider, service
+//! client wiring (accounting, settlement, the chunk provider, service
 //! spawning) to [`build_client_core_tail`], the same tail the native builder
 //! uses, then spawns the returned run task. It hands back a [`LaunchedClient`]
 //! with the handles a caller needs to observe the topology and issue chunk reads
@@ -34,12 +34,11 @@ use alloy_primitives::Address;
 
 use super::client::ClientNode;
 use super::core::{
-    ClientNodeParts, ClientTailParams, NodeRunParts, NodeRunTaskFn, RunTaskFn, SharedAccounting,
-    VerifiedChunkProvider, build_client_core_tail, single_task,
+    ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts, NodeRunTaskFn, RunTaskFn,
+    SharedAccounting, build_client_core_tail, single_task,
 };
 #[cfg(feature = "swap")]
 use super::core::{ClientSwapParams, node_chain_provider};
-use crate::ChunkVerifyConfig;
 use crate::ClientHandle;
 use crate::inflight::PeerInflightLimiter;
 
@@ -189,8 +188,6 @@ pub struct ClientLauncher {
     bandwidth: DefaultBandwidthConfig,
     max_peers: usize,
     idle_timeout: Duration,
-    /// Verification checks applied to downloaded chunks.
-    verify: ChunkVerifyConfig,
     /// Byte budget for the default in-memory cache (ignored when a store is set).
     cache_budget_bytes: u64,
     /// TTL (ns) governing single-owner-chunk freshness in the default cache.
@@ -213,20 +210,12 @@ impl ClientLauncher {
             bandwidth: DefaultBandwidthConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
-            verify: ChunkVerifyConfig::default(),
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             soc_cache_ttl_ns: DEFAULT_SOC_CACHE_TTL_NS,
             store: None,
             #[cfg(feature = "swap")]
             swap: None,
         }
-    }
-
-    /// Set the verification checks applied to downloaded chunks.
-    #[must_use]
-    pub fn with_verify(mut self, verify: ChunkVerifyConfig) -> Self {
-        self.verify = verify;
-        self
     }
 
     /// Set the byte budget for the default in-memory cache. Ignored when a store
@@ -376,7 +365,6 @@ impl ClientLauncher {
             spec: &spec,
             identity: &self.identity,
             bandwidth: &bandwidth,
-            verify: self.verify,
             #[cfg(feature = "swap")]
             swap: ClientSwapParams {
                 // An embedded client defaults SWAP off; `with_swap` turns it on.
@@ -507,7 +495,7 @@ pub struct LaunchedClient {
     client: ClientHandle,
     inflight: Arc<PeerInflightLimiter>,
     accounting: SharedAccounting,
-    chunks: VerifiedChunkProvider,
+    chunks: NativeChunkProvider,
     store: Arc<dyn SwarmLocalStore>,
     overlay: SwarmAddress,
     peer_id: PeerId,
@@ -532,9 +520,9 @@ impl LaunchedClient {
         &self.inflight
     }
 
-    /// The selection-aware verified chunk provider: the retrieval and upload
-    /// surface an embedder drives, with download verification applied.
-    pub fn chunks(&self) -> &VerifiedChunkProvider {
+    /// The selection-aware chunk provider: the retrieval and upload surface an
+    /// embedder drives.
+    pub fn chunks(&self) -> &NativeChunkProvider {
         &self.chunks
     }
 

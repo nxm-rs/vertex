@@ -10,7 +10,7 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
-use vertex_swarm_node::VerifiedChunkProvider;
+use vertex_swarm_node::NativeChunkProvider;
 
 /// Build output from launching a Swarm node: the event-loop task function plus
 /// the component container `P`, which determines the node's capabilities. All
@@ -58,7 +58,7 @@ pub type BuiltBootnode = BuiltNode<BootnodeComponents<TopologyHandle<Arc<Identit
 
 /// Built client node (topology + chunk retrieval).
 pub type BuiltClient =
-    BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
+    BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, NativeChunkProvider>>;
 
 /// Built storer node (topology + chunks + retrieval-serve store + reserve).
 ///
@@ -67,7 +67,7 @@ pub type BuiltClient =
 pub type BuiltStorer = BuiltNode<
     StorerComponents<
         TopologyHandle<Arc<Identity>>,
-        VerifiedChunkProvider,
+        NativeChunkProvider,
         Arc<dyn SwarmLocalStore>,
         Arc<dyn BinCursorStore>,
     >,
