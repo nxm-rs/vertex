@@ -13,8 +13,11 @@ use std::sync::Arc;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::Batch;
 use nectar_primitives::ChunkAddress;
-use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender};
-use vertex_swarm_node::{LaunchedClient, NetworkChunkProvider, NoLatencyHint, ProximityOnly};
+use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender, SwarmClientAccounting};
+use vertex_swarm_node::{
+    AccountingSettlement, LaunchedClient, NetworkChunkProvider, NoLatencyHint, ProximityOnly,
+    SettlementTrigger,
+};
 use wasm_bindgen::prelude::*;
 
 use cache::MemoryCache;
@@ -44,12 +47,19 @@ impl SwarmClient {
         // stagger, but the real per-peer in-flight cap the launched service
         // maintains; it shares the native custody-verdict push.
         let client = launched.client().clone();
+        // The engine drives this to drain a fully-gated peer set: the browser gates
+        // fast on its small neighbourhood, and pseudosettle is debtor-initiated, so
+        // without a settle drive a gated set would never reopen.
+        let settlement: Arc<dyn SettlementTrigger> = Arc::new(AccountingSettlement::new(
+            launched.accounting().bandwidth().clone(),
+        ));
         let routing = NetworkChunkProvider::new(
             client,
             launched.topology().clone(),
             ProximityOnly,
             launched.inflight().clone(),
             NoLatencyHint,
+            settlement,
             Some(launched.store().clone()),
         );
         let provider: Arc<dyn SwarmChunkProvider> = Arc::new(routing.clone());

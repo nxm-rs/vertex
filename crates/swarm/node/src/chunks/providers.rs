@@ -15,6 +15,7 @@ use vertex_swarm_topology::TopologyHandle;
 
 use crate::ClientHandle;
 use crate::retrieval_engine::{CandidateOrdering, InflightLimit, LatencyHint, RetrievalEngine};
+use crate::selection::SettlementTrigger;
 
 /// Report source for shallow/malformed receipts caught on the origin upload
 /// path.
@@ -69,10 +70,18 @@ where
         ordering: O,
         inflight: G,
         latency: L,
+        settlement: Arc<dyn SettlementTrigger>,
         store: Option<Arc<dyn SwarmLocalStore>>,
     ) -> Self {
         Self {
-            engine: RetrievalEngine::new(client_handle, topology, ordering, inflight, latency),
+            engine: RetrievalEngine::new(
+                client_handle,
+                topology,
+                ordering,
+                inflight,
+                latency,
+                settlement,
+            ),
             store,
         }
     }
@@ -703,10 +712,12 @@ mod tests {
 
         #[tokio::test]
         async fn enforce_cap_declines_a_peer_that_filled_since_the_snapshot() {
-            // A peer free at the availability snapshot but saturated before its
-            // attempt dispatches is declined under enforce_cap: no command reaches
-            // it and it spends no attempt, so the cap holds on live state, not the stale
-            // snapshot. The next free peer serves instead.
+            // Under enforce_cap, a peer free at the availability snapshot but
+            // saturated before its attempt dispatches is declined: no command
+            // reaches it and it spends no attempt, so the cap holds on live state,
+            // not the stale snapshot. The next free peer serves instead. Retrieval
+            // no longer enforces the cap (a busy holder is a best-effort tail), so
+            // this exercises the race helper's decline path directly.
             let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
             let handle = ClientHandle::new(tx);
             let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
@@ -714,10 +725,8 @@ mod tests {
             let filled = overlay(1);
             let free = overlay(2);
 
-            // Availability sees both peers free, so the race enforces the cap.
-            let (candidates, enforce_cap) = limiter.available(vec![filled, free]);
-            assert_eq!(candidates, vec![filled, free]);
-            assert!(enforce_cap, "free-slot peers found, so the cap is enforced");
+            let candidates = vec![filled, free];
+            let enforce_cap = true;
 
             // Between the snapshot and dispatch the first peer's slot is taken.
             let _held = limiter

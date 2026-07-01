@@ -51,7 +51,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use crate::retrieval_latency::RetrievalLatency;
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
-    PeerInflightLimiter, PeerSelector,
+    PeerInflightLimiter, PeerSelector, SettlementTrigger,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
@@ -88,6 +88,10 @@ pub struct ClientCore {
     /// The origin-gated client handle the provider dispatches through; its
     /// admission band paces each own request before it sends.
     pub origin_handle: ClientHandle,
+    /// The settle trigger the origin gate and the retrieval engine share; the
+    /// engine drives it to drain a fully-gated peer set. One instance so both
+    /// settle paths share the trigger's in-flight dedup.
+    pub settlement_trigger: Arc<dyn SettlementTrigger>,
     /// The node's topology handle, threaded through unchanged.
     pub topology: TopologyHandle<Arc<Identity>>,
     /// The client service with accounting and reporter attached.
@@ -158,7 +162,8 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // never runs the selector, and both paths share the trigger's in-flight dedup
     // set.
     let admission = accounting.bandwidth().clone();
-    let settlement_trigger = Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
+    let settlement_trigger: Arc<dyn SettlementTrigger> =
+        Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
 
     // Ranking only: the selector triggers no settlement. The origin credit gate
     // settles the peer a request actually dispatches to (`settlement_trigger`),
@@ -209,6 +214,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         inflight,
         retrieval_latency,
         origin_handle,
+        settlement_trigger,
         topology,
         client_service,
         client_handle,
@@ -772,6 +778,7 @@ where
         Arc::clone(&core.selector),
         Arc::clone(&core.inflight),
         Arc::clone(&core.retrieval_latency),
+        Arc::clone(&core.settlement_trigger),
         provider_cache,
     );
 
