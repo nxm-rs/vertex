@@ -12,13 +12,24 @@ use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
 use nectar_primitives::file::WriteAt;
-use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
+use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, Joiner, RetryingChunkGet};
 use vertex_swarm_api::SwarmChunkProvider;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
 use super::cache::MemoryCache;
-use super::net_get::NetworkChunkGet;
+use super::net_get::{NetworkChunkGet, VtxSleeper};
+
+/// The joiner/manifest getter with transient-miss retry: a per-chunk retrieval
+/// error retries with backoff instead of aborting the whole walk or download.
+type RetryGetter = RetryingChunkGet<NetworkChunkGet, VtxSleeper>;
+
+/// Wrap a network getter in nectar's retrying getter over the browser sleeper.
+/// The wrapper shares the inner getter's local cache, so a cache hit skips both
+/// the network and the retry loop.
+fn retrying(getter: NetworkChunkGet) -> RetryGetter {
+    RetryingChunkGet::with_default(getter, VtxSleeper)
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -177,8 +188,8 @@ pub async fn stream_file(
     cache: &MemoryCache,
     sink: &DownloadSink,
 ) -> Result<(), JsValue> {
-    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+    let getter = retrying(NetworkChunkGet::new(provider, cache.snapshot_map()));
+    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
         .with_concurrency(DOWNLOAD_CONCURRENCY);
@@ -247,7 +258,8 @@ async fn probe_manifest_entries(
     cache: &MemoryCache,
 ) -> Result<Option<Vec<Entry>>, JsValue> {
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let mut manifest: PlainManifest<RetryGetter> =
+        PlainManifest::open(root, retrying(getter.clone()));
     let result = manifest.entries().await;
     publish(&getter, cache);
     match result {
@@ -302,8 +314,8 @@ pub async fn download_file(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
-    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+    let getter = retrying(NetworkChunkGet::new(provider, cache.snapshot_map()));
+    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
         .with_concurrency(DOWNLOAD_CONCURRENCY);
@@ -331,7 +343,8 @@ pub async fn ls_manifest(
     cache: &MemoryCache,
 ) -> Result<Vec<(String, String)>, JsValue> {
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let mut manifest: PlainManifest<RetryGetter> =
+        PlainManifest::open(root, retrying(getter.clone()));
     let result = manifest.entries().await;
     publish(&getter, cache);
     let entries = result.map_err(|e| JsValue::from_str(&format!("manifest list: {e}")))?;
@@ -357,7 +370,8 @@ pub async fn walk(
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
     let getter = NetworkChunkGet::new(provider.clone(), cache.snapshot_map());
-    let mut manifest: PlainManifest<NetworkChunkGet> = PlainManifest::open(root, getter.clone());
+    let mut manifest: PlainManifest<RetryGetter> =
+        PlainManifest::open(root, retrying(getter.clone()));
     let result = manifest.lookup(path).await;
     publish(&getter, cache);
     let entry: Entry =

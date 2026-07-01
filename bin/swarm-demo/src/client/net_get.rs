@@ -3,9 +3,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use nectar_primitives::store::{ChunkGet, ChunkStoreError};
-use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE};
+use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, Sleeper};
 use vertex_swarm_api::SwarmChunkProvider;
 
 /// A `Send + Sync` chunk getter: local cache first, then the network.
@@ -64,5 +65,16 @@ impl ChunkGet<DEFAULT_BODY_SIZE> for NetworkChunkGet {
             .expect("cache mutex")
             .insert(*result.chunk.address(), result.chunk.clone());
         Ok(result.chunk)
+    }
+}
+
+/// A [`Sleeper`] backing nectar's retrying getter with the browser timer, so a
+/// retry backoff waits on `setTimeout` rather than the absent tokio driver.
+#[derive(Clone, Copy)]
+pub struct VtxSleeper;
+
+impl Sleeper for VtxSleeper {
+    fn sleep(&self, dur: Duration) -> impl Future<Output = ()> {
+        vertex_tasks::time::sleep(dur)
     }
 }
