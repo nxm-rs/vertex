@@ -131,18 +131,24 @@ impl WriteAt for JsWriteSink<'_> {
 /// Chunk retrievals kept in flight while the joiner walks a file's chunk tree.
 ///
 /// The browser is a light client racing only the closest connected peers, never
-/// dialling for a retrieval. The engine's per-peer in-flight cap bounds how many
-/// retrieval substreams land on any one peer, so a wide fan-out stays within a
-/// healthy neighbourhood's budget; the joiner's split of its budget between a
-/// small cap of intermediate-node fetches and the remaining data-leaf fetches is
-/// what makes the wide fan-out worthwhile, landing the first data leaf after a
-/// short descent rather than behind the whole intermediate frontier.
-const DOWNLOAD_CONCURRENCY: usize = 32;
+/// dialling for a retrieval. Per-chunk latency is forwarding-chain dominated
+/// (seconds, not bandwidth), so bulk throughput is `width / latency` and the
+/// width is the lever; the engine's per-peer in-flight cap spreads the fan-out
+/// across the connected set so no single peer is overrun, and the joiner's
+/// split between a small cap of intermediate-node fetches and the remaining
+/// data-leaf fetches keeps the first data leaf ahead of the intermediate
+/// frontier.
+const DOWNLOAD_CONCURRENCY: usize = 128;
 
 /// Leaf bodies held at once while streaming to a sequential sink: in-flight plus
 /// buffered-for-reorder. At least `2 * DOWNLOAD_CONCURRENCY` keeps the pool full
 /// even when the lowest-offset leaf is the straggler the sink is waiting on.
 const STREAM_WINDOW: usize = DOWNLOAD_CONCURRENCY * 2;
+
+/// Sibling manifest nodes loaded concurrently during a listing walk. Manifest
+/// tries are shallow and their per-level frontiers small, so this comfortably
+/// covers a whole level; per-node latency is what the width hides.
+const LIST_CONCURRENCY: usize = 32;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
@@ -189,20 +195,24 @@ pub async fn stream_file(
     sink: &DownloadSink,
 ) -> Result<(), JsValue> {
     let getter = retrying(NetworkChunkGet::new(provider, cache.snapshot_map()));
-    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::new(getter, file_root)
-        .await
-        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
-        .with_concurrency(DOWNLOAD_CONCURRENCY);
-
-    // Total is known once the joiner is open; announce it before streaming so
-    // the progress bar can show a fraction rather than a bare byte count.
-    sink.set_total(joiner.size() as f64);
-
-    if joiner.size() == 0 {
-        return finish(sink).await;
-    }
 
     if sink.seekable() {
+        // A forward download wants the lazy open: seeding the walk with the
+        // root alone lets the bounded pool descend with no per-level barrier,
+        // so the first data leaf lands after a short descent instead of behind
+        // the whole eagerly-expanded intermediate frontier.
+        let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::open_streaming(getter, file_root)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+            .with_concurrency(DOWNLOAD_CONCURRENCY);
+
+        // Total is known once the joiner is open; announce it before streaming
+        // so the progress bar can show a fraction rather than a bare byte count.
+        sink.set_total(joiner.size() as f64);
+        if joiner.size() == 0 {
+            return finish(sink).await;
+        }
+
         // Out-of-order positional writes: the joiner writes each leaf at its
         // offset the moment it resolves, off the fetch thread, so a slow chunk
         // never gates the writes already in hand.
@@ -216,8 +226,19 @@ pub async fn stream_file(
 
     // Ordered fallback: a sequential disk stream (File System Access append or a
     // service-worker download body) must be fed in file order. The windowed
-    // reader fetches the tree at full width but reorders to in-order emission,
-    // bounding held leaf bodies to the window.
+    // reader wants the balanced frontier of the eager open; it fetches the tree
+    // at full width but reorders to in-order emission, bounding held leaf
+    // bodies to the window.
+    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+        .with_concurrency(DOWNLOAD_CONCURRENCY);
+
+    sink.set_total(joiner.size() as f64);
+    if joiner.size() == 0 {
+        return finish(sink).await;
+    }
+
     let mut reader = joiner.into_windowed_reader(STREAM_WINDOW);
     let stream = reader.stream();
     futures::pin_mut!(stream);
@@ -258,9 +279,8 @@ async fn probe_manifest_entries(
     cache: &MemoryCache,
 ) -> Result<Option<Vec<Entry>>, JsValue> {
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let mut manifest: PlainManifest<RetryGetter> =
-        PlainManifest::open(root, retrying(getter.clone()));
-    let result = manifest.entries().await;
+    let manifest: PlainManifest<RetryGetter> = PlainManifest::open(root, retrying(getter.clone()));
+    let result = manifest.entries_concurrent(LIST_CONCURRENCY).await;
     publish(&getter, cache);
     match result {
         Ok(entries) if !entries.is_empty() => Ok(Some(entries)),
@@ -315,7 +335,9 @@ pub async fn download_file(
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
     let getter = retrying(NetworkChunkGet::new(provider, cache.snapshot_map()));
-    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::new(getter, file_root)
+    // Lazy open: the chunk-granular offset stream descends from the root seed
+    // with no per-level barrier (see `stream_file`).
+    let joiner = Joiner::<RetryGetter, DEFAULT_BODY_SIZE>::open_streaming(getter, file_root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
         .with_concurrency(DOWNLOAD_CONCURRENCY);
@@ -343,13 +365,14 @@ pub async fn ls_manifest(
     cache: &MemoryCache,
 ) -> Result<Vec<(String, String)>, JsValue> {
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
-    let mut manifest: PlainManifest<RetryGetter> =
-        PlainManifest::open(root, retrying(getter.clone()));
-    let result = manifest.entries().await;
+    let manifest: PlainManifest<RetryGetter> = PlainManifest::open(root, retrying(getter.clone()));
+    let result = manifest.entries_concurrent(LIST_CONCURRENCY).await;
     publish(&getter, cache);
     let entries = result.map_err(|e| JsValue::from_str(&format!("manifest list: {e}")))?;
 
-    Ok(entries
+    // The concurrent walk yields entries in completion order; sort for a
+    // stable listing.
+    let mut listed: Vec<(String, String)> = entries
         .iter()
         .map(|e| {
             let path = e.path_str().unwrap_or("<non-utf8>").to_string();
@@ -359,7 +382,9 @@ pub async fn ls_manifest(
                 .unwrap_or_else(|| "<none>".to_string());
             (path, addr)
         })
-        .collect())
+        .collect();
+    listed.sort();
+    Ok(listed)
 }
 
 /// Walk `path` in the manifest at `root`, returning the referenced file's bytes.

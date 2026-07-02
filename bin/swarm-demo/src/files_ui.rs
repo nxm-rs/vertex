@@ -227,6 +227,88 @@ fn wire_download(client: SwarmClient) {
     cb.forget();
 }
 
+/// Smoothed download-rate state fed by successive progress callbacks.
+struct RateTracker {
+    last_ms: f64,
+    last_written: f64,
+    bytes_per_sec: f64,
+}
+
+thread_local! {
+    /// Rate state for the in-flight download; reset when the progress widget
+    /// is shown. Wasm is single-threaded, so a thread local is a plain global.
+    static RATE: std::cell::RefCell<Option<RateTracker>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Minimum spacing between rate samples: callbacks arrive per leaf write
+/// (potentially hundreds per second), so per-callback deltas are too noisy to
+/// display raw.
+const RATE_SAMPLE_MS: f64 = 250.0;
+
+/// EWMA blend per accepted sample; heavy enough smoothing that the label does
+/// not flicker, light enough to track a stall within a couple of seconds.
+const RATE_ALPHA: f64 = 0.3;
+
+/// Fold `written` at `now_ms` into the rate estimate, returning the current
+/// bytes-per-second once at least one interval has elapsed.
+fn update_rate(now_ms: f64, written: f64) -> Option<f64> {
+    RATE.with_borrow_mut(|state| match state {
+        None => {
+            *state = Some(RateTracker {
+                last_ms: now_ms,
+                last_written: written,
+                bytes_per_sec: 0.0,
+            });
+            None
+        }
+        Some(t) => {
+            let dt_ms = now_ms - t.last_ms;
+            if dt_ms >= RATE_SAMPLE_MS {
+                let instant = ((written - t.last_written) / dt_ms * 1000.0).max(0.0);
+                t.bytes_per_sec = if t.bytes_per_sec == 0.0 {
+                    instant
+                } else {
+                    t.bytes_per_sec + RATE_ALPHA * (instant - t.bytes_per_sec)
+                };
+                t.last_ms = now_ms;
+                t.last_written = written;
+            }
+            (t.bytes_per_sec > 0.0).then_some(t.bytes_per_sec)
+        }
+    })
+}
+
+/// Clear the rate state ahead of a new download.
+fn reset_rate() {
+    RATE.with_borrow_mut(|state| *state = None);
+}
+
+/// Render a byte count as a compact human-readable size.
+fn fmt_bytes(bytes: f64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.0} KiB", bytes / KIB)
+    } else {
+        format!("{bytes:.0} B")
+    }
+}
+
+/// Render seconds as a compact `1h02m` / `4m07s` / `12s` ETA.
+fn fmt_eta(seconds: f64) -> String {
+    let s = seconds.round() as u64;
+    match (s / 3600, (s % 3600) / 60, s % 60) {
+        (0, 0, secs) => format!("{secs}s"),
+        (0, mins, secs) => format!("{mins}m{secs:02}s"),
+        (hours, mins, _) => format!("{hours}h{mins:02}m"),
+    }
+}
+
 /// Install the `window.__swarmDownloadProgress(written, total)` hook the sink
 /// calls per write, rendering it into the progress bar. Idempotent.
 fn install_progress_hook() {
@@ -249,7 +331,8 @@ fn install_progress_hook() {
     cb.forget();
 }
 
-/// Render `written`/`total` bytes into the progress bar and label.
+/// Render `written`/`total` bytes plus the smoothed rate and ETA into the
+/// progress bar and label.
 fn render_progress(written: f64, total: f64) {
     let doc = document();
     let pct = if total.is_finite() && total > 0.0 {
@@ -262,11 +345,18 @@ fn render_progress(written: f64, total: f64) {
     {
         el.style().set_property("width", &format!("{pct:.1}%")).ok();
     }
-    let label = if total.is_finite() && total > 0.0 {
-        format!("{} / {} bytes ({pct:.0}%)", written as u64, total as u64)
+
+    let mut label = if total.is_finite() && total > 0.0 {
+        format!("{} / {} ({pct:.0}%)", fmt_bytes(written), fmt_bytes(total))
     } else {
-        format!("{} bytes", written as u64)
+        fmt_bytes(written)
     };
+    if let Some(rate) = update_rate(js_sys::Date::now(), written) {
+        label.push_str(&format!(" · {}/s", fmt_bytes(rate)));
+        if total.is_finite() && total > written {
+            label.push_str(&format!(" · ETA {}", fmt_eta((total - written) / rate)));
+        }
+    }
     set_text(DOWNLOAD_PROGRESS_TEXT_ID, &label);
 }
 
@@ -275,6 +365,7 @@ fn show_progress(visible: bool) {
     let doc = document();
     if let Some(el) = doc.get_element_by_id(DOWNLOAD_PROGRESS_ID) {
         if visible {
+            reset_rate();
             el.remove_attribute("hidden").ok();
             render_progress(0.0, f64::NAN);
         } else {
