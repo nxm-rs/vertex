@@ -57,6 +57,8 @@ pub(crate) struct GossipEngine<I: SwarmIdentity> {
     gossip_dial_peers: HashSet<PeerId>,
     health_check_delay: Duration,
     refresh_interval: Duration,
+    /// Connected storers per bin told about a newly connected distant storer.
+    broadcast_bin_size: usize,
     /// Periodic refresh tick; first fire one full period after construction.
     gossip_tick: vertex_tasks::time::Interval,
 
@@ -88,6 +90,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
             gossip_dial_peers: HashSet::new(),
             health_check_delay: config.health_check_delay,
             refresh_interval: config.refresh_interval,
+            broadcast_bin_size: config.broadcast_bin_size,
             gossip_tick: vertex_tasks::time::interval_after(
                 config.refresh_interval,
                 config.refresh_interval,
@@ -348,12 +351,71 @@ impl<I: SwarmIdentity> GossipEngine<I> {
         let mut actions = if proximity >= depth {
             self.handle_new_neighbor(new_peer_overlay, peer.clone(), depth)
         } else {
-            self.handle_new_distant_peer(new_peer_overlay)
+            // Whether this storer was announced within the window is read
+            // before the bootstrap re-stamps its broadcast time, so a rapid
+            // reconnect does not re-announce it to the sample.
+            let announce = !self.broadcast_within_window(&new_peer_overlay);
+            let mut distant = self.handle_new_distant_peer(new_peer_overlay);
+            if announce {
+                let sample = self.announce_storer_to_sample(peer, &new_peer_overlay);
+                if !sample.is_empty() {
+                    // Stamp the newcomer so a rapid reconnect skips the sample,
+                    // independent of whether the bootstrap already stamped it.
+                    self.last_broadcast.insert(new_peer_overlay, Instant::now());
+                }
+                distant.extend(sample);
+            }
+            distant
         };
         // Connected clients hear about every newly connected storer, so they
         // keep building topology from live supply, not just their bootstrap.
         actions.extend(self.notify_clients(peer));
         actions
+    }
+
+    /// Announce a newly connected distant storer to a bounded per-bin sample
+    /// of connected storers, so third parties learn it without having to dial
+    /// it first. The newcomer is excluded and every recipient is reachability
+    /// filtered, so an unreachable record is never propagated.
+    fn announce_storer_to_sample(
+        &self,
+        new_peer: &SwarmPeer,
+        new_overlay: &OverlayAddress,
+    ) -> Vec<GossipAction> {
+        let new_slice = [new_peer.clone()];
+        let mut actions = Vec::new();
+        for recipient in self.connected_storer_sample(new_overlay) {
+            let profile = self.recipient_profile(&recipient);
+            let filtered = self.filter_for_recipient(&new_slice, &profile);
+            if !filtered.is_empty() {
+                trace!(to = %recipient, about = %new_peer.overlay(), "Announcing new storer to sample");
+                actions.push(GossipAction {
+                    to: recipient,
+                    peers: filtered.into_iter().cloned().collect(),
+                });
+            }
+        }
+        actions
+    }
+
+    /// True when we last sent gossip to `overlay` within the refresh window.
+    fn broadcast_within_window(&self, overlay: &OverlayAddress) -> bool {
+        self.last_broadcast
+            .get(overlay)
+            .is_some_and(|t| t.elapsed() < self.refresh_interval)
+    }
+
+    fn connected_storer_sample(&self, subject: &OverlayAddress) -> Vec<OverlayAddress> {
+        peer_selection::connected_storer_sample(
+            &self.local_overlay,
+            &self.peer_manager,
+            &self.connection_registry,
+            self.broadcast_bin_size,
+            // The newcomer is both excluded as a recipient and the anchor the
+            // per-bin sample is keyed on, so recipients rotate with the subject.
+            subject,
+            subject,
+        )
     }
 
     /// Tell every connected client about a newly connected storer.
@@ -589,6 +651,79 @@ mod tests {
         ctx.connection_registry
             .activate(peer_id, connection_id, overlay);
         overlay
+    }
+
+    /// Register `n` as a known, actively connected storer (a candidate for the
+    /// announcement sample).
+    fn connect_storer(ctx: &TopologyTestContext, n: u8) -> OverlayAddress {
+        let peer = test_swarm_peer(n);
+        let overlay = OverlayAddress::from(*peer.overlay());
+        ctx.peer_manager.on_peer_connected(
+            peer,
+            SwarmNodeType::Storer,
+            vertex_net_peer_registry::ConnectionDirection::Outbound,
+            vertex_swarm_peer_manager::TrustLevel::Normal,
+        );
+        let peer_id = PeerId::random();
+        let connection_id = libp2p::swarm::ConnectionId::new_unchecked(usize::from(n));
+        ctx.connection_registry
+            .connected_inbound(peer_id, connection_id);
+        ctx.connection_registry
+            .activate(peer_id, connection_id, overlay);
+        overlay
+    }
+
+    #[test]
+    fn new_distant_storer_is_announced_to_a_per_bin_sample() {
+        // local overlay is byte 0, so proximity to a peer is the leading zero
+        // bits of its first byte: 0x40 sits in bin 1, 0x20 in bin 2, and the
+        // newcomer 0x80 in bin 0. At depth 3 the newcomer is distant, so the
+        // announcement path (not the neighbour path) runs.
+        let ctx = TopologyTestContext::new();
+        let mut engine = test_engine(&ctx);
+        let bin1 = connect_storer(&ctx, 0x40);
+        let bin2 = connect_storer(&ctx, 0x20);
+
+        let newcomer = test_swarm_peer(0x80);
+        let newcomer_overlay = OverlayAddress::from(*newcomer.overlay());
+        let actions = engine.on_peer_authenticated(&newcomer, SwarmNodeType::Storer, 3);
+
+        for recipient in [bin1, bin2] {
+            let notify = actions
+                .iter()
+                .find(|a| a.to == recipient)
+                .expect("a connected storer in the sample is told about the newcomer");
+            assert_eq!(notify.peers.len(), 1);
+            assert_eq!(
+                notify.peers.first().expect("one announced peer").overlay(),
+                newcomer.overlay()
+            );
+        }
+        assert!(
+            actions.iter().all(|a| a.to != newcomer_overlay
+                || a.peers.iter().all(|p| p.overlay() != newcomer.overlay())),
+            "the newcomer is never announced to itself"
+        );
+    }
+
+    #[test]
+    fn a_reconnecting_storer_is_not_re_announced_within_the_window() {
+        let ctx = TopologyTestContext::new();
+        let mut engine = test_engine(&ctx);
+        let recipient = connect_storer(&ctx, 0x40);
+
+        let newcomer = test_swarm_peer(0x80);
+        let first = engine.on_peer_authenticated(&newcomer, SwarmNodeType::Storer, 3);
+        assert!(
+            first.iter().any(|a| a.to == recipient),
+            "the first connect announces the newcomer"
+        );
+
+        let second = engine.on_peer_authenticated(&newcomer, SwarmNodeType::Storer, 3);
+        assert!(
+            second.iter().all(|a| a.to != recipient),
+            "a reconnect within the window does not re-announce it to the sample"
+        );
     }
 
     #[test]
