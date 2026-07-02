@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
+use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use libp2p::{
     Multiaddr, PeerId,
@@ -268,14 +271,16 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
 
-    /// Receiver for the peer lifecycle event stream from PeerManager.
+    /// Receiver for the peer lifecycle event stream from PeerManager,
+    /// wrapped as a stream so its waker wakes the behaviour the moment an
+    /// event lands (a ban must not wait for the dial tick).
     ///
     /// Topology is the action-executing subscriber: `DisconnectRequested`
     /// and `Banned` events close the peer's connection; the remaining
     /// events are observability-only and ignored here. On lag the banned
     /// set is reconciled so a dropped `Banned` event cannot strand a banned
     /// peer connected (see [`PeerManager::subscribe`]).
-    pub(crate) lifecycle_rx: broadcast::Receiver<PeerLifecycleEvent>,
+    pub(crate) lifecycle_rx: BroadcastStream<PeerLifecycleEvent>,
 
     /// Agent versions received via identify, shared with identify behaviour.
     pub(crate) agent_versions: identify::AgentVersions,
@@ -879,8 +884,10 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             self.dial_bootnodes(resolved_bootnodes, resolved_trusted);
         }
 
-        // Drain gossip broadcast actions from the async gossip task
-        while let Ok(action) = self.gossip.try_recv() {
+        // Drain gossip broadcast actions from the async gossip task; the
+        // registered waker makes a new action wake this poll rather than
+        // waiting for an unrelated swarm event or the dial tick.
+        while let Poll::Ready(Some(action)) = self.gossip.poll_recv(cx) {
             self.broadcast_peers(action.to, action.peers);
         }
 
@@ -953,11 +960,12 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
 
         // Drain peer lifecycle events and execute the network-side actions
         // (disconnects and bans). Catches auto-bans from scoring events
-        // processed above.
-        loop {
-            match self.lifecycle_rx.try_recv() {
+        // processed above; the registered waker makes a new event wake this
+        // poll so enforcement never waits for the dial tick.
+        while let Poll::Ready(Some(item)) = self.lifecycle_rx.poll_next_unpin(cx) {
+            match item {
                 Ok(event) => self.on_lifecycle_event(event),
-                Err(broadcast::error::TryRecvError::Lagged(missed)) => {
+                Err(BroadcastStreamRecvError::Lagged(missed)) => {
                     // Dropped events may include Banned: resynchronize from
                     // the banned set so no banned peer stays connected.
                     warn!(
@@ -966,9 +974,6 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
                     );
                     self.reconcile_banned_connections();
                 }
-                Err(
-                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
-                ) => break,
             }
         }
 
@@ -1234,6 +1239,38 @@ mod tests {
                     peer_id: closed, ..
                 } => assert_eq!(closed, peer_id),
                 _ => panic!("expected CloseConnection for the banned peer"),
+            }
+        }
+
+        /// A ban arriving while the behaviour is parked wakes the poll
+        /// through the lifecycle stream's waker: enforcement must not wait
+        /// for the dial tick (one hour here, so only the waker can resolve
+        /// this before the timeout).
+        #[tokio::test]
+        async fn ban_wakes_a_parked_behaviour_without_a_tick() {
+            let mut behaviour = test_behaviour_with(
+                TopologyConfig::default().with_dial_interval(Duration::from_secs(3600)),
+            );
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            let manager = Arc::clone(&behaviour.peer_manager);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                manager.ban(&overlay, BanCause::Requested, None);
+            });
+
+            let action = tokio::time::timeout(
+                Duration::from_secs(2),
+                std::future::poll_fn(|cx| behaviour.poll(cx)),
+            )
+            .await
+            .expect("the ban must wake the parked behaviour");
+            match action {
+                ToSwarm::CloseConnection {
+                    peer_id: closed, ..
+                } => assert_eq!(closed, peer_id),
+                other => panic!("expected CloseConnection, got {other:?}"),
             }
         }
 

@@ -258,7 +258,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             early_disconnect_threshold: self.config.early_disconnect_threshold,
             pending_closes: HashMap::new(),
             outbound_public_dials: HashSet::new(),
-            lifecycle_rx,
+            lifecycle_rx: tokio_stream::wrappers::BroadcastStream::new(lifecycle_rx),
             agent_versions,
             trust_local_peers: self.trust_local_peers,
             pending_nat_external_addrs,

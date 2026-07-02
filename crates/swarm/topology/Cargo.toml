@@ -43,6 +43,7 @@ futures.workspace = true
 # `tokio::select!`. None of `net`, `rt-multi-thread`, `fs`, or `signal` is
 # needed, so the wasm build stays clean.
 tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 
 ## crypto/primitives
 alloy-primitives.workspace = true
