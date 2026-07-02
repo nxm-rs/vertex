@@ -46,6 +46,7 @@ pub struct PeerState {
     balance: AtomicI64,
     reserved_balance: AtomicU64,
     shadow_reserved_balance: AtomicU64,
+    ghost_balance: AtomicU64,
     payment_threshold: Au,
     disconnect_threshold: Au,
 }
@@ -57,6 +58,7 @@ impl PeerState {
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
+            ghost_balance: AtomicU64::new(0),
             payment_threshold,
             disconnect_threshold,
         }
@@ -103,6 +105,19 @@ impl PeerState {
     /// Subtract from shadow reserved balance, saturating at zero.
     pub fn sub_shadow_reserved(&self, amount: Au) {
         saturating_fetch_sub(&self.shadow_reserved_balance, amount.as_amount());
+    }
+
+    /// Get the ghost balance in AU: the accrued prices of provides whose
+    /// delivery the peer refused. Never committed and never settled; it only
+    /// consumes serve headroom in the provide projection.
+    pub fn ghost_balance(&self) -> Au {
+        Au::from_amount(self.ghost_balance.load(Ordering::Relaxed))
+    }
+
+    /// Add to the ghost balance.
+    pub fn add_ghost(&self, amount: Au) {
+        self.ghost_balance
+            .fetch_add(amount.as_amount(), Ordering::Relaxed);
     }
 
     /// Get the payment threshold in AU.

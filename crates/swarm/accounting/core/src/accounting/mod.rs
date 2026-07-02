@@ -128,10 +128,14 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let state = self.get_or_create_peer(peer);
 
         let payment_threshold = state.payment_threshold();
-        // Projected debt the peer would owe us once this provide commits.
+        // Projected debt the peer would owe us once this provide commits. The
+        // ghost balance counts too: refused deliveries were served in full and
+        // consume the same headroom, so a repeat refuser starves instead of
+        // draining relays for free.
         let projected = state
             .balance()
             .saturating_add(state.shadow_reserved_balance())
+            .saturating_add(state.ghost_balance())
             .saturating_add(price);
         if projected > payment_threshold {
             return Err(AccountingError::PaymentThreshold {
