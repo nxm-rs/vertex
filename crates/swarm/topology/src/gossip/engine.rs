@@ -7,7 +7,7 @@
 //! exchange after a gossip dial) are polled from the behaviour's `poll` like
 //! its other timers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -31,6 +31,11 @@ use crate::kademlia::peer_selection;
 
 use crate::behaviour::ConnectionRegistry;
 
+/// Maximum time a gossip-dial mark lives before the periodic tick evicts it.
+/// A dial resolves to activation, close, or failure well within this, so any
+/// entry older than this outlived its cleanup events and is a leak to reclaim.
+const GOSSIP_DIAL_TTL: Duration = Duration::from_secs(120);
+
 /// A gossip exchange deferred until its connection proves stable.
 struct PendingExchange {
     deadline: Instant,
@@ -51,10 +56,11 @@ pub(crate) struct GossipEngine<I: SwarmIdentity> {
     /// The published depth last seen by the decrease detector.
     last_depth: u8,
     last_broadcast: HashMap<OverlayAddress, Instant>,
-    /// Peers we initiated a gossip-dial to. Bounded by active outbound
-    /// connections: entries are added once per outbound discovery dial and
-    /// removed on activation (connection succeeded) or connection close.
-    gossip_dial_peers: HashSet<PeerId>,
+    /// Peers we initiated a gossip-dial to, with the time the dial was marked.
+    /// An entry is removed on activation, connection close, or dial failure;
+    /// the periodic tick evicts any that outlive [`GOSSIP_DIAL_TTL`], so a
+    /// missed cleanup event cannot let the set grow without bound.
+    gossip_dial_peers: HashMap<PeerId, Instant>,
     health_check_delay: Duration,
     refresh_interval: Duration,
     /// Connected storers per bin told about a newly connected distant storer.
@@ -87,7 +93,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
             connection_registry,
             last_depth: 0,
             last_broadcast: HashMap::new(),
-            gossip_dial_peers: HashSet::new(),
+            gossip_dial_peers: HashMap::new(),
             health_check_delay: config.health_check_delay,
             refresh_interval: config.refresh_interval,
             broadcast_bin_size: config.broadcast_bin_size,
@@ -129,7 +135,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
     /// Mark an outbound discovery dial so its exchange is deferred on
     /// activation (the peer may drop us if its bin is saturated).
     pub(crate) fn mark_gossip_dial(&mut self, peer_id: PeerId) {
-        self.gossip_dial_peers.insert(peer_id);
+        self.gossip_dial_peers.insert(peer_id, Instant::now());
     }
 
     /// A peer completed activation: exchange immediately, or after the
@@ -141,12 +147,18 @@ impl<I: SwarmIdentity> GossipEngine<I> {
         node_type: SwarmNodeType,
         depth: u8,
     ) -> Vec<GossipAction> {
-        if self.gossip_dial_peers.remove(&peer_id) {
+        if self.gossip_dial_peers.remove(&peer_id).is_some() {
             self.schedule_exchange(peer_id, swarm_peer, node_type);
             Vec::new()
         } else {
             self.exchange_gossip(&swarm_peer, node_type, depth)
         }
+    }
+
+    /// A gossip dial failed before establishing a connection: drop its mark so
+    /// a dial that never activates or closes does not leak a bookkeeping entry.
+    pub(crate) fn on_gossip_dial_failed(&mut self, peer_id: PeerId) {
+        self.gossip_dial_peers.remove(&peer_id);
     }
 
     /// A connection closed: drop its dial mark, cancel any deferred exchange,
@@ -454,6 +466,11 @@ impl<I: SwarmIdentity> GossipEngine<I> {
         self.last_broadcast
             .retain(|_, ts| now.duration_since(*ts) <= broadcast_expiry);
 
+        // Reclaim any gossip-dial mark that outlived its cleanup events, so a
+        // missed activation, close, or failure cannot grow the set unbounded.
+        self.gossip_dial_peers
+            .retain(|_, ts| now.duration_since(*ts) <= GOSSIP_DIAL_TTL);
+
         let neighbors = self.connected_neighbors(depth);
 
         // Check if any neighbor is stale before computing the expensive peer set
@@ -727,6 +744,44 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_gossip_dial_does_not_leak_a_bookkeeping_entry() {
+        let ctx = TopologyTestContext::new();
+        let mut engine = test_engine(&ctx);
+        let peer_id = PeerId::random();
+
+        engine.mark_gossip_dial(peer_id);
+        assert_eq!(engine.gossip_dial_peers.len(), 1);
+
+        // A dial that fails before connecting produces neither an activation
+        // nor a close; the failure hook must reclaim the entry.
+        engine.on_gossip_dial_failed(peer_id);
+        assert!(
+            engine.gossip_dial_peers.is_empty(),
+            "a failed gossip dial leaves no bookkeeping entry"
+        );
+    }
+
+    #[test]
+    fn the_tick_evicts_a_stale_gossip_dial_mark() {
+        let ctx = TopologyTestContext::new();
+        let mut engine = test_engine(&ctx);
+
+        // A mark whose cleanup events were all missed: age it past the TTL and
+        // confirm the periodic tick reclaims it as a backstop.
+        let peer_id = PeerId::random();
+        engine.gossip_dial_peers.insert(
+            peer_id,
+            Instant::now() - (GOSSIP_DIAL_TTL + Duration::from_secs(1)),
+        );
+
+        engine.on_tick(0);
+        assert!(
+            engine.gossip_dial_peers.is_empty(),
+            "the tick evicts a mark that outlived its cleanup events"
+        );
+    }
+
+    #[test]
     fn non_gossip_dial_exchanges_immediately() {
         let ctx = TopologyTestContext::new().with_peers();
         let mut engine = test_engine(&ctx);
@@ -824,7 +879,7 @@ mod tests {
 
         let selected = engine.select_for_distant(recipient, &profile);
 
-        let unique: HashSet<_> = selected.iter().map(|p| *p.overlay()).collect();
+        let unique: std::collections::HashSet<_> = selected.iter().map(|p| *p.overlay()).collect();
         assert_eq!(unique.len(), selected.len());
     }
 

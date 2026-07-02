@@ -200,6 +200,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         };
 
+        // Drop any gossip-dial mark first: a dial that fails before connecting
+        // produces neither an activation nor a close, so this is the only event
+        // that reclaims its bookkeeping entry, independent of dial tracking.
+        self.gossip.on_gossip_dial_failed(peer_id);
+
         // Resolve from DialTracker (sole source of outbound dial tracking)
         let Some(request) = self.dial_tracker.resolve(&peer_id) else {
             trace!(%peer_id, "DialFailure for unknown/untracked peer_id");
