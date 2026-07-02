@@ -8888,6 +8888,7 @@ dependencies = [
  "vertex-net-peer-registry",
  "vertex-swarm-api",
  "vertex-swarm-client-protocol",
+ "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-pricing",
  "vertex-swarm-net-pseudosettle",
@@ -8975,7 +8976,8 @@ dependencies = [
 name = "vertex-swarm-net-handler-core"
 version = "0.1.0"
 dependencies = [
- "futures-bounded 0.2.4",
+ "futures",
+ "tokio",
  "vertex-net-ratelimiter",
 ]
 

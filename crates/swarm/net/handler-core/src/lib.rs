@@ -1,12 +1,20 @@
-//! Shared handler core for protocol connection handlers.
+//! Shared handler core and scaffolding blocks for protocol connection handlers.
 //!
-//! Provides [`HandlerCore`] which encapsulates the common pattern of:
-//! - A bounded event queue (`VecDeque<E>`)
+//! Provides [`HandlerCore`], which encapsulates the common pattern of:
+//! - An unbounded event queue (`VecDeque<E>`)
 //! - A rate limiter for inbound stream throttling
 //! - An outbound-pending flag to serialize outbound requests
 //!
-//! Protocol handlers (e.g., hive, pushsync) compose this struct instead of
-//! duplicating the same fields and logic.
+//! and two opt-in building blocks composed a la carte by handlers with their own
+//! drop policy and cap sites: [`BoundedQueue`] (a bounded FIFO with a
+//! caller-owned reject-newest or evict-oldest policy) and [`OutcomeDriver`] (a
+//! capped `FuturesUnordered` outcome driver).
+
+mod driver;
+mod queue;
+
+pub use driver::OutcomeDriver;
+pub use queue::BoundedQueue;
 
 use std::collections::VecDeque;
 
@@ -14,7 +22,7 @@ use vertex_net_ratelimiter::{Quota, RateLimiter};
 
 /// Shared core for protocol connection handlers.
 ///
-/// Manages a bounded event queue, rate limiter, and outbound serialization flag.
+/// Manages an unbounded event queue, rate limiter, and outbound serialization flag.
 /// Protocol handlers embed this struct and delegate common operations to it.
 pub struct HandlerCore<E> {
     /// Pending events to emit to the behaviour.

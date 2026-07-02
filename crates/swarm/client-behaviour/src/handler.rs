@@ -12,7 +12,7 @@
 //! cannot be folded inline.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -21,8 +21,6 @@ use std::{
 use vertex_util_runtime::time::Instant;
 
 use alloy_primitives::U256;
-use futures::future::BoxFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
 use futures_bounded::Timeout;
 use libp2p::swarm::{
     SubstreamProtocol,
@@ -34,6 +32,7 @@ use libp2p::swarm::{
 use nectar_primitives::{ChunkAddress, NetworkId};
 use tracing::{debug, warn};
 use vertex_swarm_api::{Au, SwarmLocalStore};
+use vertex_swarm_net_handler_core::{BoundedQueue, OutcomeDriver};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
@@ -233,12 +232,12 @@ pub struct ClientHandler {
     /// when absent, every delivery takes the verbatim-relay path.
     storer: Option<StorerCapability>,
     next_request_id: u64,
-    pending_commands: VecDeque<HandlerCommand>,
-    pending_events: VecDeque<HandlerEvent>,
+    pending_commands: BoundedQueue<HandlerCommand>,
+    pending_events: BoundedQueue<HandlerEvent>,
     pricing_sent: bool,
     pricing_outbound_pending: bool,
     /// Self-contained inbound serving futures (retrieval and pushsync).
-    inbound: FuturesUnordered<BoxFuture<'static, InboundOutcome>>,
+    inbound: OutcomeDriver<InboundOutcome>,
     /// Pseudosettle responders awaiting the service's ack, keyed by request_id.
     /// Only pseudosettle uses this, because its ack is gated on a time-based
     /// allowance.
@@ -250,12 +249,10 @@ pub struct ClientHandler {
 impl ClientHandler {
     /// Push an event if the queue isn't full, otherwise drop with a metric.
     fn push_event(&mut self, event: HandlerEvent) {
-        if self.pending_events.len() >= self.config.max_pending_events {
+        if self.pending_events.push(event).is_err() {
             warn!("Handler event queue full, dropping event");
             metrics::counter!("swarm.client.handler.events_dropped").increment(1);
-            return;
         }
-        self.pending_events.push_back(event);
     }
 
     /// Create a new handler in dormant state. `storer` is `Some` only on a storer
@@ -266,6 +263,8 @@ impl ClientHandler {
         forward: Arc<dyn Forwarder>,
         storer: Option<StorerCapability>,
     ) -> Self {
+        let max_pending_commands = config.max_pending_commands;
+        let max_pending_events = config.max_pending_events;
         Self {
             config,
             state: State::Dormant,
@@ -273,11 +272,11 @@ impl ClientHandler {
             forward,
             storer,
             next_request_id: 0,
-            pending_commands: VecDeque::new(),
-            pending_events: VecDeque::new(),
+            pending_commands: BoundedQueue::new(max_pending_commands),
+            pending_events: BoundedQueue::new(max_pending_events),
             pricing_sent: false,
             pricing_outbound_pending: false,
-            inbound: FuturesUnordered::new(),
+            inbound: OutcomeDriver::new(MAX_INBOUND_SERVING),
             pending_responses: HashMap::new(),
             response_sends: futures_bounded::FuturesSet::new(
                 RESPONSE_SEND_TIMEOUT,
@@ -589,7 +588,7 @@ impl ConnectionHandler for ClientHandler {
         // dormant (empty) protocol set so the muxer stops accepting new inbound
         // substreams until we drain.
         let upgrade = match &self.state {
-            State::Active { .. } if self.inbound.len() < MAX_INBOUND_SERVING => {
+            State::Active { .. } if self.inbound.has_capacity() => {
                 let upgrade = ClientInboundUpgrade::active_for(self.config.local_role);
                 #[cfg(feature = "swap")]
                 let upgrade = upgrade.with_swap_rate(self.config.swap_exchange_rate);
@@ -606,14 +605,14 @@ impl ConnectionHandler for ClientHandler {
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
-        if let Some(event) = self.pending_events.pop_front() {
+        if let Some(event) = self.pending_events.pop() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
         // Drain resolved inbound serving futures into scoring/metrics events.
-        while let Poll::Ready(Some(outcome)) = self.inbound.poll_next_unpin(cx) {
+        while let Poll::Ready(Some(outcome)) = self.inbound.poll_next(cx) {
             self.push_event(outcome.into());
-            if let Some(event) = self.pending_events.pop_front() {
+            if let Some(event) = self.pending_events.pop() {
                 return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
             }
         }
@@ -641,16 +640,16 @@ impl ConnectionHandler for ClientHandler {
                     });
                 }
             }
-            if let Some(event) = self.pending_events.pop_front() {
+            if let Some(event) = self.pending_events.pop() {
                 return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
             }
         }
 
-        while let Some(cmd) = self.pending_commands.pop_front() {
+        while let Some(cmd) = self.pending_commands.pop() {
             match cmd {
                 HandlerCommand::Activate { overlay, node_type } => {
                     self.activate(overlay, node_type);
-                    if let Some(event) = self.pending_events.pop_front() {
+                    if let Some(event) = self.pending_events.pop() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }
                 }
@@ -772,12 +771,10 @@ impl ConnectionHandler for ClientHandler {
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
-        if self.pending_commands.len() >= self.config.max_pending_commands {
+        if self.pending_commands.push(event).is_err() {
             warn!("Handler command queue full, dropping command");
             metrics::counter!("swarm.client.handler.commands_dropped").increment(1);
-            return;
         }
-        self.pending_commands.push_back(event);
     }
 
     fn on_connection_event(

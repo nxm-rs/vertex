@@ -14,7 +14,7 @@ Global rules: see root `/AGENTS.md`. Deep guides for changes here: `docs/agents/
 - `pushsync`: `/swarm/pushsync/1.3.1/pushsync`. Chunk push with receipts.
 - `retrieval`: `/swarm/retrieval/1.4.0/retrieval`. Chunk request and delivery.
 - `headers`: shared header frame for request-response protocols, with trace-context propagation. W3C-over-OpenTelemetry inject/extract is native-only (`tracing.rs`); the wasm sibling (`tracing_wasm.rs`, Pattern C) is a no-op since a browser client has no OTLP backend. The on-wire `tracing-span-context` field is unaffected.
-- `handler-core`: shared `HandlerCore<E>` for handlers (pending events, GCRA, outbound-pending flag).
+- `handler-core`: handler scaffolding. `HandlerCore<E>` (unbounded pending events, GCRA rate limiter, outbound-pending flag) plus two opt-in blocks composed a la carte: `BoundedQueue<T>` (bounded FIFO with a caller-owned reject-newest or evict-oldest policy) and `OutcomeDriver<O>` (a capped `FuturesUnordered` outcome driver). The blocks carry mechanics only; the drop policy, metrics, warn lines, and cap constants stay at the call site.
 - `identify`: vendored libp2p-identify with a targeted-push extension.
 - `proto`: consolidated protobuf modules. Re-exports `handshake`, `headers`, `hive`, `pricing`, `pseudosettle`, `pullsync`, `pushsync`, `retrieval`, `swap`.
 
@@ -23,7 +23,7 @@ Global rules: see root `/AGENTS.md`. Deep guides for changes here: `docs/agents/
 - One protocol per crate, one `PROTOCOL_NAME` constant. Reference that constant from tests and metrics labels.
 - Implement the codec in its own `codec` module, separate from the behaviour. Wire types live behind a domain wrapper so the protobuf type never escapes.
 - Compose `vertex-net-codec::FramedProto` for framing. Use its `protocol_error!` macro for the common error variants (`ConnectionClosed`, `Protobuf`, `Io`).
-- Compose `HandlerCore` for the rate-limited inbound queue and outbound flag.
+- Compose `HandlerCore` for the rate-limited inbound queue and outbound flag. Reach for `BoundedQueue` when a handler needs a bounded pending-event or pending-command queue with an explicit drop policy, and `OutcomeDriver` when it drives a capped set of inbound or outbound outcome futures. Keep the policy (reject-newest vs evict-oldest), the metric name, the warn line, and the cap constant at the call site; the blocks are pieces, not a framework.
 - Embed metrics in a `pub mod metrics` submodule and derive `strum::IntoStaticStr` on event/stage enums so labels are static strs.
 - Pull the protobuf module from `vertex-swarm-net-proto`. Never add a `build.rs` or `OUT_DIR` include path in a protocol crate.
 
