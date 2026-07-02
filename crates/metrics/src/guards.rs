@@ -1,6 +1,8 @@
 //! Drop-based RAII guards for automatic metric updates.
 
 use core::fmt;
+use core::num::NonZeroU32;
+use std::sync::LazyLock;
 
 use metrics::{Counter, Gauge, Histogram};
 use vertex_util_runtime::time::Instant;
@@ -132,6 +134,52 @@ impl fmt::Debug for TimingGuard {
 impl Drop for TimingGuard {
     fn drop(&mut self) {
         self.histogram.record(self.start.elapsed().as_secs_f64());
+    }
+}
+
+/// Samples a [`TimingGuard`] one call in `interval`, so a hot loop pays the
+/// clock read and histogram record on a fixed fraction of iterations.
+///
+/// The skip path is a single decrement and branch: no clock read, no atomic,
+/// no deref of the lazy handle. The static [`LazyLock`] is only forced on the
+/// first sampled call, so a handle materialized before the recorder is
+/// installed is never cached.
+pub struct TimingSampler {
+    histogram: &'static LazyLock<Histogram>,
+    interval: NonZeroU32,
+    countdown: u32,
+}
+
+impl TimingSampler {
+    /// Sampler over `histogram`, recording one call in `interval`. Countdown
+    /// starts at zero so the first call samples and a quiet node reports promptly.
+    #[inline]
+    pub const fn new(histogram: &'static LazyLock<Histogram>, interval: NonZeroU32) -> Self {
+        Self {
+            histogram,
+            interval,
+            countdown: 0,
+        }
+    }
+
+    /// Start timing on a sampled call, or `None` to skip.
+    #[inline]
+    pub fn start(&mut self) -> Option<TimingGuard> {
+        if self.countdown > 0 {
+            self.countdown -= 1;
+            return None;
+        }
+        self.countdown = self.interval.get() - 1;
+        Some(TimingGuard::new(LazyLock::force(self.histogram).clone()))
+    }
+}
+
+impl fmt::Debug for TimingSampler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TimingSampler")
+            .field("interval", &self.interval)
+            .field("countdown", &self.countdown)
+            .finish()
     }
 }
 
@@ -278,5 +326,65 @@ mod tests {
         let lock = parking_lot::Mutex::new(42);
         let guard = timed_lock(&lock, metrics::histogram!("test_mutex_lock"));
         assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn timing_sampler_cadence() {
+        static HIST: LazyLock<Histogram> =
+            LazyLock::new(|| metrics::histogram!("test_sampler_cadence"));
+        let mut sampler = TimingSampler::new(&HIST, NonZeroU32::new(4).unwrap());
+
+        // Interval 4 samples calls 1, 5, 9 over nine calls.
+        let sampled: Vec<u32> = (1u32..=9).filter(|_| sampler.start().is_some()).collect();
+        assert_eq!(sampled, vec![1, 5, 9]);
+    }
+
+    #[test]
+    fn timing_sampler_records_at_interval() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use metrics::{
+            Counter, Gauge, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder, SharedString,
+            Unit,
+        };
+
+        #[derive(Default)]
+        struct CountingHistogram(AtomicU64);
+        impl HistogramFn for CountingHistogram {
+            fn record(&self, _value: f64) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        struct CountingRecorder(Arc<CountingHistogram>);
+        impl Recorder for CountingRecorder {
+            fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn register_counter(&self, _: &Key, _: &Metadata<'_>) -> Counter {
+                Counter::noop()
+            }
+            fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+                Gauge::noop()
+            }
+            fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+                Histogram::from_arc(self.0.clone())
+            }
+        }
+
+        static HIST: LazyLock<Histogram> =
+            LazyLock::new(|| metrics::histogram!("test_sampler_record"));
+
+        let hist = Arc::new(CountingHistogram::default());
+        let recorder = CountingRecorder(hist.clone());
+        metrics::with_local_recorder(&recorder, || {
+            let mut sampler = TimingSampler::new(&HIST, NonZeroU32::new(2).unwrap());
+            // Interval 2 across 4 calls records exactly 2 histograms.
+            for _ in 0..4 {
+                drop(sampler.start());
+            }
+        });
+        assert_eq!(hist.0.load(Ordering::Relaxed), 2);
     }
 }

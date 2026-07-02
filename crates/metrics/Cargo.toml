@@ -26,3 +26,8 @@ strum = { workspace = true }
 
 [dev-dependencies]
 strum = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "timing"
+harness = false

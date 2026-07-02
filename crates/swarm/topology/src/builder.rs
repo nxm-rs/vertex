@@ -9,6 +9,7 @@ use std::{
 use libp2p::Multiaddr;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
+use vertex_metrics::TimingSampler;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_local::LocalCapabilities;
 use vertex_net_ratelimiter::RateLimiter;
@@ -265,6 +266,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             trust_local_peers: self.trust_local_peers,
             pending_nat_external_addrs,
             metrics,
+            poll_timer: TimingSampler::new(
+                &crate::metrics::POLL_DURATION_HISTOGRAM,
+                crate::metrics::POLL_SAMPLE_INTERVAL,
+            ),
             pending_tasks: Some(PendingTopologyTasks {
                 evaluation_interval,
             }),

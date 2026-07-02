@@ -229,7 +229,7 @@ The dialer crate (`vertex-net-dialer`) tracks its own per-purpose state, where `
 
 | Metric | Type | Description | Target |
 |--------|------|-------------|--------|
-| `topology_poll_duration_seconds` | Histogram | Time per poll loop iteration | < 1ms p99 |
+| `topology_poll_duration_seconds` | Histogram | Time per poll loop iteration, sampled one poll in 64, so `_count` is polls/64 | < 1ms p99 |
 | `topology_poll_events_total` | Counter | Events processed per poll | - |
 | `topology_phase_transitions_total` | Counter | Connection phase transitions | - |
 

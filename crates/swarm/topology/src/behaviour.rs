@@ -21,6 +21,7 @@ use libp2p::{
     },
 };
 use tracing::{debug, info, warn};
+use vertex_metrics::TimingSampler;
 use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_net_ratelimiter::{Quota, RateLimitedErr, RateLimiter};
@@ -55,7 +56,7 @@ use crate::events::TopologyEvent;
 use crate::extract_peer_id;
 use crate::gossip::{GossipConfig, GossipEngine};
 use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
-use crate::metrics::{TopologyMetrics, po_label};
+use crate::metrics::{POLL_EVENTS_TOTAL, TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
 
 /// Type-erased peer snapshot store.
@@ -299,6 +300,10 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     // Metrics
     pub(crate) metrics: Arc<TopologyMetrics>,
+
+    /// Samples per-poll timing so the histogram record and clock reads fire on
+    /// a fixed fraction of polls; the skip path is a decrement and branch.
+    pub(crate) poll_timer: TimingSampler,
 
     /// Background-task inputs captured by [`crate::TopologyBehaviourBuilder`]
     /// and consumed by [`TopologyBehaviour::spawn_tasks`]. `None` once the
@@ -875,9 +880,9 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        // Use TimingGuard for automatic poll duration recording
-        let _poll_timer =
-            vertex_metrics::TimingGuard::new(metrics::histogram!("topology_poll_duration_seconds"));
+        // Sampled poll-duration timing; the guard lives to the end of poll on
+        // sampled iterations and is None (no clock read) on skipped ones.
+        let _poll_timer = self.poll_timer.start();
 
         // Emit any pending static NAT addresses as external addresses (one-time on startup)
         if !self.pending_nat_external_addrs.is_empty() {
@@ -930,7 +935,7 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         loop {
             match self.protocols.poll(cx) {
                 Poll::Ready(ToSwarm::GenerateEvent(event)) => {
-                    metrics::counter!("topology_poll_events_total").increment(1);
+                    POLL_EVENTS_TOTAL.increment(1);
                     let (peer_id, connection_id) = event.peer_connection();
                     self.process_protocol_event(peer_id, connection_id, event);
                 }

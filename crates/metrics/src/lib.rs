@@ -14,7 +14,8 @@ pub use buckets::{
     LOCK_CONTENTION, POLL_DURATION,
 };
 pub use guards::{
-    CounterGuard, GaugeGuard, OperationGuard, TimingGuard, timed_lock, timed_read, timed_write,
+    CounterGuard, GaugeGuard, OperationGuard, TimingGuard, TimingSampler, timed_lock, timed_read,
+    timed_write,
 };
 pub use label_value::LabelValue;
 pub use protocol::StreamGuard;
