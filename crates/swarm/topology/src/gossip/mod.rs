@@ -28,38 +28,12 @@
 //!   connection proves stable.
 
 mod config;
+mod engine;
 mod error;
 mod events;
 mod filter;
 mod intake;
-mod tasks;
-
-use tokio::sync::mpsc;
 
 pub use config::GossipConfig;
-pub(crate) use events::{GossipAction, GossipInput};
-pub(crate) use tasks::{GossipChannels, gossip_channel, spawn_gossip_task};
-
-/// Handle for communicating with the gossip task.
-pub(crate) struct GossipHandle {
-    input_tx: mpsc::Sender<GossipInput>,
-    output_rx: mpsc::Receiver<GossipAction>,
-}
-
-impl GossipHandle {
-    /// Send an input event to the gossip task.
-    pub(crate) fn send(&self, input: GossipInput) {
-        if let Err(e) = self.input_tx.try_send(input) {
-            tracing::warn!("Gossip input channel full, dropping event: {e}");
-        }
-    }
-
-    /// Poll for a gossip broadcast action, registering the waker so a new
-    /// action wakes the behaviour instead of waiting for an unrelated poll.
-    pub(crate) fn poll_recv(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<GossipAction>> {
-        self.output_rx.poll_recv(cx)
-    }
-}
+pub(crate) use engine::GossipEngine;
+pub(crate) use events::GossipAction;

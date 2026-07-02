@@ -19,7 +19,6 @@ use crate::DialReason;
 use crate::composed::ProtocolEvent;
 use crate::error::{DisconnectReason, RejectionReason};
 use crate::events::{ConnectionDirection, TopologyEvent};
-use crate::gossip::GossipInput;
 use crate::kademlia::{RoutingCapacity, SwarmRouting};
 
 use crate::behaviour::TopologyBehaviour;
@@ -298,12 +297,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             direction,
         });
 
-        // Notify gossip task -- exchange happens immediately or after delay (for gossip dials)
-        self.gossip.send(GossipInput::PeerActivated {
-            peer_id,
-            swarm_peer: info.swarm_peer,
-            node_type,
-        });
+        // Gossip exchange happens in this call, or after the health-check
+        // delay for gossip dials.
+        let depth = self.routing.depth().get();
+        let actions = self
+            .gossip
+            .on_peer_activated(peer_id, info.swarm_peer, node_type, depth);
+        self.apply_gossip_actions(actions);
 
         // Dial completed successfully - coalesced evaluation in poll()
         self.evaluator_handle.trigger_evaluation();
@@ -410,8 +410,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             });
 
         let peer_count = peers.len();
-        self.gossip
-            .send(GossipInput::PeersReceived { gossiper, peers });
+        self.gossip.on_peers_received(gossiper, peers);
 
         // Disconnect from bootnodes after receiving the initial peer list.
         // Bootnodes are gossip amplifiers -- every new peer connecting to the bootnode

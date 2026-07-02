@@ -53,7 +53,7 @@ use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
 use crate::events::TopologyEvent;
 use crate::extract_peer_id;
-use crate::gossip::{GossipConfig, GossipHandle, GossipInput};
+use crate::gossip::{GossipConfig, GossipEngine};
 use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
@@ -225,8 +225,9 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     // Pending swarm actions (dials, close connections, external addrs)
     pub(crate) pending_actions: VecDeque<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<I>>>>,
 
-    // Gossip coordination (async task with channel-based API)
-    pub(crate) gossip: GossipHandle,
+    // Gossip peer-exchange policy, driven by connection events and polled
+    // for its timers alongside the dial interval.
+    pub(crate) gossip: GossipEngine<I>,
 
     // Periodic dial interval
     pub(crate) dial_interval: vertex_tasks::time::Interval,
@@ -409,6 +410,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         );
     }
 
+    /// Broadcast every action the gossip engine returned, in the same call
+    /// that produced it.
+    pub(crate) fn apply_gossip_actions(&mut self, actions: Vec<crate::gossip::GossipAction>) {
+        for action in actions {
+            self.broadcast_peers(action.to, action.peers);
+        }
+    }
+
     pub(crate) fn broadcast_peers(&mut self, to: OverlayAddress, peers: Vec<SwarmPeer>) {
         let Some(state) = self.connection_registry.get(&to) else {
             tracing::warn!(%to, "Cannot broadcast: peer not found");
@@ -493,7 +502,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         new_depth: NeighborhoodDepth,
     ) {
         self.push_bin_targets();
-        self.gossip.send(GossipInput::DepthChanged(new_depth.get()));
+        let actions = self.gossip.on_depth_changed(new_depth.get());
+        self.apply_gossip_actions(actions);
         self.emit_event(TopologyEvent::DepthChanged {
             old_depth: old_depth.get(),
             new_depth: new_depth.get(),
@@ -890,12 +900,12 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             self.dial_bootnodes(resolved_bootnodes, resolved_trusted);
         }
 
-        // Drain gossip broadcast actions from the async gossip task; the
-        // registered waker makes a new action wake this poll rather than
-        // waiting for an unrelated swarm event or the dial tick.
-        while let Poll::Ready(Some(action)) = self.gossip.poll_recv(cx) {
-            self.broadcast_peers(action.to, action.peers);
-        }
+        // Drive the gossip engine's timers (the neighbourhood refresh and due
+        // deferred exchanges); its interval and deadline timer register their
+        // own wakers.
+        let depth = self.routing.depth().get();
+        let actions = self.gossip.poll(cx, depth);
+        self.apply_gossip_actions(actions);
 
         // Check for periodic dial candidate evaluation
         if self.dial_interval.poll_tick(cx).is_ready() {
@@ -1546,6 +1556,46 @@ mod tests {
             match next_action(&mut behaviour).await {
                 ToSwarm::Dial { .. } => {}
                 other => panic!("expected deferred Dial after replenish, got {other:?}"),
+            }
+        }
+    }
+
+    mod gossip_engine {
+        use super::*;
+
+        use libp2p::swarm::ConnectionId;
+        use vertex_swarm_test_utils::{test_overlay, test_swarm_peer};
+
+        /// An engine action applied by a connection event reaches the hive
+        /// broadcast queue synchronously, and the very next poll emits it:
+        /// no channel sits between gossip policy and the wire.
+        #[tokio::test]
+        async fn gossip_actions_apply_in_the_same_poll_cycle() {
+            let mut behaviour = test_behaviour_with(TopologyConfig::default());
+
+            let peer_id = PeerId::random();
+            let connection_id = ConnectionId::new_unchecked(1);
+            let recipient = test_overlay(0xAB);
+            behaviour
+                .connection_registry
+                .connected_inbound(peer_id, connection_id);
+            behaviour
+                .connection_registry
+                .activate(peer_id, connection_id, recipient);
+
+            behaviour.apply_gossip_actions(vec![crate::gossip::GossipAction {
+                to: recipient,
+                peers: vec![test_swarm_peer(9)],
+            }]);
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::NotifyHandler {
+                    peer_id: notified, ..
+                } => assert_eq!(
+                    notified, peer_id,
+                    "the hive broadcast targets the recipient"
+                ),
+                other => panic!("expected the gossip broadcast to emit, got {other:?}"),
             }
         }
     }

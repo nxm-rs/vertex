@@ -11,7 +11,6 @@ use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::error::{DialError, DisconnectReason};
 use crate::events::TopologyEvent;
-use crate::gossip::GossipInput;
 use crate::kademlia::{RoutingCapacity, SwarmRouting};
 
 use crate::behaviour::TopologyBehaviour;
@@ -109,10 +108,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let connected_at = removed_state.as_ref().and_then(|s| s.connected_at());
         let overlay = removed_state.as_ref().and_then(|s| s.id());
 
-        self.gossip.send(GossipInput::ConnectionClosed {
-            peer_id: closed.peer_id,
-            overlay,
-        });
+        let depth = self.routing.depth().get();
+        let actions = self
+            .gossip
+            .on_connection_closed(closed.peer_id, overlay, depth);
+        self.apply_gossip_actions(actions);
 
         let Some(overlay) = overlay else {
             // Unknown overlay connection closed — no routing capacity to release and
