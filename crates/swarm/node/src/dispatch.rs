@@ -19,15 +19,19 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use std::future::Future;
+
 use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::OwnedSemaphorePermit;
-use tracing::warn;
+use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, NeighborhoodDepth, OverlayAddress, PeerReporter,
-    ReportSource, StampedChunk, SwarmError, SwarmResult, SwarmScoringEvent, SwarmTopologyPeers,
-    SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
+    Bin, ChunkAddress, ChunkRetrievalResult, Commit, NeighborhoodDepth, OverlayAddress,
+    PeerReporter, ReportSource, StampedChunk, SwarmBandwidthAccounting, SwarmClientAccounting,
+    SwarmError, SwarmResult, SwarmScoringEvent, SwarmTopologyPeers, SwarmTopologyReporting,
+    SwarmTopologyRouting, SwarmTopologyState,
 };
+use vertex_swarm_client_behaviour::{ForwardError, closer_candidates};
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_tasks::time::Duration;
 
@@ -487,6 +491,136 @@ where
         outcome
     }
 
+    /// Relay an inbound retrieval to a strictly-closer peer on behalf of
+    /// `exclude` (the requester), returning the verified result and the
+    /// un-applied upstream provide action.
+    pub(crate) async fn relay_retrieve<A: SwarmClientAccounting>(
+        &self,
+        accounting: &A,
+        address: ChunkAddress,
+        exclude: OverlayAddress,
+    ) -> Result<
+        (
+            RetrievalResult,
+            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
+        ),
+        ForwardError,
+    > {
+        let op = RetrieveRelay {
+            handle: self.client_handle.clone(),
+            address,
+        };
+        self.relay_walk(op, accounting, address, exclude).await
+    }
+
+    /// Relay an inbound pushsync delivery to a strictly-closer peer on behalf
+    /// of `exclude` (the pusher), returning the depth-verified receipt to
+    /// relay verbatim and the un-applied upstream provide action.
+    pub(crate) async fn relay_push<A: SwarmClientAccounting>(
+        &self,
+        accounting: &A,
+        chunk: StampedChunk,
+        exclude: OverlayAddress,
+    ) -> Result<
+        (
+            Receipt,
+            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
+        ),
+        ForwardError,
+    > {
+        let address = *chunk.address();
+        // Snapshot the depth authority for the whole walk: the locally
+        // observed depth anchors the required receipt depth, gated on that
+        // depth being credible.
+        let op = PushRelay {
+            handle: self.client_handle.clone(),
+            chunk,
+            local_depth: self.topology.depth(),
+            neighbourhood_credible: self.topology.neighbourhood_credible(),
+            reporter: self.topology.reporter(),
+        };
+        self.relay_walk(op, accounting, address, exclude).await
+    }
+
+    /// The relay role profile: the shared strictly-closer walk over one
+    /// operation.
+    ///
+    /// Loop freedom by XOR monotonicity is built into the candidate provider
+    /// ([`closer_candidates`]: strictly closer to the target than both the
+    /// requester and this node, requester and self excluded), never a policy
+    /// knob. The discipline is sequential with commit-on-verify, the pairing
+    /// [`RaceBounds::sequential`] documents: no leg is cancelled mid-flight,
+    /// so the downstream debit may defer to the verified answer.
+    ///
+    /// Owns the two-leg accounting. The upstream `provide` reservation is
+    /// taken once and held un-applied across the whole walk: the handler
+    /// commits it only after the wire write, and every failure path releases
+    /// it on drop. Each candidate takes a fresh downstream `receive`
+    /// reservation (`originated = false`: a relay, not our own request),
+    /// committed the moment the op verifies the answer and released on drop
+    /// otherwise, so a failed relay never leaks a reservation.
+    ///
+    /// Each leg holds the shared per-peer in-flight permit best-effort: the
+    /// origin race sees relay load against the same cap, but a relay is never
+    /// declined for lack of a permit.
+    async fn relay_walk<Op: RelayOp, A: SwarmClientAccounting>(
+        &self,
+        op: Op,
+        accounting: &A,
+        address: ChunkAddress,
+        exclude: OverlayAddress,
+    ) -> Result<
+        (
+            Op::Output,
+            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
+        ),
+        ForwardError,
+    > {
+        let local = self.topology.overlay_address();
+        let candidates = closer_candidates(&*self.topology, &address, exclude, local);
+        if candidates.is_empty() {
+            return Err(ForwardError::NoCloserPeer);
+        }
+
+        // Credit the upstream leg: the requester or pusher pays us for the relay.
+        let provide = accounting
+            .prepare_provide_chunk(exclude, &address)
+            .map_err(|_| ForwardError::AccountingRefused)?;
+
+        let mut last = ForwardError::AllPeersFailed;
+        for closer in candidates {
+            // Debit the downstream leg: we pay the closer peer that serves us.
+            let receive = match accounting.prepare_receive_chunk(closer, &address, false) {
+                Ok(action) => action,
+                Err(_) => {
+                    // Cannot afford this downstream peer; try the next.
+                    last = ForwardError::AccountingRefused;
+                    continue;
+                }
+            };
+
+            let _permit = self.inflight.try_acquire(&closer);
+            match op.attempt(closer).await {
+                Ok(output) => {
+                    // The downstream leg is genuinely complete, so commit it now.
+                    // The upstream `provide` returns un-applied for the handler.
+                    receive.apply();
+                    return Ok((output, provide));
+                }
+                Err(err) => {
+                    // Release the downstream reservation; the upstream `provide`
+                    // stays held for the next candidate.
+                    drop(receive);
+                    last = err;
+                }
+            }
+        }
+
+        // Every candidate failed: `provide` drops here, releasing the upstream
+        // reservation so nothing leaks.
+        Err(last)
+    }
+
     /// Order the close set, spilling to the closest admissible peers of a wider
     /// slice when the close set is fully gated.
     ///
@@ -886,6 +1020,133 @@ pub(crate) fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
 fn record_overfetch(attempts: usize, path: &'static str) {
     if let Some(extra) = attempts.checked_sub(1).filter(|extra| *extra > 0) {
         counter!("swarm.client.retrieval_overfetch_total", "path" => path).increment(extra as u64);
+    }
+}
+
+/// One relay leg: the wire call against a closer peer plus the
+/// operation-specific verification of its answer. The shared
+/// [`DispatchEngine::relay_walk`] owns the two-leg accounting around each
+/// attempt; an op maps every non-relayable outcome to the [`ForwardError`] the
+/// walk records for the terminal.
+trait RelayOp: Send + Sync {
+    /// The verified value a successful leg yields.
+    type Output: Send;
+
+    /// Dispatch one leg to `closer` and validate the answer.
+    fn attempt(
+        &self,
+        closer: OverlayAddress,
+    ) -> impl Future<Output = Result<Self::Output, ForwardError>> + Send;
+}
+
+/// The retrieval relay leg: fetch the chunk and verify it answers the
+/// requested address.
+struct RetrieveRelay {
+    handle: ClientHandle,
+    address: ChunkAddress,
+}
+
+impl RelayOp for RetrieveRelay {
+    type Output = RetrievalResult;
+
+    async fn attempt(&self, closer: OverlayAddress) -> Result<RetrievalResult, ForwardError> {
+        let address = self.address;
+        // `originated = false`: a relay leg, debited by the walk, so the
+        // service must not debit the completion event.
+        match self.handle.retrieve_chunk(closer, address, false).await {
+            // Edge verification: the relayed chunk must answer the requested
+            // address before we account, cache, or relay it. The chunk is
+            // address-derived (BMT hash or owner plus signature), so equality
+            // proves it answers the request, independent of the stamp. The
+            // handler re-checks the same equality before the wire.
+            Ok(result) if *result.chunk.address() == address => {
+                debug!(%closer, %address, "relayed retrieval");
+                Ok(result)
+            }
+            // The downstream peer served the wrong chunk.
+            Ok(_) => Err(ForwardError::UnverifiedRelay),
+            Err(_) => Err(ForwardError::AllPeersFailed),
+        }
+    }
+}
+
+/// The pushsync relay leg: push the chunk and hold the relayed receipt to the
+/// depth policy before it may travel upstream.
+struct PushRelay {
+    handle: ClientHandle,
+    chunk: StampedChunk,
+    /// Locally observed depth, snapshotted at walk start: the trusted
+    /// authority for the required receipt depth.
+    local_depth: NeighborhoodDepth,
+    /// Whether that depth is credible (the neighbourhood has saturated); a
+    /// non-credible depth cannot anchor the check.
+    neighbourhood_credible: bool,
+    reporter: Arc<dyn PeerReporter>,
+}
+
+impl RelayOp for PushRelay {
+    type Output = Receipt;
+
+    async fn attempt(&self, closer: OverlayAddress) -> Result<Receipt, ForwardError> {
+        let address = *self.chunk.address();
+        // `originated = false`: a relay leg, debited by the walk, so the
+        // service must not debit the completion event.
+        match self
+            .handle
+            .push_chunk(closer, self.chunk.clone(), false)
+            .await
+        {
+            Ok(receipt) => {
+                // The receipt's storer was recovered and verified at the decode
+                // boundary, so a malformed receipt never reaches here (it
+                // surfaces as a push error on the arm below). The remaining
+                // relay duty is the depth policy: never launder a SHALLOW
+                // custody receipt. The check runs against the recovered storer
+                // (NOT the immediate downstream peer) and the snapshotted local
+                // depth, gated on that depth being credible. The receipt is
+                // relayed VERBATIM by the handler; it is never re-signed.
+                match receipt.verify_depth(self.local_depth, self.neighbourhood_credible) {
+                    DepthVerdict::Verified => {
+                        debug!(%closer, %address, "relayed pushsync");
+                        Ok(receipt)
+                    }
+                    DepthVerdict::Shallow(err) => {
+                        // The downstream peer that handed us a shallow receipt
+                        // is scored adversely as invalid data, so it loses
+                        // reputation and we do not take the reputational hit
+                        // for laundering it.
+                        warn!(
+                            %closer,
+                            %address,
+                            error = <&'static str>::from(&err),
+                            "rejected shallow relayed receipt"
+                        );
+                        self.reporter.report_peer(
+                            &closer,
+                            SwarmScoringEvent::InvalidData,
+                            PUSHSYNC_SOURCE,
+                        );
+                        Err(ForwardError::ShallowReceipt)
+                    }
+                    DepthVerdict::Unverifiable => {
+                        // The local view is not credible enough to judge custody
+                        // depth, so this receipt cannot be relayed, but the
+                        // downstream peer may be honest: no penalty.
+                        debug!(
+                            %closer,
+                            %address,
+                            "relayed receipt unverifiable: neighbourhood view not credible"
+                        );
+                        Err(ForwardError::UnverifiableReceipt)
+                    }
+                }
+            }
+            // A push failure also covers the malformed-receipt case: the
+            // downstream handler rejects an unrecoverable receipt at decode
+            // (scoring that peer) and resolves the push as a remote failure, so
+            // a malformed receipt never reaches the relay seam.
+            Err(_) => Err(ForwardError::AllPeersFailed),
+        }
     }
 }
 

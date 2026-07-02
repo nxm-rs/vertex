@@ -240,8 +240,8 @@ impl Forwarder for StubForwarder {
 /// to an equally deep peer, avoiding the capped-PO plateau where all deep peers
 /// compare equal). Using full XOR distance rather than capped proximity also lets
 /// the strict comparison distinguish peers inside the deepest band.
-pub fn closer_candidates(
-    topology: &impl SwarmTopologyRouting,
+pub fn closer_candidates<T: SwarmTopologyRouting + ?Sized>(
+    topology: &T,
     target: &ChunkAddress,
     requester: OverlayAddress,
     local: OverlayAddress,

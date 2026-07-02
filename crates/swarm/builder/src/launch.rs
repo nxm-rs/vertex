@@ -417,14 +417,9 @@ async fn assemble_client_node(
         .await
         .map_err(|e| SwarmNodeError::Build(e.into()))?;
     let topology = node.topology_handle().clone();
-    let forward_topology = topology.clone();
 
-    let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
-        node.enable_forwarding(
-            Arc::new(forward_topology),
-            Arc::clone(&accounting),
-            client_handle,
-        );
+    let run: RunTaskFn = Box::new(move |accounting, engine| {
+        node.enable_forwarding(engine, Arc::clone(&accounting));
         single_task(move |shutdown| async move {
             let _accounting = accounting;
             if let Err(e) = node.start_and_run(shutdown).await {

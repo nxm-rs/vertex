@@ -37,9 +37,9 @@ pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
 pub use core::{
     ClientCore, ClientCoreCtx, ClientNodeParts, ClientTailParams, NativeChunkProvider,
-    NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn, SettlementEventSenders,
-    SharedAccounting, assemble_client_core, build_client_core_tail, single_task,
-    spawn_client_command_bridge,
+    NativeDispatchEngine, NodeRunParts, NodeRunTaskFn, PseudosettleWiring, RunTaskFn,
+    SettlementEventSenders, SharedAccounting, assemble_client_core, build_client_core_tail,
+    single_task, spawn_client_command_bridge,
 };
 #[cfg(feature = "swap")]
 pub use core::{ClientSwapParams, NodeChainError, SwapWiring, node_chain_provider};

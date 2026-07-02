@@ -252,32 +252,25 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
 
     /// Enable multi-hop forwarding (relay) on the client sub-behaviour. See
     /// [`ClientNode::enable_forwarding`](super::ClientNode::enable_forwarding).
-    pub fn enable_forwarding<T, A>(
+    pub fn enable_forwarding<A, O, G, L>(
         &mut self,
-        topology: Arc<T>,
+        engine: crate::DispatchEngine<O, G, L>,
         accounting: Arc<A>,
-        handle: ClientHandle,
     ) where
-        T: vertex_swarm_api::SwarmTopologyRouting
-            + vertex_swarm_api::SwarmTopologyState
-            + vertex_swarm_api::SwarmTopologyReporting
-            + Send
-            + Sync
-            + 'static,
         A: vertex_swarm_api::SwarmClientAccounting + Send + Sync + 'static,
+        O: crate::CandidateOrdering + Clone + 'static,
+        G: crate::InflightLimit + Clone + 'static,
+        <G as crate::InflightLimit>::Permit: Send,
+        L: crate::LatencyHint + Clone + 'static,
     {
-        let local = self.overlay_address();
-        let network_id = topology.network_id();
-        let reporter = topology.reporter();
+        let network_id = engine.topology().network_id();
         self.base
             .swarm
             .behaviour_mut()
             .storer
             .client
             .set_network_id(network_id);
-        let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(
-            local, topology, accounting, handle, reporter,
-        ));
+        let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(engine, accounting));
         self.base
             .swarm
             .behaviour_mut()
