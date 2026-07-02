@@ -409,17 +409,12 @@ impl ClientLauncher {
                 let topology = node.topology_handle().clone();
                 let overlay = node.overlay_address();
                 let peer_id = *node.local_peer_id();
-                let forward_topology = topology.clone();
 
                 // Forwarding is enabled inside the run task over the shared
-                // accounting the tail builds; the node then moves into the run
-                // loop. The relay legs run over the plain (ungated) handle.
-                let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
-                    node.enable_forwarding(
-                        Arc::new(forward_topology),
-                        Arc::clone(&accounting),
-                        client_handle,
-                    );
+                // accounting the tail builds and the engine's relay role; the
+                // node then moves into the run loop.
+                let run: RunTaskFn = Box::new(move |accounting, engine| {
+                    node.enable_forwarding(engine, Arc::clone(&accounting));
                     single_task(move |shutdown| async move {
                         let _accounting = accounting;
                         if let Err(e) = node.start_and_run(shutdown).await {

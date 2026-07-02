@@ -553,8 +553,7 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
 use nectar_primitives::NetworkId;
 use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
 use vertex_swarm_api::{
-    Au, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmClientAccounting,
-    SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
+    Au, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPeerBandwidth, SwarmPricing,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_spec::Spec;
@@ -563,18 +562,11 @@ use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
 use crate::ClientHandle;
 use crate::protocol::NetworkForwarder;
 
-/// Drops every report; the relay harness asserts on forward outcome, not the
-/// scoring side effect.
-struct NoopReporter;
+/// Drops every settle drive; relay walks never settle.
+struct NoTriggeredSettle;
 
-impl PeerReporter for NoopReporter {
-    fn report_peer(
-        &self,
-        _overlay: &OverlayAddress,
-        _event: SwarmScoringEvent,
-        _source: ReportSource,
-    ) {
-    }
+impl crate::SettlementTrigger for NoTriggeredSettle {
+    fn trigger_settlement(&self, _peer: OverlayAddress) {}
 }
 
 type RelayAccounting =
@@ -617,7 +609,20 @@ fn relay_node(
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel::<ClientCommand>(16);
     let handle = ClientHandle::new(tx);
-    let topology = Arc::new(MockTopology::default().with_closest(vec![storer]));
+    let topology = MockTopology::default()
+        .with_closest(vec![storer])
+        .with_overlay(local);
+    let engine = crate::DispatchEngine::new(
+        handle,
+        Arc::new(topology) as Arc<dyn crate::RetrievalTopology>,
+        vertex_swarm_api::Bin::new(31).unwrap(),
+        crate::ProximityOnly,
+        Arc::new(crate::PeerInflightLimiter::new(
+            std::num::NonZeroUsize::new(4).unwrap(),
+        )),
+        crate::NoLatencyHint,
+        Arc::new(NoTriggeredSettle),
+    );
     let swarm = Swarm::new_ephemeral_tokio(move |_| {
         let mut behaviour = ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Client),
@@ -628,11 +633,8 @@ fn relay_node(
         // test receipts are ground against it too.
         behaviour.set_network_id(NetworkId::MAINNET);
         let forwarder = Arc::new(NetworkForwarder::new(
-            local,
-            Arc::clone(&topology),
+            engine.clone(),
             Arc::clone(&accounting),
-            handle,
-            Arc::new(NoopReporter) as Arc<dyn PeerReporter>,
         ));
         behaviour.set_forwarder(forwarder);
         behaviour

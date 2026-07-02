@@ -26,6 +26,8 @@ pub struct MockTopology {
     depth: u8,
     credible: bool,
     closest: Vec<OverlayAddress>,
+    overlay: Option<OverlayAddress>,
+    reporter: Option<Arc<dyn PeerReporter>>,
 }
 
 impl Default for MockTopology {
@@ -39,6 +41,8 @@ impl Default for MockTopology {
             depth: 0,
             credible: true,
             closest: Vec::new(),
+            overlay: None,
+            reporter: None,
         }
     }
 }
@@ -58,14 +62,10 @@ impl MockTopology {
     /// Create a new mock topology with the given parameters.
     pub fn new(connected: usize, routing: usize, depth: u8) -> Self {
         Self {
-            identity: test_identity_arc(),
             connected,
             routing,
-            stored: 0,
-            pending: 0,
             depth,
-            credible: true,
-            closest: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -126,6 +126,22 @@ impl MockTopology {
         self
     }
 
+    /// Override the local overlay address (defaults to the test identity's),
+    /// so tests can pin the strictly-closer relay gate deterministically.
+    #[must_use]
+    pub fn with_overlay(mut self, overlay: OverlayAddress) -> Self {
+        self.overlay = Some(overlay);
+        self
+    }
+
+    /// Inject the reporter returned by [`SwarmTopologyReporting::reporter`]
+    /// (defaults to a no-op), so tests can assert scoring side effects.
+    #[must_use]
+    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
+        self.reporter = Some(reporter);
+        self
+    }
+
     /// Get the overlay address as SwarmAddress.
     pub fn overlay(&self) -> SwarmAddress {
         self.identity.overlay_address()
@@ -145,7 +161,8 @@ impl SwarmTopologyBins for MockTopology {
 
 impl SwarmTopologyState for MockTopology {
     fn overlay_address(&self) -> OverlayAddress {
-        self.identity.overlay_address()
+        self.overlay
+            .unwrap_or_else(|| self.identity.overlay_address())
     }
 
     fn network_id(&self) -> NetworkId {
@@ -204,7 +221,9 @@ impl SwarmTopologyStats for MockTopology {
 
 impl SwarmTopologyReporting for MockTopology {
     fn reporter(&self) -> Arc<dyn PeerReporter> {
-        Arc::new(NoopReporter)
+        self.reporter
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoopReporter))
     }
 }
 

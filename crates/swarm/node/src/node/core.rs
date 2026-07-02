@@ -51,7 +51,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use crate::retrieval_latency::RetrievalLatency;
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_CAP,
-    PeerInflightLimiter, PeerSelector, RetrievalTopology, SettlementTrigger,
+    DispatchEngine, PeerInflightLimiter, PeerSelector, RetrievalTopology, SettlementTrigger,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
@@ -557,10 +557,15 @@ where
 }
 
 /// A run-task factory: applies multi-hop forwarding (and, for a storer, ingest)
-/// over the shared accounting, then returns the node's run-loop task. Keeps the
-/// concrete node type out of the shared launch tail.
-pub type RunTaskFn =
-    Box<dyn FnOnce(SharedAccounting, Arc<dyn PeerReporter>, ClientHandle) -> NodeRunTaskFn>;
+/// over the shared accounting and the engine's relay role, then returns the
+/// node's run-loop task. Keeps the concrete node type out of the shared launch
+/// tail.
+pub type RunTaskFn = Box<dyn FnOnce(SharedAccounting, NativeDispatchEngine) -> NodeRunTaskFn>;
+
+/// The native client's fully-capable dispatch engine instantiation, shared by
+/// the chunk provider (origin dispatch) and the forwarder (relay role).
+pub type NativeDispatchEngine =
+    DispatchEngine<Arc<PeerSelector>, Arc<PeerInflightLimiter>, Arc<RetrievalLatency>>;
 
 /// Node-type-agnostic outputs of node assembly: the topology handle, the client
 /// service and handle, and the run-task factory. Every assembly produces these.
@@ -758,20 +763,14 @@ where
         reporter: Arc::clone(&reporter),
     });
 
-    // Multi-hop forwarding plus storer ingest must precede the event loop. The
-    // run closure applies both to its concrete node over the shared accounting,
-    // then returns the run task. Forwarder relay legs run over the plain handle:
-    // the origin gate bands only our own origin retrieval and pushsync.
-    let task = (run)(
-        Arc::clone(&core.accounting),
-        reporter.clone(),
-        core.client_handle.clone(),
-    );
-
-    // The routing table's max bin is a spec constant; read it once here and hand
-    // it to the engine as a field rather than a per-request topology query.
+    // One dispatch engine for every origin and relay path. The routing table's
+    // max bin is a spec constant; read it once here and hand it to the engine as
+    // a field rather than a per-request topology query. Origin dispatch runs
+    // over the gated origin handle; relay legs debit through the forwarder's
+    // two-leg accounting instead (`originated = false`), so the shared handle is
+    // the origin-gated one and the gate simply never fires for relays.
     let max_bin = topology.max_bin();
-    let chunks = NetworkChunkProvider::new(
+    let engine = DispatchEngine::new(
         core.origin_handle.clone(),
         Arc::new(topology.clone()) as Arc<dyn RetrievalTopology>,
         max_bin,
@@ -779,8 +778,14 @@ where
         Arc::clone(&core.inflight),
         Arc::clone(&core.retrieval_latency),
         Arc::clone(&core.settlement_trigger),
-        provider_cache,
     );
+
+    // Multi-hop forwarding plus storer ingest must precede the event loop. The
+    // run closure applies both to its concrete node over the shared accounting
+    // and the engine's relay role, then returns the run task.
+    let task = (run)(Arc::clone(&core.accounting), engine.clone());
+
+    let chunks = NetworkChunkProvider::new(engine, provider_cache);
 
     executor.spawn_service("swarm.client_service", core.client_service);
 

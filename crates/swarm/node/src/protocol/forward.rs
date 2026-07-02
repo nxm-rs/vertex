@@ -1,332 +1,77 @@
-//! The concrete network forwarder: the real multi-hop relay for retrieval and
-//! pushsync.
+//! The concrete network forwarder: the accounting-carrying facade over the
+//! dispatch engine's relay profile.
 //!
 //! The accounting-free forwarder seam (the [`Forwarder`] trait, [`StubForwarder`],
 //! the [`ForwardedChunk`] / [`ForwardedReceipt`] carriers, [`ForwardError`], and
-//! the [`closer_candidates`] selector) lives in `vertex-swarm-client-behaviour`.
-//! [`NetworkForwarder`] stays here because it couples to client accounting and
-//! the outbound [`ClientHandle`], which the behaviour crate must not depend on.
+//! the [`closer_candidates`] selector) lives in `vertex-swarm-client-behaviour`;
+//! the relay walk itself (strictly-closer candidates, sequential legs,
+//! commit-on-verify two-leg accounting, the shared per-peer in-flight ledger)
+//! is the engine's relay role in `crate::dispatch`. [`NetworkForwarder`] stays
+//! here because it couples the engine to the client accounting instance, which
+//! neither the behaviour crate nor the engine may name.
 //!
-//! Address verification lives at both edges. The downstream chunk returned by an
-//! upstream retrieval is verified against the requested address here (an
-//! address-equality check) before it is cached or relayed; the handler
-//! additionally verifies before it writes the chunk to the responder, so a chunk
-//! that does not hash to the requested address can never travel back to the
-//! requester. The check is BMT integrity for content chunks and a
-//! signature-recovered owner for single-owner chunks; it does **not** validate
-//! the postage stamp's
-//! funding or expiry, which is a separate postage concern. A relayed pushsync
-//! receipt arrives as a [`Receipt`](vertex_swarm_net_pushsync::Receipt) whose
-//! storer was already recovered and
-//! verified at the decode boundary; the forwarder checks its custody depth
-//! before relaying, so `PO(storer, chunk)` must reach a depth derived from the
-//! locally observed neighbourhood depth. A forwarder never launders a shallow
-//! receipt upstream and scores the downstream peer adversely when it tries.
+//! [`closer_candidates`]: vertex_swarm_client_behaviour::closer_candidates
 
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use nectar_primitives::ChunkAddress;
-use tracing::{debug, warn};
-use vertex_swarm_api::{
-    Commit, CommitOnWrite, PeerReporter, ReportSource, SwarmBandwidthAccounting,
-    SwarmClientAccounting, SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
-};
-use vertex_swarm_client_behaviour::{
-    ForwardError, ForwardedChunk, ForwardedReceipt, Forwarder, closer_candidates,
-};
-use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_primitives::{NeighborhoodDepth, OverlayAddress, StampedChunk};
+use vertex_swarm_api::{CommitOnWrite, SwarmClientAccounting};
+use vertex_swarm_client_behaviour::{ForwardError, ForwardedChunk, ForwardedReceipt, Forwarder};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 
-use crate::{ClientHandle, RetrievalResult};
+use crate::dispatch::{CandidateOrdering, DispatchEngine, InflightLimit, LatencyHint};
 
-/// Report source for shallow/malformed receipts caught on the relay path.
-const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
-
-/// The real multi-hop relay: forwarding Kademlia for retrieval and pushsync.
+/// The relay facade: the engine's relay role bound to the client accounting.
 ///
-/// Generic over the topology routing surface `T` (closest-peer selection) and
-/// the client accounting surface `A` (two-leg prepare/apply). Holds a
-/// [`ClientHandle`] so the upstream leg reuses the same self-contained outbound
-/// futures the origin path uses; no separate dial machinery exists.
-///
-/// # Loop prevention and termination
-///
-/// Forwarding Kademlia routes a request strictly toward the target's
-/// neighbourhood: each hop must hand the request to a peer that is *strictly
-/// closer* to the target than the peer that asked **and** strictly closer than
-/// this node itself, measured by full XOR distance. [`closer_candidates`] filters
-/// the topology's proximity-ordered candidates down to exactly those, also
-/// excluding the requester and ourselves. Because XOR distance to the target
-/// strictly decreases along the chain, a request can never cycle back to a peer
-/// it has already visited, so no per-request visited set or hop counter is
-/// needed; the chain is bounded by the address width.
-///
-/// # Two-leg accounting
-///
-/// A forwarder sits between an *upstream* peer (the requester or pusher, the one
-/// we provide service to) and a *downstream* peer (the closer peer we relay to,
-/// the one that provides service to us). It credits the upstream leg
-/// (`prepare_provide_chunk(exclude)`) and debits the downstream leg
-/// (`prepare_receive_chunk(closer)`) so it earns the price spread between the
-/// two. Both actions reserve on creation; on a successful relay both are applied,
-/// committing the balance changes. On any failure both actions are dropped, which
-/// releases the reservations (the receive/provide [`Reservation`] legs release on
-/// drop), so a failed forward never leaks an accounting reservation.
-///
-/// [`Reservation`]: vertex_swarm_accounting::Reservation
-pub(crate) struct NetworkForwarder<T, A> {
-    /// Our own overlay: excluded from candidates and used as the
-    /// strictly-closer reference for the loop bound alongside the requester.
-    local: OverlayAddress,
-    /// Proximity-ordered closest-peer selection and locally observed depth.
-    topology: Arc<T>,
-    /// Two-leg prepare/apply accounting.
-    accounting: Arc<A>,
-    /// Reuses the origin outbound futures for the upstream relay leg.
-    handle: ClientHandle,
-    /// The single sanctioned scoring path: a shallow relayed receipt scores the
-    /// downstream signer adversely through it.
-    reporter: Arc<dyn PeerReporter>,
-}
-
-impl<T, A> NetworkForwarder<T, A> {
-    /// Build a network forwarder from the local overlay, topology, accounting,
-    /// the outbound client handle, and the peer reporter (for scoring shallow
-    /// receipts).
-    pub(crate) fn new(
-        local: OverlayAddress,
-        topology: Arc<T>,
-        accounting: Arc<A>,
-        handle: ClientHandle,
-        reporter: Arc<dyn PeerReporter>,
-    ) -> Self {
-        Self {
-            local,
-            topology,
-            accounting,
-            handle,
-            reporter,
-        }
-    }
-}
-
-/// One relay leg: the wire call against a closer peer plus the
-/// operation-specific verification of its answer. The shared [`relay_walk`]
-/// owns the two-leg accounting around each attempt; an op maps every
-/// non-relayable outcome to the [`ForwardError`] the walk records for the
-/// terminal.
-trait RelayOp: Send + Sync {
-    /// The verified value a successful leg yields.
-    type Output: Send;
-
-    /// Dispatch one leg to `closer` and validate the answer.
-    fn attempt(
-        &self,
-        closer: OverlayAddress,
-    ) -> impl Future<Output = Result<Self::Output, ForwardError>> + Send;
-}
-
-/// The retrieval leg: fetch the chunk and verify it answers the requested
-/// address.
-struct RetrieveRelay {
-    handle: ClientHandle,
-    address: ChunkAddress,
-}
-
-impl RelayOp for RetrieveRelay {
-    type Output = RetrievalResult;
-
-    async fn attempt(&self, closer: OverlayAddress) -> Result<RetrievalResult, ForwardError> {
-        let address = self.address;
-        // `originated = false`: a relay leg, debited by the walk, so the
-        // service must not debit the completion event.
-        match self.handle.retrieve_chunk(closer, address, false).await {
-            // Edge verification: the relayed chunk must answer the requested
-            // address before we account, cache, or relay it. The chunk is
-            // address-derived (BMT hash or owner plus signature), so equality
-            // proves it answers the request, independent of the stamp. The
-            // handler re-checks the same equality before the wire.
-            Ok(result) if *result.chunk.address() == address => {
-                debug!(%closer, %address, "relayed retrieval");
-                Ok(result)
-            }
-            // The downstream peer served the wrong chunk.
-            Ok(_) => Err(ForwardError::UnverifiedRelay),
-            Err(_) => Err(ForwardError::AllPeersFailed),
-        }
-    }
-}
-
-/// The pushsync leg: push the chunk and hold the relayed receipt to the depth
-/// policy before it may travel upstream.
-struct PushRelay {
-    handle: ClientHandle,
-    chunk: StampedChunk,
-    /// Locally observed depth, snapshotted at walk start: the trusted
-    /// authority for the required receipt depth.
-    local_depth: NeighborhoodDepth,
-    /// Whether that depth is credible (the neighbourhood has saturated); a
-    /// non-credible depth cannot anchor the check.
-    neighbourhood_credible: bool,
-    reporter: Arc<dyn PeerReporter>,
-}
-
-impl RelayOp for PushRelay {
-    type Output = Receipt;
-
-    async fn attempt(&self, closer: OverlayAddress) -> Result<Receipt, ForwardError> {
-        let address = *self.chunk.address();
-        // `originated = false`: a relay leg, debited by the walk, so the
-        // service must not debit the completion event.
-        match self
-            .handle
-            .push_chunk(closer, self.chunk.clone(), false)
-            .await
-        {
-            Ok(receipt) => {
-                // The receipt's storer was recovered and verified at the decode
-                // boundary, so a malformed receipt never reaches here (it
-                // surfaces as a push error on the arm below). The remaining
-                // relay duty is the depth policy: never launder a SHALLOW
-                // custody receipt. The check runs against the recovered storer
-                // (NOT the immediate downstream peer) and the snapshotted local
-                // depth, gated on that depth being credible. The receipt is
-                // relayed VERBATIM by the handler; it is never re-signed.
-                match receipt.verify_depth(self.local_depth, self.neighbourhood_credible) {
-                    DepthVerdict::Verified => {
-                        debug!(%closer, %address, "relayed pushsync");
-                        Ok(receipt)
-                    }
-                    DepthVerdict::Shallow(err) => {
-                        // The downstream peer that handed us a shallow receipt
-                        // is scored adversely as invalid data, so it loses
-                        // reputation and we do not take the reputational hit
-                        // for laundering it.
-                        warn!(
-                            %closer,
-                            %address,
-                            error = <&'static str>::from(&err),
-                            "rejected shallow relayed receipt"
-                        );
-                        self.reporter.report_peer(
-                            &closer,
-                            SwarmScoringEvent::InvalidData,
-                            PUSHSYNC_SOURCE,
-                        );
-                        Err(ForwardError::ShallowReceipt)
-                    }
-                    DepthVerdict::Unverifiable => {
-                        // The local view is not credible enough to judge custody
-                        // depth, so this receipt cannot be relayed, but the
-                        // downstream peer may be honest: no penalty.
-                        debug!(
-                            %closer,
-                            %address,
-                            "relayed receipt unverifiable: neighbourhood view not credible"
-                        );
-                        Err(ForwardError::UnverifiableReceipt)
-                    }
-                }
-            }
-            // A push failure also covers the malformed-receipt case: the
-            // downstream handler rejects an unrecoverable receipt at decode
-            // (scoring that peer) and resolves the push as a remote failure, so
-            // a malformed receipt never reaches the relay seam.
-            Err(_) => Err(ForwardError::AllPeersFailed),
-        }
-    }
-}
-
-/// The shared strictly-closer relay walk over one operation.
-///
-/// Owns the two-leg accounting. The upstream `provide` reservation is taken
-/// once and held un-applied across the whole walk: a verified answer in hand
-/// does not yet mean the upstream peer received it, so the action is returned
-/// un-applied and the handler commits it only after the wire write; every
-/// failure path releases it on drop. Each candidate takes a fresh downstream
-/// `receive` reservation (`originated = false`: a relay, not our own request),
-/// committed the moment the op verifies the answer and released on drop
-/// otherwise, so a failed forward never leaks a reservation.
-async fn relay_walk<Op, A>(
-    op: Op,
-    candidates: Vec<OverlayAddress>,
-    accounting: Arc<A>,
-    exclude: OverlayAddress,
-    address: ChunkAddress,
-) -> Result<
-    (
-        Op::Output,
-        <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
-    ),
-    ForwardError,
->
+/// Delegates the strictly-closer walks to
+/// [`DispatchEngine::relay_retrieve`]/[`DispatchEngine::relay_push`] and boxes
+/// the returned un-applied provide action for the handler's deferred commit.
+pub(crate) struct NetworkForwarder<A, O, G, L>
 where
-    Op: RelayOp,
-    A: SwarmClientAccounting,
+    O: CandidateOrdering,
+    G: InflightLimit,
+    L: LatencyHint,
 {
-    if candidates.is_empty() {
-        return Err(ForwardError::NoCloserPeer);
-    }
-
-    // Credit the upstream leg: the requester or pusher pays us for the relay.
-    let provide = accounting
-        .prepare_provide_chunk(exclude, &address)
-        .map_err(|_| ForwardError::AccountingRefused)?;
-
-    let mut last = ForwardError::AllPeersFailed;
-    for closer in candidates {
-        // Debit the downstream leg: we pay the closer peer that serves us.
-        let receive = match accounting.prepare_receive_chunk(closer, &address, false) {
-            Ok(action) => action,
-            Err(_) => {
-                // Cannot afford this downstream peer; try the next.
-                last = ForwardError::AccountingRefused;
-                continue;
-            }
-        };
-
-        match op.attempt(closer).await {
-            Ok(output) => {
-                // The downstream leg is genuinely complete, so commit it now.
-                // The upstream `provide` returns un-applied for the handler.
-                receive.apply();
-                return Ok((output, provide));
-            }
-            Err(err) => {
-                // Release the downstream reservation; the upstream `provide`
-                // stays held for the next candidate.
-                drop(receive);
-                last = err;
-            }
-        }
-    }
-
-    // Every candidate failed: `provide` drops here, releasing the upstream
-    // reservation so nothing leaks.
-    Err(last)
+    engine: DispatchEngine<O, G, L>,
+    /// Two-leg prepare/apply accounting for the relay and terminal serves.
+    accounting: Arc<A>,
 }
 
-impl<T, A> Forwarder for NetworkForwarder<T, A>
+impl<A, O, G, L> NetworkForwarder<A, O, G, L>
 where
-    T: SwarmTopologyRouting + SwarmTopologyState + Send + Sync + 'static,
+    O: CandidateOrdering,
+    G: InflightLimit,
+    L: LatencyHint,
+{
+    /// Bind the engine's relay role to the client accounting.
+    pub(crate) fn new(engine: DispatchEngine<O, G, L>, accounting: Arc<A>) -> Self {
+        Self { engine, accounting }
+    }
+}
+
+impl<A, O, G, L> Forwarder for NetworkForwarder<A, O, G, L>
+where
     A: SwarmClientAccounting + Send + Sync + 'static,
+    O: CandidateOrdering + Clone + 'static,
+    G: InflightLimit + Clone + 'static,
+    // The relay leg holds the shared per-peer in-flight permit across its
+    // await, so the boxed `Send` future requires a `Send` permit.
+    <G as InflightLimit>::Permit: Send,
+    L: LatencyHint + Clone + 'static,
 {
     fn retrieve(
         &self,
         address: ChunkAddress,
         exclude: OverlayAddress,
     ) -> BoxFuture<'static, Result<ForwardedChunk, ForwardError>> {
-        let candidates = closer_candidates(&*self.topology, &address, exclude, self.local);
+        let engine = self.engine.clone();
         let accounting = Arc::clone(&self.accounting);
-        let op = RetrieveRelay {
-            handle: self.handle.clone(),
-            address,
-        };
 
         Box::pin(async move {
-            let (result, provide) =
-                relay_walk(op, candidates, accounting, exclude, address).await?;
+            let (result, provide) = engine
+                .relay_retrieve(&*accounting, address, exclude)
+                .await?;
             Ok(ForwardedChunk {
                 chunk: result.chunk,
                 stamp: result.stamp,
@@ -340,21 +85,11 @@ where
         chunk: StampedChunk,
         exclude: OverlayAddress,
     ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>> {
-        let address = *chunk.address();
-        let candidates = closer_candidates(&*self.topology, &address, exclude, self.local);
+        let engine = self.engine.clone();
         let accounting = Arc::clone(&self.accounting);
-        // Snapshot the depth authority now so the future stays `'static`.
-        let op = PushRelay {
-            handle: self.handle.clone(),
-            chunk,
-            local_depth: self.topology.depth(),
-            neighbourhood_credible: self.topology.neighbourhood_credible(),
-            reporter: Arc::clone(&self.reporter),
-        };
 
         Box::pin(async move {
-            let (receipt, provide) =
-                relay_walk(op, candidates, accounting, exclude, address).await?;
+            let (receipt, provide) = engine.relay_push(&*accounting, chunk, exclude).await?;
             Ok(ForwardedReceipt {
                 receipt,
                 provide: Box::new(provide),
@@ -377,6 +112,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     use std::sync::Mutex;
@@ -391,17 +127,19 @@ mod tests {
         Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
     };
     use vertex_swarm_api::{
-        Au, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing,
-        SwarmScoringEvent,
+        Au, Bin, PeerReporter, ReportSource, StorageRadius, SwarmBandwidthAccounting,
+        SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
     };
     use vertex_swarm_identity::Identity;
     use vertex_swarm_net_pushsync::{Receipt, WireReceipt};
-    use vertex_swarm_primitives::{Bin, StorageRadius};
     use vertex_swarm_spec::Spec;
     use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
 
     use super::*;
-    use crate::{ClientCommand, RetrievalResult};
+    use crate::dispatch::{NoLatencyHint, ProximityOnly, RetrievalTopology};
+    use crate::inflight::PeerInflightLimiter;
+    use crate::selection::SettlementTrigger;
+    use crate::{ClientCommand, ClientHandle, RetrievalResult};
 
     const TEST_NET: NetworkId = NetworkId::MAINNET;
 
@@ -435,6 +173,33 @@ mod tests {
         fn is_empty(&self) -> bool {
             self.reports.lock().unwrap().is_empty()
         }
+    }
+
+    /// Settlement trigger that ignores every drive: relay walks never settle.
+    struct NoSettle;
+
+    impl SettlementTrigger for NoSettle {
+        fn trigger_settlement(&self, _peer: OverlayAddress) {}
+    }
+
+    /// The local overlay every test pins on its mock topology, so the
+    /// strictly-closer gate is deterministic against ground candidates.
+    const LOCAL: [u8; 32] = [0xee; 32];
+
+    /// Build the engine's relay role over `topo` for the facade under test.
+    fn engine_over(
+        topo: MockTopology,
+        handle: ClientHandle,
+    ) -> DispatchEngine<ProximityOnly, Arc<PeerInflightLimiter>, NoLatencyHint> {
+        DispatchEngine::new(
+            handle,
+            Arc::new(topo.with_overlay(OverlayAddress::from(LOCAL))) as Arc<dyn RetrievalTopology>,
+            Bin::new(31).unwrap(),
+            ProximityOnly,
+            Arc::new(PeerInflightLimiter::new(NonZeroUsize::new(4).unwrap())),
+            NoLatencyHint,
+            Arc::new(NoSettle),
+        )
     }
 
     /// Sign a custody receipt over the 32-byte chunk address (the wire format)
@@ -539,12 +304,10 @@ mod tests {
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
+        let topo = MockTopology::default().with_closest(vec![closer]);
         let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
 
         let provide_price = acct.pricing().peer_price(&requester, &address);
         let receive_price = acct.pricing().peer_price(&closer, &address);
@@ -553,13 +316,8 @@ mod tests {
             "the requester is farther than the closer peer, so the forwarder earns the spread"
         );
 
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
-        );
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         let (chunk_for_answer, stamp_for_answer) = chunk.clone().into_parts();
         let got = drive_one_command(
@@ -595,8 +353,8 @@ mod tests {
             "the relayed chunk is verified"
         );
 
-        // The downstream leg is committed inside the forwarder, so the closer
-        // peer is already owed receive_price. The upstream `provide` is returned
+        // The downstream leg is committed inside the walk, so the closer peer
+        // is already owed receive_price. The upstream `provide` is returned
         // un-applied: until it is committed (which the handler does after a
         // successful wire write) the requester owes nothing.
         assert_eq!(
@@ -631,21 +389,14 @@ mod tests {
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
+        let topo = MockTopology::default().with_closest(vec![closer]);
         let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
 
         let receive_price = acct.pricing().peer_price(&closer, &address);
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
-        );
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         let (chunk_for_answer, stamp_for_answer) = chunk.clone().into_parts();
         let forwarded =
@@ -689,24 +440,19 @@ mod tests {
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
+        let reporter = Arc::new(RecordingReporter::default());
+        let topo = MockTopology::default()
+            .with_closest(vec![closer])
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
         let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
 
         let provide_price = acct.pricing().peer_price(&pusher, &address);
         let receive_price = acct.pricing().peer_price(&closer, &address);
 
-        let reporter = Arc::new(RecordingReporter::default());
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
-        );
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         // A real storer receipt signed by a key whose overlay sits 8 bits deep
         // relative to the chunk; the mock depth is 0 so any deep-enough receipt
@@ -778,26 +524,18 @@ mod tests {
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
         // Require depth 12: local depth 12 and a deep wire radius below.
-        let topo = Arc::new(
-            MockTopology::default()
-                .with_closest(vec![closer])
-                .with_depth(12),
-        );
-        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
-
         let reporter = Arc::new(RecordingReporter::default());
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
-        );
+        let topo = MockTopology::default()
+            .with_closest(vec![closer])
+            .with_depth(12)
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         // The signer's overlay is only 0..a few bits deep. The receipt claims a
         // shallow radius (8) that does not raise the bar, so the local floor
@@ -847,25 +585,17 @@ mod tests {
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(
-            MockTopology::default()
-                .with_closest(vec![closer])
-                .with_depth(12),
-        );
-        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
-
         let reporter = Arc::new(RecordingReporter::default());
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
-        );
+        let topo = MockTopology::default()
+            .with_closest(vec![closer])
+            .with_depth(12)
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         let signer = PrivateKeySigner::random();
         let (shallow, _signer_overlay) = signed_receipt_at_depth(
@@ -909,27 +639,19 @@ mod tests {
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
         // Non-credible view: a fresh node at depth 0, neighbourhood unsaturated.
-        let topo = Arc::new(
-            MockTopology::default()
-                .with_closest(vec![closer])
-                .with_depth(0)
-                .with_credible(false),
-        );
-        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
-
         let reporter = Arc::new(RecordingReporter::default());
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
-        );
+        let topo = MockTopology::default()
+            .with_closest(vec![closer])
+            .with_depth(0)
+            .with_credible(false)
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         let signer = PrivateKeySigner::random();
         let (shallow, _signer_overlay) = signed_receipt_at_depth(
@@ -974,21 +696,16 @@ mod tests {
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
-        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
-
         let reporter = Arc::new(RecordingReporter::default());
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
-        );
+        let topo = MockTopology::default()
+            .with_closest(vec![closer])
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         let err = drive_one_command(
             rx,
@@ -1020,20 +737,13 @@ mod tests {
         // The requester is already in the neighbourhood: nothing is closer.
         let requester = overlay_at_proximity(&address, 20);
         let sideways = overlay_at_proximity(&address, 8);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![sideways]));
+        let topo = MockTopology::default().with_closest(vec![sideways]);
         let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
 
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
-        );
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
         let err = forwarder
             .retrieve(address, requester)
             .await
@@ -1051,20 +761,13 @@ mod tests {
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 16);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
+        let topo = MockTopology::default().with_closest(vec![closer]);
         let (tx, rx) = mpsc::channel::<ClientCommand>(4);
-        let handle = ClientHandle::new(tx);
 
-        let forwarder = NetworkForwarder::new(
-            local,
-            topo,
-            Arc::clone(&acct),
-            handle,
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
-        );
+        let forwarder =
+            NetworkForwarder::new(engine_over(topo, ClientHandle::new(tx)), Arc::clone(&acct));
 
         // The upstream peer reports a failure: no chunk comes back.
         let err = drive_one_command(
@@ -1093,17 +796,12 @@ mod tests {
         let chunk = stamped();
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default());
         let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
         let forwarder = NetworkForwarder::new(
-            local,
-            topo,
+            engine_over(MockTopology::default(), ClientHandle::new(tx)),
             Arc::clone(&acct),
-            ClientHandle::new(tx),
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
         let price = acct.pricing().peer_price(&requester, &address);
@@ -1126,17 +824,12 @@ mod tests {
         let chunk = stamped();
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default());
         let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
         let forwarder = NetworkForwarder::new(
-            local,
-            topo,
+            engine_over(MockTopology::default(), ClientHandle::new(tx)),
             Arc::clone(&acct),
-            ClientHandle::new(tx),
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
         let mut held = Vec::new();
@@ -1167,17 +860,12 @@ mod tests {
         let chunk = stamped();
         let address = *chunk.address();
         let requester = overlay_at_proximity(&address, 2);
-        let local = OverlayAddress::from([0xee; 32]);
 
         let acct = accounting();
-        let topo = Arc::new(MockTopology::default());
         let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
         let forwarder = NetworkForwarder::new(
-            local,
-            topo,
+            engine_over(MockTopology::default(), ClientHandle::new(tx)),
             Arc::clone(&acct),
-            ClientHandle::new(tx),
-            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
         let mut refusals = 0usize;

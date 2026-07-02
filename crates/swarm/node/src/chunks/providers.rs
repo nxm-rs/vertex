@@ -4,16 +4,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
+    ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
     SwarmChunkSender, SwarmError, SwarmLocalStore, SwarmResult,
 };
 use vertex_swarm_net_pushsync::Receipt;
 
-use crate::ClientHandle;
-use crate::dispatch::{
-    CandidateOrdering, DispatchEngine, InflightLimit, LatencyHint, RetrievalTopology,
-};
-use crate::selection::SettlementTrigger;
+use crate::dispatch::{CandidateOrdering, DispatchEngine, InflightLimit, LatencyHint};
 
 /// Chunk provider driving the shared retrieval engine, generic over the three
 /// retrieval capabilities: a native client wires the score- and affordability-
@@ -50,35 +46,10 @@ where
     G: InflightLimit + 'static,
     L: LatencyHint + 'static,
 {
-    /// Build the provider over the three retrieval capabilities: candidate
-    /// `ordering`, the per-peer `inflight` cap, and the per-PO `latency`
-    /// estimate. `store` is the node's own cache, read before the swarm race.
-    // A wiring constructor over the node's already-built collaborators; grouping
-    // them into a params struct would only move the same fields behind one more
-    // type.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        client_handle: ClientHandle,
-        topology: Arc<dyn RetrievalTopology>,
-        max_bin: Bin,
-        ordering: O,
-        inflight: G,
-        latency: L,
-        settlement: Arc<dyn SettlementTrigger>,
-        store: Option<Arc<dyn SwarmLocalStore>>,
-    ) -> Self {
-        Self {
-            engine: DispatchEngine::new(
-                client_handle,
-                topology,
-                max_bin,
-                ordering,
-                inflight,
-                latency,
-                settlement,
-            ),
-            store,
-        }
+    /// Build the provider over the shared dispatch engine. `store` is the
+    /// node's own cache, read before the swarm race.
+    pub fn new(engine: DispatchEngine<O, G, L>, store: Option<Arc<dyn SwarmLocalStore>>) -> Self {
+        Self { engine, store }
     }
 }
 
