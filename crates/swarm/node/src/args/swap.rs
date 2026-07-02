@@ -9,10 +9,13 @@
 //! network spec; the RPC endpoint is the shared `--chain.rpc-url`.
 
 use alloy_primitives::Address;
+#[cfg(feature = "cli")]
 use clap::Args;
+#[cfg(feature = "cli")]
 use serde::{Deserialize, Serialize};
 
 /// SWAP settlement CLI arguments.
+#[cfg(feature = "cli")]
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Swap")]
 #[serde(default)]
@@ -49,6 +52,7 @@ pub struct SwapArgs {
 
 /// Serialize a `u128` as a decimal string so figment's i64/u64 value model can
 /// round-trip it. In a TOML file the value is written quoted.
+#[cfg(feature = "cli")]
 mod u128_string {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
@@ -69,10 +73,12 @@ mod u128_string {
 /// threshold of `13_500_000` units).
 const DEFAULT_BOUNCE_LIMIT: u128 = 135_000_000;
 
+#[cfg(feature = "cli")]
 fn default_bounce_limit() -> u128 {
     DEFAULT_BOUNCE_LIMIT
 }
 
+#[cfg(feature = "cli")]
 impl Default for SwapArgs {
     fn default() -> Self {
         Self {
@@ -85,6 +91,7 @@ impl Default for SwapArgs {
     }
 }
 
+#[cfg(feature = "cli")]
 impl SwapArgs {
     /// Build the validated SWAP configuration.
     pub fn swap_config(&self) -> SwapConfig {
@@ -125,11 +132,17 @@ pub struct SwapConfig {
 
 impl Default for SwapConfig {
     fn default() -> Self {
-        SwapArgs::default().swap_config()
+        Self {
+            enable: None,
+            chequebook: None,
+            beneficiary: None,
+            deploy: false,
+            bounce_limit: DEFAULT_BOUNCE_LIMIT,
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod tests {
     use super::*;
 
@@ -141,6 +154,7 @@ mod tests {
         assert_eq!(cfg.beneficiary, None);
         assert!(!cfg.deploy);
         assert_eq!(cfg.bounce_limit, DEFAULT_BOUNCE_LIMIT);
+        assert_eq!(cfg, SwapConfig::default());
     }
 
     #[test]

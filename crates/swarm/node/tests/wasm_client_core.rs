@@ -128,23 +128,22 @@ fn client_core_accounting_wires_pseudosettle_and_swap_on_wasm() {
     use alloy_primitives::Address;
     use vertex_swarm_api::SwarmSettlementProvider;
     use vertex_swarm_node::SwapWiring;
+    use vertex_swarm_node::args::SwapConfig;
 
     let identity = test_identity_arc();
     let bandwidth = DefaultAccountingConfig::default();
     let spec = identity.spec().clone();
 
     let (pseudosettle_provider, _) = PseudosettleWiring::prepare(&bandwidth);
-    let (swap_provider, _) = SwapWiring::prepare(
-        &spec,
-        &identity,
-        &bandwidth,
-        Some(Address::repeat_byte(0xab)),
-        None,
-        false,
-        0,
-        true,
-    )
-    .expect("swap wiring is prepared for a chequebook on a named chain");
+    let swap_config = SwapConfig {
+        enable: Some(true),
+        chequebook: Some(Address::repeat_byte(0xab)),
+        beneficiary: None,
+        deploy: false,
+        bounce_limit: 0,
+    };
+    let (swap_provider, _) = SwapWiring::prepare(&spec, &identity, &bandwidth, &swap_config, true)
+        .expect("swap wiring is prepared for a chequebook on a named chain");
 
     let accounting = AccountingBuilder::new(bandwidth)
         .with_pricer_from_config(spec)

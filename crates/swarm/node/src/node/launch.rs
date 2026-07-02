@@ -30,15 +30,17 @@ use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
 #[cfg(feature = "swap")]
+use crate::args::SwapConfig;
+#[cfg(feature = "swap")]
 use alloy_primitives::Address;
 
 use super::client::ClientNode;
+#[cfg(feature = "swap")]
+use super::core::node_chain_provider;
 use super::core::{
     ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts, NodeRunTaskFn, RunTaskFn,
     SharedAccounting, build_client_core_tail, single_task,
 };
-#[cfg(feature = "swap")]
-use super::core::{ClientSwapParams, node_chain_provider};
 use crate::ClientHandle;
 use crate::inflight::PeerInflightLimiter;
 
@@ -360,21 +362,25 @@ impl ClientLauncher {
         // The launcher always builds a client, which paces against the scaled line.
         let bandwidth = self.bandwidth.for_client();
 
+        // Bound before `tail_params` so the borrowed config outlives the build call.
+        #[cfg(feature = "swap")]
+        let swap_config = SwapConfig {
+            // An embedded client defaults SWAP off; `with_swap` turns it on.
+            enable: self.swap.as_ref().map(|_| true),
+            chequebook: self.swap.as_ref().map(|cfg| cfg.chequebook),
+            beneficiary: self.swap.as_ref().and_then(|cfg| cfg.beneficiary),
+            // The browser cannot deploy a chequebook.
+            deploy: false,
+            bounce_limit: self.swap.as_ref().map_or(0, |cfg| cfg.bounce_limit),
+        };
+
         let tail_params = ClientTailParams {
             node_type: SwarmNodeType::Client,
             spec: &spec,
             identity: &self.identity,
             bandwidth: &bandwidth,
             #[cfg(feature = "swap")]
-            swap: ClientSwapParams {
-                // An embedded client defaults SWAP off; `with_swap` turns it on.
-                enable: self.swap.as_ref().map(|_| true),
-                chequebook: self.swap.as_ref().map(|cfg| cfg.chequebook),
-                beneficiary: self.swap.as_ref().and_then(|cfg| cfg.beneficiary),
-                // The browser cannot deploy a chequebook.
-                deploy: false,
-                bounce_limit: self.swap.as_ref().map_or(0, |cfg| cfg.bounce_limit),
-            },
+            swap: &swap_config,
         };
 
         let executor = TaskExecutor::current();

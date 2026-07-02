@@ -42,7 +42,7 @@ pub use core::{
     single_task, spawn_client_command_bridge,
 };
 #[cfg(feature = "swap")]
-pub use core::{ClientSwapParams, NodeChainError, SwapWiring, node_chain_provider};
+pub use core::{NodeChainError, SwapWiring, node_chain_provider};
 pub use error::NodeBuildError;
 #[cfg(feature = "swap")]
 pub use launch::LauncherSwapConfig;
