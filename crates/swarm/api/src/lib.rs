@@ -38,12 +38,12 @@ mod types;
 
 pub use self::accounting::{Admission, Au, AuConversionError, Debt};
 pub use self::components::{
-    BandwidthDebit, BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Commit,
-    CommitOnWrite, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
-    IntervalStore, PullChunkVerifier, PullStorage, ReserveStore, SettableRadius, StorerComponents,
-    SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore,
-    SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing,
-    SwarmPricingBuilder, SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology,
+    BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Commit, CommitOnWrite,
+    Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology, IntervalStore,
+    OriginAccounting, PullChunkVerifier, PullStorage, ReserveStore, SettableRadius,
+    StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting,
+    SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState,
+    SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology,
     SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting,
     SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats, VerifyError, construct,
 };

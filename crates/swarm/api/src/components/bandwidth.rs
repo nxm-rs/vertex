@@ -15,7 +15,7 @@ use std::vec::Vec;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::{Au, SwarmIdentity, SwarmPricing, SwarmResult};
+use crate::{Admission, AdmissionControl, Au, SwarmIdentity, SwarmPricing, SwarmResult};
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,14 +184,22 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
     fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<Self::ProvideAction>;
 }
 
-/// Object-safe receive debit for callers that hold accounting behind a trait
-/// object (the client service, which cannot name the `ReceiveAction` type).
+/// The object-safe origin dispatch gate over one accounting instance: the
+/// admission band and the dispatch-committed debit read the same ledger
+/// through one handle (the client service cannot name the `ReceiveAction`
+/// type).
 ///
-/// Commits in one step: the chunk is in hand when an origin request completes,
-/// so there is nothing to hold and release. An `Err` carries the
-/// disconnect-threshold breach the accounting already reported through its peer
-/// reporter.
-pub trait BandwidthDebit: Send + Sync {
+/// The origin commit point is at dispatch: an origin leg may be raced, and a
+/// losing raced leg is cancelled by drop, so a commit deferred to delivery
+/// could un-book debt for bytes the wire may still deliver. `debit_received`
+/// therefore commits in one step and `refund_received` reverses it only when
+/// the request provably reached no charge. An `Err` carries the
+/// disconnect-threshold breach the accounting already reported through its
+/// peer reporter.
+pub trait OriginAccounting: Send + Sync {
+    /// Band `price` against the peer's projected debt.
+    fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission;
+
     /// Debit `peer` by `price` for a received chunk, committing immediately.
     fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()>;
 
@@ -201,7 +209,11 @@ pub trait BandwidthDebit: Send + Sync {
     fn refund_received(&self, peer: OverlayAddress, price: Au);
 }
 
-impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
+impl<B: SwarmBandwidthAccounting + AdmissionControl> OriginAccounting for B {
+    fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission {
+        AdmissionControl::admit(self, peer, price)
+    }
+
     fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()> {
         self.prepare_receive(peer, price, originated)
             .map(Commit::apply)

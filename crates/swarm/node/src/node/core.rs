@@ -184,7 +184,6 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     let origin_handle = client_handle.clone().with_origin_gate(
         Arc::new(accounting.pricing().clone()),
         accounting.bandwidth().clone(),
-        admission.clone(),
         settlement_trigger.clone(),
     );
 

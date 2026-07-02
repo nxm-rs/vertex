@@ -399,7 +399,7 @@ mod tests {
     fn test_refund_received_credits_back_a_committed_receive() {
         // The inverse of the dispatch commit: commit a receive debit, then refund
         // it and watch the balance return to zero. Reserved stays cleared.
-        use vertex_swarm_api::BandwidthDebit;
+        use vertex_swarm_api::OriginAccounting;
 
         let accounting = test_accounting();
 
