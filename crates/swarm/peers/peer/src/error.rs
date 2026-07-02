@@ -10,6 +10,8 @@ pub enum MultiAddrError {
     VarintError(#[from] std::io::Error),
     #[error("inconsistent data: expected {expected} bytes, got {actual}")]
     InconsistentLength { expected: u64, actual: usize },
+    #[error("multiaddr count exceeds the maximum of {max} per peer")]
+    CountExceeded { max: usize },
     #[error("failed to parse multiaddr: {0}")]
     InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
 }

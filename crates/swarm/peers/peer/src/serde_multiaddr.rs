@@ -17,6 +17,13 @@ use std::io::{Cursor, Read};
 /// BEE-COMPAT(SWIP-148): see module docs.
 const MULTIADDR_LIST_PREFIX: u8 = 0x99;
 
+/// Maximum multiaddrs accepted per peer record. A gossiped or handshaked record
+/// carrying more is rejected whole, so a peer cannot inflate resident table
+/// memory or amplify dial fan-out by flooding fabricated addresses. Matches the
+/// reference wire cap, so a conformant peer (which advertises a handful) is
+/// never rejected.
+pub(crate) const MAX_MULTIADDRS_PER_PEER: usize = 20;
+
 /// Serialize multiaddrs to bytes.
 ///
 /// - Single address: raw bytes (backward compatible)
@@ -60,6 +67,14 @@ fn deserialize_list(data: &[u8]) -> Result<Vec<Multiaddr>, MultiAddrError> {
     let mut cursor = Cursor::new(data);
 
     while (cursor.position() as usize) < data.len() {
+        // Reject an over-full record before decoding the next entry, so a flood
+        // of addresses never allocates past the cap.
+        if addrs.len() >= MAX_MULTIADDRS_PER_PEER {
+            return Err(MultiAddrError::CountExceeded {
+                max: MAX_MULTIADDRS_PER_PEER,
+            });
+        }
+
         let addr_len = decode_uvarint(&mut cursor)?;
 
         let remaining = data.len() - cursor.position() as usize;
@@ -157,5 +172,32 @@ mod tests {
 
         let deserialized = deserialize_multiaddrs(&serialized).unwrap();
         assert!(deserialized.is_empty());
+    }
+
+    fn n_addrs(n: usize) -> Vec<Multiaddr> {
+        (0..n)
+            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 1000 + i).parse().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_record_at_the_cap_deserializes() {
+        let addrs = n_addrs(MAX_MULTIADDRS_PER_PEER);
+        let serialized = serialize_multiaddrs(&addrs);
+
+        let deserialized = deserialize_multiaddrs(&serialized).unwrap();
+        assert_eq!(deserialized.len(), MAX_MULTIADDRS_PER_PEER);
+        assert_eq!(deserialized, addrs);
+    }
+
+    #[test]
+    fn a_record_over_the_cap_is_rejected() {
+        let serialized = serialize_multiaddrs(&n_addrs(MAX_MULTIADDRS_PER_PEER + 1));
+
+        let err = deserialize_multiaddrs(&serialized).unwrap_err();
+        assert!(
+            matches!(err, MultiAddrError::CountExceeded { max } if max == MAX_MULTIADDRS_PER_PEER),
+            "over-full record must reject with CountExceeded, got {err:?}"
+        );
     }
 }
