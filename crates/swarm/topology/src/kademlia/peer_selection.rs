@@ -1,6 +1,6 @@
 //! Kademlia-aware peer selection for gossip exchange.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
@@ -42,6 +42,47 @@ pub(crate) fn connected_clients<I: SwarmIdentity>(
         .into_iter()
         .filter(|overlay| peer_manager.node_type(overlay) == Some(SwarmNodeType::Client))
         .collect()
+}
+
+/// A bounded per-bin sample of connected storers, for announcing a newly
+/// connected storer to the wider table without a per-connect broadcast storm.
+///
+/// Groups active storer connections by their bin relative to `local_overlay`
+/// and takes up to `per_bin` from each, excluding `exclude` (the newcomer).
+/// The sample is deterministic (no random subset, so the broadcast fan-out is
+/// testable and needs no rng on wasm) but keyed on `subject`: within each bin
+/// the storers closest to the announced peer by XOR distance are chosen, so the
+/// recipient set rotates with who is announced rather than always favouring the
+/// same low-overlay peers, and the announcement flows toward the newcomer's own
+/// neighbourhood. The anti-amplification bound is the per-bin cap either way.
+pub(crate) fn connected_storer_sample<I: SwarmIdentity>(
+    local_overlay: &OverlayAddress,
+    peer_manager: &PeerManager<I>,
+    connection_registry: &ConnectionRegistry,
+    per_bin: usize,
+    exclude: &OverlayAddress,
+    subject: &OverlayAddress,
+) -> Vec<OverlayAddress> {
+    if per_bin == 0 {
+        return Vec::new();
+    }
+    let mut by_bin: BTreeMap<u8, Vec<OverlayAddress>> = BTreeMap::new();
+    for overlay in connection_registry.active_ids() {
+        if &overlay == exclude {
+            continue;
+        }
+        if peer_manager.node_type(&overlay) != Some(SwarmNodeType::Storer) {
+            continue;
+        }
+        let bin = local_overlay.proximity(&overlay).get();
+        by_bin.entry(bin).or_default().push(overlay);
+    }
+    let mut sample = Vec::new();
+    for (_bin, mut overlays) in by_bin {
+        overlays.sort_unstable_by_key(|overlay| subject.distance(overlay));
+        sample.extend(overlays.into_iter().take(per_bin));
+    }
+    sample
 }
 
 /// Known storers in neighborhood, optionally excluding one overlay.
@@ -145,6 +186,31 @@ mod tests {
     use super::*;
     use crate::test_support::TopologyTestContext;
     use vertex_swarm_test_utils::test_overlay;
+
+    /// The per-bin sample orders candidates by XOR distance to the subject, so
+    /// two different subjects pick a different closest-first order over the same
+    /// candidate set: no candidate is globally excluded the way an absolute
+    /// overlay sort would exclude the high-overlay peers of a full bin.
+    #[test]
+    fn the_sample_order_rotates_with_the_subject() {
+        let candidates = [test_overlay(0x11), test_overlay(0x22), test_overlay(0x44)];
+
+        let mut for_a = candidates;
+        for_a.sort_unstable_by_key(|o| test_overlay(0x10).distance(o));
+
+        let mut for_b = candidates;
+        for_b.sort_unstable_by_key(|o| test_overlay(0x44).distance(o));
+
+        assert_ne!(
+            for_a, for_b,
+            "the closest-first order must depend on the subject"
+        );
+        assert_eq!(
+            for_b[0],
+            test_overlay(0x44),
+            "each subject leads with the candidate nearest to it"
+        );
+    }
 
     #[test]
     fn test_connected_neighbors_empty_when_no_connections() {

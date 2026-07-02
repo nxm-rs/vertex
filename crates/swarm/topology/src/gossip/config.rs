@@ -67,6 +67,14 @@ pub struct GossipConfig {
     /// timestamp, and a multiaddr fingerprint. Sized well above the known
     /// table so re-broadcast suppression holds across the whole supply.
     pub max_tracked_cooldowns: usize,
+
+    /// Connected storers per bin told about a newly connected distant storer.
+    ///
+    /// Bounds the announcement fan-out: a new storer is announced to at most
+    /// this many connected storers in each bin, so learning about it cannot
+    /// amplify into a per-connect broadcast storm while still reaching every
+    /// bin of the table.
+    pub broadcast_bin_size: usize,
 }
 
 impl Default for GossipConfig {
@@ -78,6 +86,7 @@ impl Default for GossipConfig {
             max_records_per_gossiper: 64,
             max_tracked_gossipers: 1024,
             max_tracked_cooldowns: 8192,
+            broadcast_bin_size: 2,
         }
     }
 }
