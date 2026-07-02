@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use vertex_node_api::NodeProtocolConfig;
-use vertex_swarm_accounting::{BandwidthArgs, DefaultBandwidthConfig};
+use vertex_swarm_accounting::{AccountingArgs, DefaultAccountingConfig};
 use vertex_swarm_identity::{Identity, IdentityArgs};
 use vertex_swarm_localstore::{LocalStoreArgs, LocalStoreConfig};
 use vertex_swarm_primitives::SwarmNodeType;
@@ -31,7 +31,7 @@ pub struct ProtocolConfig {
     pub node_type: SwarmNodeType,
     pub identity: IdentityArgs,
     pub network: NetworkArgs,
-    pub bandwidth: BandwidthArgs,
+    pub bandwidth: AccountingArgs,
     pub localstore: LocalStoreArgs,
     #[cfg(feature = "storer")]
     pub redistribution: RedistributionArgs,
@@ -51,8 +51,8 @@ impl ProtocolConfig {
     }
 
     /// Build the bandwidth accounting configuration.
-    pub fn bandwidth_config(&self) -> DefaultBandwidthConfig {
-        DefaultBandwidthConfig::from(&self.bandwidth)
+    pub fn bandwidth_config(&self) -> DefaultAccountingConfig {
+        DefaultAccountingConfig::from(&self.bandwidth)
     }
 
     /// Create local store configuration.

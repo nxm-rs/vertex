@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::DefaultBandwidthConfig;
+use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore, SwarmNetworkConfig,
     SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
@@ -156,7 +156,7 @@ pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig<KademliaC
 
 /// Default client builder.
 pub type DefaultClientBuilder =
-    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
+    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultAccountingConfig>;
 
 impl DefaultNodeBuilder {
     pub fn from_config(config: BootnodeConfig) -> Self {
@@ -188,7 +188,7 @@ impl DefaultClientBuilder {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: DefaultAccountingConfig,
     ) -> Self {
         NodeBuilder::new(spec, identity, network).with_accounting(bandwidth)
     }

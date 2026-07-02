@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_api::{
-    Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+    Au, Direction, PeerReporter, ReportSource, SwarmAccounting, SwarmPeerAccounting,
     SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::{ClientCommand, SwapEvent};
@@ -74,7 +74,7 @@ struct PeerChequeState {
 }
 
 /// Processes settlement commands from handles and network events.
-pub struct SwapService<A: SwarmBandwidthAccounting, S> {
+pub struct SwapService<A: SwarmAccounting, S> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<SwapCommand>,
     /// Receive events routed from the network layer.
@@ -111,7 +111,7 @@ struct PendingSettlement {
 
 impl<A, S> SwapService<A, S>
 where
-    A: SwarmBandwidthAccounting + 'static,
+    A: SwarmAccounting + 'static,
     S: SignerSync + Send + Sync + 'static,
 {
     /// Create a new swap service.
@@ -447,7 +447,7 @@ where
 
 impl<A, S> SpawnableTask for SwapService<A, S>
 where
-    A: SwarmBandwidthAccounting + 'static,
+    A: SwarmAccounting + 'static,
     S: SignerSync + Send + Sync + 'static,
 {
     fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend {
@@ -460,7 +460,7 @@ where
 mod tests {
     use super::*;
     use alloy_signer_local::PrivateKeySigner;
-    use vertex_swarm_accounting::{Accounting, BandwidthConfig};
+    use vertex_swarm_accounting::{Accounting, AccountingConfig};
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     const CHAIN: NamedChain = NamedChain::Gnosis;
@@ -468,13 +468,16 @@ mod tests {
     /// Our payout address; the only beneficiary a cheque sent to us may name.
     const OUR_BENEFICIARY: Address = Address::repeat_byte(0xbe);
 
-    type TestService = SwapService<Accounting<BandwidthConfig, Identity>, PrivateKeySigner>;
+    type TestService = SwapService<Accounting<AccountingConfig, Identity>, PrivateKeySigner>;
 
     fn build_service(signer: PrivateKeySigner) -> TestService {
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (_evt_tx, event_rx) = mpsc::unbounded_channel();
         let (client_tx, _client_rx) = mpsc::unbounded_channel();
-        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let accounting = Arc::new(Accounting::new(
+            AccountingConfig::default(),
+            test_identity(),
+        ));
 
         SwapService::new(
             command_rx,

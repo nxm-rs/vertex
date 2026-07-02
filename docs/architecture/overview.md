@@ -101,7 +101,7 @@ The `NodeProtocol` trait (in `vertex-node-api`) defines the lifecycle of a netwo
 
 | Layer | Purpose | Key Traits |
 |-------|---------|------------|
-| **Swarm API** | Defines *what* Swarm does | `SwarmPrimitives`, `SwarmClientTypes`, `SwarmIdentity`, `SwarmTopology`, `SwarmBandwidthAccounting` |
+| **Swarm API** | Defines *what* Swarm does | `SwarmPrimitives`, `SwarmClientTypes`, `SwarmIdentity`, `SwarmTopology`, `SwarmAccounting` |
 | **Node API** | Defines *how* a node is composed | `NodeProtocol`, `NodeBuildsProtocol`, `InfrastructureContext` |
 
 ### Dependency Flow

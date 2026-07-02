@@ -3,15 +3,15 @@
 use vertex_swarm_accounting_pricing::FixedPricingConfig;
 use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmPricingConfig};
 
-use crate::args::BandwidthArgs;
+use crate::args::AccountingArgs;
 use crate::constants::*;
 
 /// Bandwidth accounting configuration.
 ///
-/// Generic over the pricing configuration type `P`. Use [`DefaultBandwidthConfig`]
+/// Generic over the pricing configuration type `P`. Use [`DefaultAccountingConfig`]
 /// for the standard CLI-produced configuration with fixed pricing.
 #[derive(Debug, Clone)]
-pub struct BandwidthConfig<P = FixedPricingConfig> {
+pub struct AccountingConfig<P = FixedPricingConfig> {
     payment_threshold: u64,
     payment_tolerance_percent: u64,
     refresh_rate: u64,
@@ -21,9 +21,9 @@ pub struct BandwidthConfig<P = FixedPricingConfig> {
 }
 
 /// Default bandwidth config using fixed pricing (CLI-produced).
-pub type DefaultBandwidthConfig = BandwidthConfig<FixedPricingConfig>;
+pub type DefaultAccountingConfig = AccountingConfig<FixedPricingConfig>;
 
-impl<P> BandwidthConfig<P> {
+impl<P> AccountingConfig<P> {
     /// Create with explicit values.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -44,11 +44,6 @@ impl<P> BandwidthConfig<P> {
         }
     }
 
-    /// Get the pricing configuration.
-    pub fn pricing(&self) -> &P {
-        &self.pricing
-    }
-
     /// This config scaled to the line a storer enforces on a client:
     /// `payment_threshold` and `refresh_rate` divided by `client_only_factor`,
     /// floored at one. Pacing against the unscaled storer figures would let a
@@ -63,8 +58,8 @@ impl<P> BandwidthConfig<P> {
     }
 }
 
-impl From<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
-    fn from(args: &BandwidthArgs) -> Self {
+impl From<&AccountingArgs> for AccountingConfig<FixedPricingConfig> {
+    fn from(args: &AccountingArgs) -> Self {
         Self {
             payment_threshold: args.payment_threshold,
             payment_tolerance_percent: args.payment_tolerance_percent,
@@ -76,7 +71,7 @@ impl From<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
     }
 }
 
-impl Default for BandwidthConfig<FixedPricingConfig> {
+impl Default for AccountingConfig<FixedPricingConfig> {
     fn default() -> Self {
         Self {
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
@@ -89,7 +84,7 @@ impl Default for BandwidthConfig<FixedPricingConfig> {
     }
 }
 
-impl<P> SwarmAccountingConfig for BandwidthConfig<P>
+impl<P> SwarmAccountingConfig for AccountingConfig<P>
 where
     P: Send + Sync,
 {
@@ -114,7 +109,7 @@ where
     }
 }
 
-impl<P> SwarmPricingConfig for BandwidthConfig<P>
+impl<P> SwarmPricingConfig for AccountingConfig<P>
 where
     P: Default + Clone + Send + Sync,
 {
@@ -131,7 +126,7 @@ mod tests {
 
     #[test]
     fn from_args_carries_the_thresholds() {
-        let config = BandwidthConfig::from(&BandwidthArgs::default());
+        let config = AccountingConfig::from(&AccountingArgs::default());
         assert_eq!(
             config.payment_threshold().as_amount(),
             DEFAULT_PAYMENT_THRESHOLD
@@ -142,7 +137,7 @@ mod tests {
 
     #[test]
     fn for_client_scales_threshold_and_refresh_by_the_factor() {
-        let storer = DefaultBandwidthConfig::default();
+        let storer = DefaultAccountingConfig::default();
         let factor = storer.client_only_factor();
         let storer_threshold = storer.payment_threshold().as_amount();
         let storer_refresh = storer.refresh_rate().as_amount();
@@ -165,11 +160,11 @@ mod tests {
 
     #[test]
     fn for_client_floors_at_one() {
-        let cfg = BandwidthConfig {
+        let cfg = AccountingConfig {
             payment_threshold: 5,
             refresh_rate: 5,
             client_only_factor: 1000,
-            ..DefaultBandwidthConfig::default()
+            ..DefaultAccountingConfig::default()
         }
         .for_client();
         assert_eq!(cfg.payment_threshold().as_amount(), 1);

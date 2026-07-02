@@ -862,7 +862,7 @@ mod tests {
         }
     }
 
-    type GatedAccounting = Accounting<DefaultBandwidthConfig, MockIdentity>;
+    type GatedAccounting = Accounting<DefaultAccountingConfig, MockIdentity>;
 
     /// Build a handle whose origin gate reserves against a real `Accounting`.
     /// The config bands at payment 1000 (settle trigger 400, floored at refresh
@@ -879,7 +879,7 @@ mod tests {
         mpsc::Receiver<ClientCommand>,
     ) {
         let config =
-            DefaultBandwidthConfig::new(1000, 25, 10, 60, 1, FixedPricingConfig::default());
+            DefaultAccountingConfig::new(1000, 25, 10, 60, 1, FixedPricingConfig::default());
         let accounting = Arc::new(Accounting::new(config, MockIdentity::with_first_byte(0)));
         let settlement = Arc::new(RecordingSettlement::default());
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
@@ -1347,7 +1347,7 @@ mod tests {
         let _ = task.await;
     }
 
-    use vertex_swarm_accounting::DefaultBandwidthConfig;
+    use vertex_swarm_accounting::DefaultAccountingConfig;
     use vertex_swarm_api::Ledger;
     use vertex_swarm_test_utils::MockIdentity;
 

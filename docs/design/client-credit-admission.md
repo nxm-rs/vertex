@@ -4,7 +4,7 @@
 
 How a client bounds and settles its per-peer debt during retrieval and pushsync so a storer never disconnects it for unpaid debt. This layers on the mechanism-agnostic accounting and settlement substrate (see `accounting-settlement.md`); the concern here is the client-side coordination: reservation, settle triggering, and candidate filtering.
 
-A client meters its debt against the line a storer enforces on it: the storer line divided by the client factor (see `BandwidthConfig::for_client`). The only per-peer brake a storer applies is accounting debt; cross its disconnect line and it resets the connection and blocklists us. So a client must hold per-peer unsettled debt under that line at all times, including across separate requests, not just within one.
+A client meters its debt against the line a storer enforces on it: the storer line divided by the client factor (see `AccountingConfig::for_client`). The only per-peer brake a storer applies is accounting debt; cross its disconnect line and it resets the connection and blocklists us. So a client must hold per-peer unsettled debt under that line at all times, including across separate requests, not just within one.
 
 ## One surface, shared by retrieval and pushsync
 

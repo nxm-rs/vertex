@@ -81,7 +81,7 @@ Ghost debt is the trace of refused deliveries. A provide reservation released be
 
 ## Removed dead code
 
-Confirmed by census, none with a live non-test caller: the `pre_allow` chain end to end (`SwarmSettlementProvider::pre_allow`, `SwarmPeerBandwidth::allow`, `pre_allow_all`); `SwarmClientAccounting::receive_price`/`provide_price` and its default forwarders; `Accounting::config()`/`providers()` accessors; `get_or_create_client_peer`/`PeerState::new_client_only` (client scaling lives in `BandwidthConfig::for_client`); the dead `PeerState` fields above. The old `AccountingAction` trait splits into two: `Commit` (the by-value receive apply, committed the moment the chunk is in hand) and the object-safe `CommitOnWrite` (the deferred provide commit the forwarder boxes into `ForwardedChunk`/`ForwardedReceipt`). `prepare_provide`/`shadow_reserved` stay live (the client relays through `NetworkForwarder`).
+Confirmed by census, none with a live non-test caller: the `pre_allow` chain end to end (`SwarmSettlementProvider::pre_allow`, `SwarmPeerAccounting::allow`, `pre_allow_all`); `SwarmClientAccounting::receive_price`/`provide_price` and its default forwarders; `Accounting::config()`/`providers()` accessors; `get_or_create_client_peer`/`PeerState::new_client_only` (client scaling lives in `AccountingConfig::for_client`); the dead `PeerState` fields above. The old `AccountingAction` trait splits into two: `Commit` (the by-value receive apply, committed the moment the chunk is in hand) and the object-safe `CommitOnWrite` (the deferred provide commit the forwarder boxes into `ForwardedChunk`/`ForwardedReceipt`). `prepare_provide`/`shadow_reserved` stay live (the client relays through `NetworkForwarder`).
 
 ## What lands when
 

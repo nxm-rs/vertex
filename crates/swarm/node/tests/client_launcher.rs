@@ -74,7 +74,7 @@ async fn launcher_brings_up_client_node() -> Result<()> {
 
     // The launcher now wires the shared client core: the accounting carries the
     // pseudosettle settlement mechanism instead of an empty provider list.
-    let providers = launched.accounting().bandwidth().provider_names();
+    let providers = launched.accounting().accounting().provider_names();
     assert!(
         providers.contains(&"pseudosettle"),
         "expected pseudosettle in the launched provider list, got {providers:?}"

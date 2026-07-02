@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
+use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, SwarmLaunchConfig, SwarmNodeType, construct,
 };
@@ -137,7 +137,7 @@ macro_rules! define_launch_types {
 
         impl vertex_swarm_api::SwarmClientTypes for $name {
             type Accounting = ClientAccounting<
-                Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>,
+                Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>,
                 FixedPricer<Arc<Spec>>,
             >;
         }
@@ -194,7 +194,7 @@ pub(crate) struct ClientNodeParams<'a> {
     pub(crate) spec: &'a Arc<Spec>,
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
-    pub(crate) bandwidth: &'a DefaultBandwidthConfig,
+    pub(crate) bandwidth: &'a DefaultAccountingConfig,
     #[cfg(feature = "swap")]
     pub(crate) chain: &'a ChainConfig,
     #[cfg(feature = "swap")]
@@ -706,7 +706,7 @@ mod tests {
             .get_peer_score(&overlay)
             .expect("stored peer has a score");
 
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
         let over_limit = config.disconnect_threshold() + Au::new(1);
         let accounting = AccountingBuilder::new(config)
             .with_pricer_from_config(identity.spec().clone())
@@ -714,7 +714,7 @@ mod tests {
 
         // A debit projected past the disconnect threshold is refused.
         let result = accounting
-            .bandwidth()
+            .accounting()
             .prepare_receive(overlay, over_limit, true);
         assert!(result.is_err());
 
@@ -735,14 +735,14 @@ mod tests {
         use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
         use tokio::sync::mpsc;
         use vertex_swarm_api::{
-            OriginAccounting, SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing,
+            OriginAccounting, SwarmAccounting, SwarmPeerAccounting, SwarmPricing,
         };
         use vertex_swarm_node::{
             AccountingSettlement, ClientCommand, ClientHandle, RetrievalResult, SettlementTrigger,
         };
 
         let identity = test_identity_arc();
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
         let accounting = Arc::new(
             AccountingBuilder::new(config)
                 .with_pricer_from_config(identity.spec().clone())
@@ -760,10 +760,10 @@ mod tests {
         // The same gate `assemble_client_core` wires onto the origin-gated handle.
         let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
         let settlement: Arc<dyn SettlementTrigger> =
-            Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
+            Arc::new(AccountingSettlement::new(accounting.accounting().clone()));
         let handle = ClientHandle::new(tx).with_origin_gate(
             Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone() as Arc<dyn OriginAccounting>,
+            accounting.accounting().clone() as Arc<dyn OriginAccounting>,
             settlement,
         );
 
@@ -787,7 +787,7 @@ mod tests {
         request.await.unwrap().expect("delivery ok");
 
         assert_eq!(
-            accounting.bandwidth().for_peer(overlay).balance(),
+            accounting.accounting().for_peer(overlay).balance(),
             -price,
             "an own-request delivery debits the serving peer by the per-chunk price"
         );

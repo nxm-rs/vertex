@@ -1,6 +1,6 @@
 //! Combined pricing and bandwidth accounting.
 
-use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPricing};
+use vertex_swarm_api::{SwarmAccounting, SwarmClientAccounting, SwarmPricing};
 
 /// Combined pricing and bandwidth accounting for client operations.
 #[derive(Clone)]
@@ -23,13 +23,13 @@ impl<B, P> ClientAccounting<B, P> {
 
 impl<B, P> SwarmClientAccounting for ClientAccounting<B, P>
 where
-    B: SwarmBandwidthAccounting + Clone + Send + Sync,
+    B: SwarmAccounting + Clone + Send + Sync,
     P: SwarmPricing + Clone + Send + Sync,
 {
-    type Bandwidth = B;
+    type Accounting = B;
     type Pricing = P;
 
-    fn bandwidth(&self) -> &B {
+    fn accounting(&self) -> &B {
         &self.bandwidth
     }
 

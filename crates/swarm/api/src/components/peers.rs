@@ -9,5 +9,5 @@ pub trait SwarmPeerResolver: Send + Sync + 'static {
     type Peer: Clone + Send + Sync + 'static;
 
     /// Look up a peer by overlay address.
-    fn get_swarm_peer(&self, overlay: &OverlayAddress) -> Option<Self::Peer>;
+    fn swarm_peer(&self, overlay: &OverlayAddress) -> Option<Self::Peer>;
 }

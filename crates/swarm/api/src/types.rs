@@ -3,7 +3,7 @@
 //! Capability levels: SwarmPrimitives → SwarmNetworkTypes → SwarmClientTypes → SwarmStorerTypes.
 
 use crate::{
-    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore, SwarmSpec,
+    SwarmAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore, SwarmSpec,
     SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 
@@ -38,7 +38,7 @@ pub trait SwarmNetworkTypes: SwarmPrimitives {
 pub trait SwarmClientTypes: SwarmNetworkTypes {
     /// Combined pricing and bandwidth accounting for client operations.
     type Accounting: SwarmClientAccounting<
-        Bandwidth: SwarmBandwidthAccounting<Identity = <Self as SwarmPrimitives>::Identity>,
+        Accounting: SwarmAccounting<Identity = <Self as SwarmPrimitives>::Identity>,
     >;
 }
 
@@ -61,9 +61,6 @@ pub type TopologyOf<T> = <T as SwarmNetworkTypes>::Topology;
 
 /// Extract the Accounting type from SwarmClientTypes.
 pub type AccountingOf<T> = <T as SwarmClientTypes>::Accounting;
-
-/// Extract the Bandwidth type from SwarmClientTypes.
-pub type BandwidthOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Bandwidth;
 
 /// Extract the Pricing type from SwarmClientTypes.
 pub type PricingOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Pricing;

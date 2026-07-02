@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    AdmissionControl, Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccountingConfig,
-    SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    AdmissionControl, Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccounting,
+    SwarmAccountingConfig, SwarmIdentity, SwarmPeerAccounting, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -106,7 +106,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             });
         }
 
-        let state = self.get_or_create_peer(peer);
+        let state = self.peer_state(peer);
         state.add_reserved(price);
         Ok(Reservation::new(state, price))
     }
@@ -125,7 +125,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         peer: OverlayAddress,
         price: Au,
     ) -> Result<Reservation<Provide>, AccountingError> {
-        let state = self.get_or_create_peer(peer);
+        let state = self.peer_state(peer);
 
         let payment_threshold = state.payment_threshold();
         // Projected debt the peer would owe us once this provide commits. The
@@ -150,7 +150,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     }
 
     /// Get or create peer state (double-checked locking).
-    pub fn get_or_create_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
+    pub fn peer_state(&self, peer: OverlayAddress) -> Arc<PeerState> {
         // Fast path: read lock
         if let Some(state) = self.peers.read().get(&peer) {
             return Arc::clone(state);
@@ -170,7 +170,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     }
 }
 
-impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Accounting<C, I> {
+impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<C, I> {
     type Identity = I;
     type Peer = AccountingPeerHandle;
     type ReceiveAction = Reservation<Receive>;
@@ -181,7 +181,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
     }
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-        let state = self.get_or_create_peer(peer);
+        let state = self.peer_state(peer);
         AccountingPeerHandle {
             peer,
             state,
@@ -223,7 +223,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
 /// peer owes us, negative we owe the peer). The admission band that consumes
 /// these reads lives in the default [`AdmissionControl::admit`]. Unknown peers
 /// read as fresh zero-balance peers with the configured thresholds, matching
-/// [`Accounting::get_or_create_peer`], and the reads never insert peer state.
+/// [`Accounting::peer_state`], and the reads never insert peer state.
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
     fn balance(&self, peer: &OverlayAddress) -> Au {
         self.peers
@@ -328,7 +328,7 @@ impl AccountingPeerHandle {
     }
 }
 
-impl SwarmPeerBandwidth for AccountingPeerHandle {
+impl SwarmPeerAccounting for AccountingPeerHandle {
     fn record(&self, amount: Au, direction: Direction) {
         match direction {
             Direction::Upload => self.state.add_balance(amount),
@@ -352,12 +352,12 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BandwidthConfig, NoSettlement};
+    use crate::{AccountingConfig, NoSettlement};
     use vertex_swarm_api::Admission;
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
-    fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
-        Accounting::new(BandwidthConfig::default(), test_identity())
+    fn test_accounting() -> Accounting<AccountingConfig, Identity> {
+        Accounting::new(AccountingConfig::default(), test_identity())
     }
 
     fn au(value: i64) -> Au {
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn test_with_single_provider() {
         let accounting = Accounting::with_providers(
-            BandwidthConfig::default(),
+            AccountingConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement)],
         );
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn test_with_two_providers() {
         let accounting = Accounting::with_providers(
-            BandwidthConfig::default(),
+            AccountingConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement), Box::new(NoSettlement)],
         );
@@ -509,16 +509,16 @@ mod tests {
 
     /// Config with payment threshold 1000 and 25% tolerance, so the
     /// disconnect threshold is 1250.
-    fn small_config() -> BandwidthConfig {
-        BandwidthConfig::new(1000, 25, 0, 0, 5, crate::FixedPricingConfig::default())
+    fn small_config() -> AccountingConfig {
+        AccountingConfig::new(1000, 25, 0, 0, 5, crate::FixedPricingConfig::default())
     }
 
     const SMALL_DISCONNECT_THRESHOLD: Au = Au::new(1250);
 
     /// The default storer config scaled to the line a storer enforces on a
     /// client: payment 1_350_000, disconnect 1_687_500, settle trigger 675_000.
-    fn client_config() -> BandwidthConfig {
-        BandwidthConfig::default().for_client()
+    fn client_config() -> AccountingConfig {
+        AccountingConfig::default().for_client()
     }
 
     #[test]
@@ -822,7 +822,7 @@ mod tests {
         // admits; at or above (and below disconnect) settles. This pins the settle
         // point to the early-payment value, not the full payment threshold.
         let config =
-            BandwidthConfig::new(1000, 25, 10, 40, 5, crate::FixedPricingConfig::default());
+            AccountingConfig::new(1000, 25, 10, 40, 5, crate::FixedPricingConfig::default());
         let accounting = Accounting::new(config, test_identity());
         let peer = test_peer();
 

@@ -13,15 +13,15 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::warn;
 use vertex_swarm_accounting::{
-    Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+    Accounting, AccountingBuilder, ClientAccounting, DefaultAccountingConfig, FixedPricer,
 };
 use vertex_swarm_accounting_pseudosettle::{
     PseudosettleCommand, PseudosettleEvent, PseudosettleHandle, PseudosettleProvider,
     PseudosettleService,
 };
 use vertex_swarm_api::{
-    Au, PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting,
-    SwarmNodeType, SwarmSettlementProvider,
+    Au, PeerReporter, SwarmAccounting, SwarmAccountingConfig, SwarmClientAccounting, SwarmNodeType,
+    SwarmSettlementProvider,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_peer_manager::{DEFAULT_TICK_INTERVAL, spawn_peer_manager_task};
@@ -59,7 +59,7 @@ use crate::{
 /// node identity. One instance is shared across the selector, forwarder, client
 /// service, and settlement services.
 pub type SharedAccounting = Arc<
-    ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>,
+    ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>, FixedPricer<Spec>>,
 >;
 
 /// The shared client middle both client-backed entry points assemble: the
@@ -111,7 +111,7 @@ pub struct ClientCoreCtx {
     /// Node identity the accounting and overlay are pinned to.
     pub identity: Arc<Identity>,
     /// Bandwidth config the accounting builder consumes.
-    pub bandwidth: DefaultBandwidthConfig,
+    pub bandwidth: DefaultAccountingConfig,
     /// The node's topology handle.
     pub topology: TopologyHandle<Arc<Identity>>,
     /// The client service to attach the reporter and in-flight limiter to.
@@ -119,7 +119,7 @@ pub struct ClientCoreCtx {
     /// The plain client handle.
     pub client_handle: ClientHandle,
     /// Soft-accounting settlement, registered first.
-    pub pseudosettle_provider: PseudosettleProvider<DefaultBandwidthConfig>,
+    pub pseudosettle_provider: PseudosettleProvider<DefaultAccountingConfig>,
     /// Native-only settlement providers (swap) registered after pseudosettle.
     pub extra_settlement: Vec<Box<dyn SwarmSettlementProvider>>,
     /// The peer-scoring authority accounting and the service report through.
@@ -161,9 +161,9 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // client service, so the service settles after an own delivery even though it
     // never runs the selector, and both paths share the trigger's in-flight dedup
     // set.
-    let admission = accounting.bandwidth().clone();
+    let admission = accounting.accounting().clone();
     let settlement_trigger: Arc<dyn SettlementTrigger> =
-        Arc::new(AccountingSettlement::new(accounting.bandwidth().clone()));
+        Arc::new(AccountingSettlement::new(accounting.accounting().clone()));
 
     // Ranking only: the selector triggers no settlement. The origin credit gate
     // settles the peer a request actually dispatches to (`settlement_trigger`),
@@ -183,7 +183,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // a request settles only the peer it dispatches to, not the whole window.
     let origin_handle = client_handle.clone().with_origin_gate(
         Arc::new(accounting.pricing().clone()),
-        accounting.bandwidth().clone(),
+        accounting.accounting().clone(),
         settlement_trigger.clone(),
     );
 
@@ -277,7 +277,7 @@ impl PseudosettleWiring {
         client_handle: ClientHandle,
         reporter: Arc<dyn PeerReporter>,
     ) where
-        A: SwarmBandwidthAccounting + 'static,
+        A: SwarmAccounting + 'static,
     {
         // The service speaks unbounded `ClientCommand`; bridge it to the bounded
         // node command channel so the service never blocks on a full queue.
@@ -417,7 +417,7 @@ impl SwapWiring {
         #[cfg(feature = "swap-chequebook")] chain_provider: Option<&SharedChainProvider>,
         #[cfg(feature = "swap-chequebook")] spec: &Arc<Spec>,
     ) where
-        A: SwarmBandwidthAccounting + 'static,
+        A: SwarmAccounting + 'static,
     {
         // The service speaks unbounded `ClientCommand`; the node command channel
         // is bounded and reached through `ClientHandle::send_command`. Bridge the
@@ -463,7 +463,7 @@ fn attach_cashout<A, S>(
     beneficiary: Address,
 ) -> SwapService<A, S>
 where
-    A: SwarmBandwidthAccounting + 'static,
+    A: SwarmAccounting + 'static,
     S: alloy_signer::SignerSync + Send + Sync + 'static,
 {
     use vertex_chain::ChainConfig;
@@ -645,7 +645,7 @@ pub struct ClientTailParams<'a> {
     /// Node identity the accounting, overlay, and SWAP signer are pinned to.
     pub identity: &'a Arc<Identity>,
     /// Bandwidth config driving accounting, pricing, and the self-throttle.
-    pub bandwidth: &'a DefaultBandwidthConfig,
+    pub bandwidth: &'a DefaultAccountingConfig,
     /// SWAP settlement parameters.
     #[cfg(feature = "swap")]
     pub swap: ClientSwapParams,
@@ -792,7 +792,7 @@ where
     // time-based refresh and forwards our outbound settlement to the node.
     pseudosettle_wiring.spawn(
         executor,
-        core.accounting.bandwidth().clone(),
+        core.accounting.accounting().clone(),
         client_handle.clone(),
         Arc::clone(&reporter),
     );
@@ -804,7 +804,7 @@ where
     if let Some(wiring) = swap_wiring {
         wiring.spawn(
             executor,
-            core.accounting.bandwidth().clone(),
+            core.accounting.accounting().clone(),
             client_handle,
             Arc::clone(&reporter),
             #[cfg(feature = "swap-chequebook")]
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn default_client_accounting_wires_pseudosettle() {
         let identity = test_identity_arc();
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
 
         let (provider, wiring) = PseudosettleWiring::prepare(&config);
         assert_eq!(wiring.refresh_rate, config.refresh_rate());
@@ -931,7 +931,7 @@ mod tests {
             .build(&identity);
 
         assert_eq!(
-            accounting.bandwidth().provider_names(),
+            accounting.accounting().provider_names(),
             vec!["pseudosettle"]
         );
     }
@@ -946,7 +946,7 @@ mod tests {
         use alloy_primitives::Address;
 
         let identity = test_identity_arc();
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
         let spec = identity.spec().clone();
 
         let (pseudosettle_provider, _) = PseudosettleWiring::prepare(&config);
@@ -973,7 +973,7 @@ mod tests {
             .build(&identity);
 
         assert_eq!(
-            accounting.bandwidth().provider_names(),
+            accounting.accounting().provider_names(),
             vec!["pseudosettle", "swap"],
             "a swap-enabled client reports pseudosettle then swap"
         );

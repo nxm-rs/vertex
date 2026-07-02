@@ -47,10 +47,10 @@ mod settlement;
 pub use accounting::{
     Accounting, AccountingError, AccountingPeerHandle, PeerState, Provide, Receive, Reservation,
 };
-pub use args::BandwidthArgs;
+pub use args::AccountingArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
 pub use client_accounting::ClientAccounting;
-pub use config::{BandwidthConfig, DefaultBandwidthConfig};
-pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
+pub use config::{AccountingConfig, DefaultAccountingConfig};
+pub use noop::{NoAccounting, NoPeerAccounting, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;
 pub use vertex_swarm_accounting_pricing::{FixedPricer, FixedPricingConfig, NoPricer};

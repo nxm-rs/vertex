@@ -36,7 +36,7 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState, SwarmResult,
+    Au, SwarmAccounting, SwarmAccountingConfig, SwarmError, SwarmPeerState, SwarmResult,
     SwarmSettlementProvider,
 };
 use vertex_swarm_client_protocol::ClientCommand;
@@ -141,7 +141,7 @@ pub fn create_swap_actor<A, S>(
     chain: NamedChain,
 ) -> (SwapService<A, S>, SwapHandle)
 where
-    A: SwarmBandwidthAccounting + 'static,
+    A: SwarmAccounting + 'static,
     S: SignerSync + Send + Sync + 'static,
 {
     let (command_tx, command_rx) = mpsc::unbounded_channel();

@@ -5,7 +5,7 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use vertex_swarm_accounting::BandwidthArgs;
+use vertex_swarm_accounting::AccountingArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
@@ -78,7 +78,7 @@ pub struct ProtocolArgs {
 
     /// Bandwidth accounting (includes pricing via `--bandwidth.base-price`).
     #[command(flatten)]
-    pub bandwidth: BandwidthArgs,
+    pub bandwidth: AccountingArgs,
 
     #[command(flatten)]
     pub localstore: LocalStoreArgs,

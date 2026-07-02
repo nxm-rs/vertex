@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use vertex_swarm_accounting::Accounting;
 use vertex_swarm_api::{
-    Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity, SwarmPeerState,
+    Au, SwarmAccounting, SwarmAccountingConfig, SwarmError, SwarmIdentity, SwarmPeerState,
     SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_client_protocol::ClientCommand;
@@ -112,7 +112,7 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
 ///
 /// Spawn the service as a background task. Use the handle to create
 /// a [`PseudosettleProvider`].
-pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
+pub fn create_pseudosettle_actor<A: SwarmAccounting + 'static>(
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
@@ -151,26 +151,26 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_accounting::BandwidthConfig;
+    use vertex_swarm_accounting::AccountingConfig;
     use vertex_swarm_accounting::PeerState;
-    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+    use vertex_swarm_api::{Direction, SwarmAccounting, SwarmPeerAccounting};
     use vertex_swarm_test_utils::{test_identity, test_peer};
 
     #[test]
     fn test_pseudosettle_provider_name() {
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new(AccountingConfig::default());
         assert_eq!(provider.name(), "pseudosettle");
     }
 
     #[test]
     fn test_pseudosettle_refresh_rate() {
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new(AccountingConfig::default());
         assert_eq!(provider.refresh_rate(), Au::from_amount(4_500_000));
     }
 
     #[test]
     fn test_pseudosettle_accounting_basic() {
-        let accounting = new_pseudosettle_accounting(BandwidthConfig::default(), test_identity());
+        let accounting = new_pseudosettle_accounting(AccountingConfig::default(), test_identity());
 
         let handle = accounting.for_peer(test_peer());
         assert_eq!(handle.balance(), Au::from_amount(0));
@@ -186,7 +186,7 @@ mod tests {
     async fn settle_without_handle_is_a_noop() {
         // A handle-less provider has no wire to send a pseudosettle on, so settle
         // is a no-op even with an outstanding debt.
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new(AccountingConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
         state.add_balance(Au::new(-10_000));
 
@@ -200,7 +200,7 @@ mod tests {
     #[tokio::test]
     async fn settle_is_a_noop_when_not_in_debt() {
         // A positive balance means the peer owes us; there is nothing to settle.
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new(AccountingConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
         state.add_balance(Au::new(1_000_000));
 

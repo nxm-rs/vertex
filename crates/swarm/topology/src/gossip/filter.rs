@@ -24,7 +24,7 @@ impl RecipientProfile {
             .get_peer_capability(overlay)
             .unwrap_or(IpCapability::Dual);
         let scope = peer_manager
-            .get_swarm_peer(overlay)
+            .swarm_peer(overlay)
             .and_then(|p| p.max_scope())
             .unwrap_or(AddressScope::Public);
         Self { capability, scope }
