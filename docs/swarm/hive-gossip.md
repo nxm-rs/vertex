@@ -78,6 +78,10 @@ This prevents gossiping unreachable addresses.
 | `max_peers_for_distant` | 16 | Maximum peers sent to non-neighbours |
 | `close_peers_count` | 4 | Close-to-recipient peers in bootstrap set |
 
+## Client recipients
+
+Clients are gossip recipients but never subjects. A connecting client receives the same recipient-targeted bootstrap set a distant storer receives, and every connected client is notified about each newly connected storer, so a client keeps building topology from live supply rather than its bootnode list alone; the advertise filter keeps client records out of every payload, and clients gain no standing as gossip sources. The browser client in `vertex-swarm-node`'s embedded launcher depends on this supply.
+
 ## Implementation
 
 The gossip coordinator is in `vertex-swarm-topology` (`gossip` module):
