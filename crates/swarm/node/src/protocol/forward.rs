@@ -29,8 +29,8 @@ use futures::future::BoxFuture;
 use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Commit, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmClientAccounting,
-    SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
+    Commit, CommitOnWrite, PeerReporter, ReportSource, SwarmBandwidthAccounting,
+    SwarmClientAccounting, SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_client_behaviour::{
     ForwardError, ForwardedChunk, ForwardedReceipt, Forwarder, closer_candidates,
@@ -360,6 +360,18 @@ where
                 provide: Box::new(provide),
             })
         })
+    }
+
+    fn prepare_serve(
+        &self,
+        peer: OverlayAddress,
+        address: &ChunkAddress,
+    ) -> Result<Box<dyn CommitOnWrite>, ForwardError> {
+        let provide = self
+            .accounting
+            .prepare_provide_chunk(peer, address)
+            .map_err(|_| ForwardError::AccountingRefused)?;
+        Ok(Box::new(provide))
     }
 }
 
@@ -1074,5 +1086,75 @@ mod tests {
         // Both reservations were released on drop: balances are untouched.
         assert_eq!(acct.bandwidth().for_peer(requester).balance(), Au::ZERO);
         assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn prepare_serve_bills_only_after_the_wire_write() {
+        let chunk = stamped();
+        let address = *chunk.address();
+        let requester = overlay_at_proximity(&address, 2);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        let topo = Arc::new(MockTopology::default());
+        let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
+        let forwarder = NetworkForwarder::new(
+            local,
+            topo,
+            Arc::clone(&acct),
+            ClientHandle::new(tx),
+            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
+        );
+
+        let price = acct.pricing().peer_price(&requester, &address);
+        let provide = forwarder
+            .prepare_serve(requester, &address)
+            .expect("within the settle line");
+
+        // Reserved, not billed, until the handler commits after the write.
+        assert_eq!(acct.bandwidth().for_peer(requester).balance(), Au::ZERO);
+        provide.apply_boxed();
+        assert_eq!(acct.bandwidth().for_peer(requester).balance(), price);
+    }
+
+    #[tokio::test]
+    async fn concurrent_prepared_serves_exhaust_the_settle_line_and_release_on_drop() {
+        // In-flight serves count against the settle line via the shadow
+        // reservation, so a peer holding many concurrent requests cannot run
+        // its exposure past the payment threshold; dropping them restores the
+        // headroom.
+        let chunk = stamped();
+        let address = *chunk.address();
+        let requester = overlay_at_proximity(&address, 2);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        let topo = Arc::new(MockTopology::default());
+        let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
+        let forwarder = NetworkForwarder::new(
+            local,
+            topo,
+            Arc::clone(&acct),
+            ClientHandle::new(tx),
+            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
+        );
+
+        let mut held = Vec::new();
+        let refused = loop {
+            match forwarder.prepare_serve(requester, &address) {
+                Ok(provide) => held.push(provide),
+                Err(err) => break err,
+            }
+            assert!(held.len() <= 20_000, "the settle line never engaged");
+        };
+        assert!(matches!(refused, ForwardError::AccountingRefused));
+        assert_eq!(
+            acct.bandwidth().for_peer(requester).balance(),
+            Au::ZERO,
+            "held serves reserve, never commit"
+        );
+
+        held.clear();
+        assert!(forwarder.prepare_serve(requester, &address).is_ok());
     }
 }

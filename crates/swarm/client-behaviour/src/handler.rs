@@ -477,15 +477,30 @@ impl ClientHandler {
         let forward = Arc::clone(&self.forward);
         self.inbound.push(Box::pin(async move {
             // Cache hit: the store applies the single-owner TTL on `get`. Serve
-            // whichever stamp the cache held.
+            // whichever stamp the cache held. A terminal serve is billed like a
+            // relay: reserve the upstream credit before responding, commit only
+            // after the wire write. A refusal means the requester is past its
+            // settle line, so the serve is refused too.
             if let Ok(Some(cached)) = store.get(&address)
                 && *cached.address() == address
             {
+                let provide = match forward.prepare_serve(overlay, &address) {
+                    Ok(provide) => provide,
+                    Err(_) => {
+                        responder.send_error();
+                        return InboundOutcome::Missed { overlay, address };
+                    }
+                };
                 let (chunk, stamp) = cached.into_parts();
                 match responder.send_chunk(chunk, stamp).await {
-                    Ok(()) => return InboundOutcome::Served { overlay },
+                    Ok(()) => {
+                        provide.apply_boxed();
+                        return InboundOutcome::Served { overlay };
+                    }
                     Err(e) => {
+                        // Not delivered: drop the unapplied credit.
                         debug!(%overlay, %address, error = %e, "Cache serve send failed");
+                        drop(provide);
                         return InboundOutcome::Missed { overlay, address };
                     }
                 }
@@ -560,8 +575,9 @@ impl ClientHandler {
             && storer.reserve.is_responsible_for(&address)
         {
             let storer = storer.clone();
+            let forward = Arc::clone(&self.forward);
             self.inbound.push(Box::pin(async move {
-                Self::store_and_sign(storer, chunk, address, overlay, responder).await
+                Self::store_and_sign(forward, storer, chunk, address, overlay, responder).await
             }));
             return;
         }
@@ -601,12 +617,24 @@ impl ClientHandler {
     /// sign failure resets the substream rather than acknowledging a chunk we did
     /// not durably take.
     async fn store_and_sign(
+        forward: Arc<dyn Forwarder>,
         storer: StorerCapability,
         chunk: StampedChunk,
         address: ChunkAddress,
         overlay: OverlayAddress,
         responder: vertex_swarm_net_pushsync::PushsyncResponder,
     ) -> InboundOutcome {
+        // Custody is billed like any serve: reserve the upstream credit before
+        // the storage work, commit only after the receipt write. A refusal
+        // means the pusher is past its settle line, so custody is refused too.
+        let provide = match forward.prepare_serve(overlay, &address) {
+            Ok(provide) => provide,
+            Err(_) => {
+                responder.send_error();
+                return InboundOutcome::PushFailed { overlay, address };
+            }
+        };
+
         // Persist before acknowledging: a receipt must never claim custody of a
         // chunk that is not durably in the reserve.
         if let Err(e) = storer.reserve.put(CachedChunk::from(chunk)) {
@@ -632,12 +660,17 @@ impl ClientHandler {
         };
 
         match responder.send_receipt(receipt.to_wire()).await {
-            Ok(()) => InboundOutcome::Stored { overlay },
+            Ok(()) => {
+                provide.apply_boxed();
+                InboundOutcome::Stored { overlay }
+            }
             Err(e) => {
                 // Stored; only the ack failed to reach the pusher. The pusher
                 // retries, which is idempotent (the reserve put is
-                // content-addressed, so a re-delivery is a no-op).
+                // content-addressed, so a re-delivery is a no-op). Drop the
+                // unapplied credit: never bill for an ack that did not land.
                 debug!(%overlay, %address, error = %e, "Receipt send failed after store");
+                drop(provide);
                 InboundOutcome::PushFailed { overlay, address }
             }
         }

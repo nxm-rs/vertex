@@ -127,6 +127,26 @@ pub trait Forwarder: Send + Sync {
         chunk: StampedChunk,
         exclude: OverlayAddress,
     ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>>;
+
+    /// Reserve the upstream credit for a terminal serve: `peer` pays for an
+    /// answer this node already holds (a cache hit or its own custody
+    /// receipt), so no relay legs run.
+    ///
+    /// Returned un-applied under the same deferred-commit contract as the
+    /// relays: commit after the wire write, drop to release. A refusal means
+    /// the peer is past its settle line and the serve must be refused.
+    fn prepare_serve(
+        &self,
+        peer: OverlayAddress,
+        address: &ChunkAddress,
+    ) -> Result<Box<dyn CommitOnWrite>, ForwardError>;
+}
+
+/// The no-op upstream credit for nodes that do not account their serves.
+struct Unaccounted;
+
+impl CommitOnWrite for Unaccounted {
+    fn apply_boxed(self: Box<Self>) {}
 }
 
 /// A relayed chunk together with the un-applied upstream credit.
@@ -198,6 +218,14 @@ impl Forwarder for StubForwarder {
         _exclude: OverlayAddress,
     ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>> {
         Box::pin(async { Err(ForwardError::NoCloserPeer) })
+    }
+
+    fn prepare_serve(
+        &self,
+        _peer: OverlayAddress,
+        _address: &ChunkAddress,
+    ) -> Result<Box<dyn CommitOnWrite>, ForwardError> {
+        Ok(Box::new(Unaccounted))
     }
 }
 
