@@ -77,6 +77,11 @@ impl CandidateQueues {
         result
     }
 
+    /// True when no candidate is queued in any bin.
+    pub(super) fn is_empty(&self) -> bool {
+        self.pending.lock().is_empty()
+    }
+
     /// Clone the dedup set for snapshot purposes.
     pub(super) fn snapshot_queued(&self) -> HashSet<OverlayAddress> {
         self.pending.lock().clone()

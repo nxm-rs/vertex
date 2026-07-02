@@ -244,6 +244,12 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     pub(crate) pending_bootnode_resolution: Option<BootnodeResolutionFuture>,
 
+    /// Isolation probe state: `(next_probe_at, current_delay)` while the
+    /// table is drained (nothing connected or pending, no candidate queued),
+    /// `None` otherwise. Backs off exponentially so a dead network is probed
+    /// at a decaying rate instead of every tick.
+    pub(crate) isolation_probe: Option<(vertex_tasks::time::Instant, Duration)>,
+
     /// Static NAT addresses to emit as external addresses on first poll.
     /// Cleared after emitting to avoid re-emission.
     pub(crate) pending_nat_external_addrs: Vec<Multiaddr>,
@@ -898,6 +904,10 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             // expired; connection events are the other publication path.
             self.refresh_published_depth();
             self.evaluator_handle.trigger_evaluation();
+            // An all-backoff empty table is otherwise a fixed point: the
+            // evaluator keeps producing empty candidate sets and no dial
+            // ever fires again.
+            self.reconnect_if_isolated();
         }
 
         // Poll composed protocols and process their events
@@ -1536,6 +1546,32 @@ mod tests {
             match next_action(&mut behaviour).await {
                 ToSwarm::Dial { .. } => {}
                 other => panic!("expected deferred Dial after replenish, got {other:?}"),
+            }
+        }
+    }
+
+    mod isolation {
+        use super::*;
+
+        /// A drained table (nothing connected or pending, no candidates)
+        /// re-dials the bootnodes on the evaluation tick without an external
+        /// command: the all-backoff empty table must not be a fixed point.
+        #[tokio::test]
+        async fn isolation_redials_bootnodes_without_a_command() {
+            let mut behaviour = test_behaviour_with(
+                TopologyConfig::default().with_dial_interval(Duration::from_millis(25)),
+            );
+            let bootnode_peer = PeerId::random();
+            let bootnode: Multiaddr = format!("/ip4/203.0.113.9/tcp/1634/p2p/{bootnode_peer}")
+                .parse()
+                .expect("valid bootnode multiaddr");
+            behaviour.bootnodes = vec![bootnode];
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::Dial { opts } => {
+                    assert_eq!(opts.get_peer_id(), Some(bootnode_peer));
+                }
+                other => panic!("expected the isolation probe to dial the bootnode, got {other:?}"),
             }
         }
     }

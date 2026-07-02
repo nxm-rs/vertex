@@ -18,6 +18,12 @@ use crate::kademlia::RoutingCapacity;
 
 use crate::behaviour::{DialTarget, TopologyBehaviour};
 
+/// First interval between isolation probes; doubles per probe.
+const ISOLATION_PROBE_INITIAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ceiling on the isolation probe interval.
+const ISOLATION_PROBE_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
 impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Dial a known SwarmPeer for discovery.
     ///
@@ -123,6 +129,43 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         self.pending_actions.push_back(ToSwarm::Dial { opts });
+    }
+
+    /// Re-dial the bootnodes when the table has drained to isolation:
+    /// nothing connected or pending, no candidate queued, no resolution in
+    /// flight. Without this the all-backoff empty table is a fixed point.
+    /// The first probe fires immediately on detection; repeats back off
+    /// exponentially. Any connection, pending handshake or queued candidate
+    /// resets the probe. A dial still in flight may overlap one probe;
+    /// `dial` deduplicates tracked peers so the overlap is a no-op.
+    pub(crate) fn reconnect_if_isolated(&mut self) {
+        if self.connection_registry.active_count() > 0
+            || self.connection_registry.pending_count() > 0
+            || self.routing.has_queued_candidates()
+            || self.pending_bootnode_resolution.is_some()
+        {
+            self.isolation_probe = None;
+            return;
+        }
+
+        let now = vertex_tasks::time::Instant::now();
+        match &mut self.isolation_probe {
+            Some((next_probe_at, delay)) => {
+                if now < *next_probe_at {
+                    return;
+                }
+                *delay = delay.saturating_mul(2).min(ISOLATION_PROBE_MAX);
+                *next_probe_at = now + *delay;
+            }
+            None => {
+                self.isolation_probe =
+                    Some((now + ISOLATION_PROBE_INITIAL, ISOLATION_PROBE_INITIAL));
+            }
+        }
+
+        info!("table drained to isolation; re-dialing bootnodes");
+        metrics::counter!("topology_isolation_rebootstrap_total").increment(1);
+        self.connect_bootnodes();
     }
 
     pub(crate) fn connect_bootnodes(&mut self) {

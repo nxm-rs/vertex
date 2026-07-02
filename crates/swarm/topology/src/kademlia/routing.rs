@@ -980,6 +980,12 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
         self.candidate_queues.pop_next()
     }
 
+    /// True when any dial candidate is queued (the isolation probe treats a
+    /// non-empty queue as recovery already in motion).
+    pub(crate) fn has_queued_candidates(&self) -> bool {
+        !self.candidate_queues.is_empty()
+    }
+
     /// Return a popped candidate to its bin queue, e.g. when the dial-rate
     /// bucket ran out before it could be dialed. Re-enters the dedup set so
     /// the evaluator does not select it again while it waits.
