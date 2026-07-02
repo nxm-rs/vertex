@@ -154,13 +154,38 @@ impl ClientBehaviour {
         self.swap_event_tx = Some(tx);
     }
 
+    /// Queue policy split: consumer events may drop at the cap (the swarm
+    /// re-polls and their state is re-derivable), but handler commands never
+    /// drop silently, because a dropped command strands state upstream: a lost
+    /// retrieve or push cancels its responder while the dispatch-booked debit
+    /// stands, a lost pseudosettle ack pins the handler's responder until the
+    /// stale sweep, a lost activation leaves the handler dormant forever, and a
+    /// lost settle or cheque strands the settlement service's pending entry.
+    /// So the request commands (retrieve, push) refuse back to their caller at
+    /// the cap, and every other command rides past it; each of those is
+    /// connection- or trigger-rate bounded upstream, so the overrun is bounded.
     fn push_event(&mut self, event: ToSwarm<ClientEvent, HandlerCommand>) {
-        if self.pending_events.len() >= self.config.max_pending_events {
+        if self.at_capacity() {
             warn!("Behaviour event queue full, dropping event");
             metrics::counter!("swarm.client.behaviour.events_dropped").increment(1);
             return;
         }
         self.pending_events.push_back(event);
+    }
+
+    /// True once the soft cap is reached; events drop and request commands
+    /// refuse, per the policy on [`Self::push_event`].
+    fn at_capacity(&self) -> bool {
+        self.pending_events.len() >= self.config.max_pending_events
+    }
+
+    /// Enqueue a handler command regardless of the soft cap.
+    fn push_command(&mut self, peer_id: PeerId, command: HandlerCommand) {
+        self.pending_events.push_back(ToSwarm::NotifyHandler {
+            peer_id,
+            handler: libp2p::swarm::NotifyHandler::Any,
+            event: command,
+        });
     }
 
     pub fn on_command(&mut self, command: ClientCommand) {
@@ -173,20 +198,12 @@ impl ClientBehaviour {
                 debug!(%peer_id, %overlay, ?node_type, "Activating peer");
                 self.peer_overlays.insert(peer_id, overlay);
                 self.overlay_peers.insert(overlay, peer_id);
-                self.push_event(ToSwarm::NotifyHandler {
-                    peer_id,
-                    handler: libp2p::swarm::NotifyHandler::Any,
-                    event: HandlerCommand::Activate { overlay, node_type },
-                });
+                self.push_command(peer_id, HandlerCommand::Activate { overlay, node_type });
             }
             ClientCommand::AnnouncePricing { peer, threshold } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %threshold, "Announcing pricing");
-                    self.push_event(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::AnnouncePricing { threshold },
-                    });
+                    self.push_command(peer_id, HandlerCommand::AnnouncePricing { threshold });
                 } else {
                     debug!(%peer, "Unknown peer for pricing announcement");
                 }
@@ -197,17 +214,19 @@ impl ClientBehaviour {
                 response,
                 originated,
             } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                if self.at_capacity() {
+                    metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
+                    let _ = response.send(Err(ChunkTransferError::Overloaded));
+                } else if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Retrieving chunk");
-                    self.push_event(ToSwarm::NotifyHandler {
+                    self.push_command(
                         peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::RetrieveChunk {
+                        HandlerCommand::RetrieveChunk {
                             address,
                             response,
                             originated,
                         },
-                    });
+                    );
                 } else {
                     debug!(%peer, "Unknown peer for retrieval");
                     let _ = response.send(Err(ChunkTransferError::NotConnected));
@@ -220,17 +239,19 @@ impl ClientBehaviour {
                 response,
                 originated,
             } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                if self.at_capacity() {
+                    metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
+                    let _ = response.send(Err(ChunkTransferError::Overloaded));
+                } else if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Pushing chunk");
-                    self.push_event(ToSwarm::NotifyHandler {
+                    self.push_command(
                         peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::PushChunk {
+                        HandlerCommand::PushChunk {
                             chunk,
                             response,
                             originated,
                         },
-                    });
+                    );
                 } else {
                     debug!(%peer, "Unknown peer for push");
                     let _ = response.send(Err(ChunkTransferError::NotConnected));
@@ -239,11 +260,7 @@ impl ClientBehaviour {
             ClientCommand::SendPseudosettle { peer, amount } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %amount, "Sending pseudosettle");
-                    self.push_event(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::SendPseudosettle { amount },
-                    });
+                    self.push_command(peer_id, HandlerCommand::SendPseudosettle { amount });
                 } else {
                     debug!(%peer, "Unknown peer for pseudosettle");
                 }
@@ -255,14 +272,13 @@ impl ClientBehaviour {
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %request_id, "Acking pseudosettle");
-                    self.push_event(ToSwarm::NotifyHandler {
+                    self.push_command(
                         peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::AckPseudosettle {
+                        HandlerCommand::AckPseudosettle {
                             request_id,
                             ack: wire_ack(ack),
                         },
-                    });
+                    );
                 } else {
                     debug!(%peer, "Unknown peer for pseudosettle ack");
                 }
@@ -271,11 +287,7 @@ impl ClientBehaviour {
             ClientCommand::SendCheque { peer, cheque } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, "Sending swap cheque");
-                    self.push_event(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::SendCheque { cheque },
-                    });
+                    self.push_command(peer_id, HandlerCommand::SendCheque { cheque });
                 } else {
                     debug!(%peer, "Unknown peer for swap cheque");
                 }
@@ -654,6 +666,66 @@ mod tests {
             Arc::new(NoopStore),
             Arc::new(StubForwarder),
         )
+    }
+
+    /// A behaviour whose event queue is permanently at capacity.
+    fn saturated_behaviour() -> ClientBehaviour {
+        let config = Config {
+            max_pending_events: 0,
+            ..Config::default()
+        };
+        ClientBehaviour::new(config, Arc::new(NoopStore), Arc::new(StubForwarder))
+    }
+
+    #[test]
+    fn a_saturated_queue_refuses_a_retrieve_command_explicitly() {
+        let mut behaviour = saturated_behaviour();
+        let overlay = test_peer();
+        // Activation rides past the cap (a dropped activation would leave the
+        // handler dormant forever), so the peer is known when the request lands.
+        behaviour.on_command(ClientCommand::ActivatePeer {
+            peer_id: PeerId::random(),
+            overlay,
+            node_type: vertex_swarm_primitives::SwarmNodeType::Storer,
+        });
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::RetrieveChunk {
+            peer: overlay,
+            address: ChunkAddress::zero(),
+            response: tx,
+            originated: true,
+        });
+
+        match rx.try_recv() {
+            Ok(Err(ChunkTransferError::Overloaded)) => {}
+            other => panic!("expected an explicit Overloaded refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commands_ride_past_the_cap_that_drops_events() {
+        let mut behaviour = saturated_behaviour();
+        let before = behaviour.pending_events.len();
+        behaviour.on_command(ClientCommand::ActivatePeer {
+            peer_id: PeerId::random(),
+            overlay: test_peer(),
+            node_type: vertex_swarm_primitives::SwarmNodeType::Storer,
+        });
+        assert_eq!(
+            behaviour.pending_events.len(),
+            before + 1,
+            "an activation command enqueues past the soft cap"
+        );
+
+        behaviour.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingSent {
+            peer: test_peer(),
+        }));
+        assert_eq!(
+            behaviour.pending_events.len(),
+            before + 1,
+            "a consumer event still drops at the cap"
+        );
     }
 
     #[test]

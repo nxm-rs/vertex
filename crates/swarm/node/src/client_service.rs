@@ -974,6 +974,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn origin_dispatch_refunds_an_overloaded_refusal() {
+        // A queue-capacity refusal provably never dispatched to the wire, so the
+        // dispatch-booked debit must refund in full.
+        let (handle, accounting, settlement, mut rx) = gated_handle(100);
+        let peer = peer(7);
+
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .retrieve_chunk(peer, ChunkAddress::zero(), true)
+                    .await
+            }
+        });
+        let response = match rx.recv().await.expect("dispatched") {
+            ClientCommand::RetrieveChunk { response, .. } => response,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
+
+        response
+            .send(Err(ChunkTransferError::Overloaded))
+            .expect("receiver alive");
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ChunkTransferError::Overloaded)
+        ));
+        assert_eq!(
+            Ledger::balance(&*accounting, &peer),
+            Au::ZERO,
+            "the refusal refunds the dispatch commit"
+        );
+        assert_eq!(Ledger::reserved(&*accounting, &peer), Au::ZERO);
+        assert!(settlement.triggered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn origin_dispatch_keeps_the_commit_on_cancelled() {
         // The cancel path: the response oneshot is dropped without an answer, so
         // the request returns `Cancelled`. This is a mid-flight teardown, not a
