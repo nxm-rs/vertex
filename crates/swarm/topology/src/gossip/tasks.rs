@@ -157,7 +157,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         let mut rejected = 0;
 
         for peer in peers {
-            let existing = self.peer_manager.get_swarm_peer(peer.overlay());
+            let existing = self.peer_manager.swarm_peer(peer.overlay());
             let result = self
                 .intake
                 .check_gossip(&peer, &gossiper, existing.as_ref());
@@ -257,7 +257,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
             {
                 debug!(%overlay, proximity, "Peer became neighbor due to depth change");
 
-                if let Some(peer) = self.peer_manager.get_swarm_peer(&overlay) {
+                if let Some(peer) = self.peer_manager.swarm_peer(&overlay) {
                     actions.extend(self.handle_new_neighbor(overlay, peer, new_depth));
                 }
             }

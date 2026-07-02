@@ -124,13 +124,13 @@ impl NoAccountingBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DefaultBandwidthConfig;
+    use crate::DefaultAccountingConfig;
     use vertex_swarm_test_utils::test_identity_arc as test_identity;
 
     #[test]
     fn test_builder_with_pricer_from_config() {
         let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
 
         let _accounting = AccountingBuilder::new(config)
             .with_pricer_from_config(identity.spec().clone())
@@ -142,7 +142,7 @@ mod tests {
         use vertex_swarm_accounting_pricing::FixedPricer;
 
         let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
+        let config = DefaultAccountingConfig::default();
         let pricer = FixedPricer::new(5000, identity.spec().clone());
 
         let _accounting = AccountingBuilder::new(config)

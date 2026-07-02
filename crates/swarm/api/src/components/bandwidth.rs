@@ -1,6 +1,6 @@
 //! Bandwidth accounting - per-peer balance tracking.
 //!
-//! Two-level design: [`SwarmBandwidthAccounting`] creates per-peer [`SwarmPeerBandwidth`] handles.
+//! Two-level design: [`SwarmAccounting`] creates per-peer [`SwarmPeerAccounting`] handles.
 //! Uses overlay addresses for peer identification (not libp2p `PeerId`).
 //!
 //! # Settlement Providers
@@ -124,10 +124,10 @@ pub trait CommitOnWrite: Send {
 
 /// Per-peer bandwidth accounting handle.
 ///
-/// Reached through the [`SwarmBandwidthAccounting::Peer`] associated type
+/// Reached through the [`SwarmAccounting::Peer`] associated type
 /// (never as a trait object), so `settle` returns `impl Future + Send`
 /// natively; the `Send` bound keeps settlement awaitable from spawned tasks.
-pub trait SwarmPeerBandwidth: Send + Sync {
+pub trait SwarmPeerAccounting: Send + Sync {
     /// Record a priced amount of bandwidth usage (lock-free, must not block).
     fn record(&self, amount: Au, direction: Direction);
 
@@ -143,12 +143,12 @@ pub trait SwarmPeerBandwidth: Send + Sync {
 
 /// Factory for creating per-peer bandwidth accounting handles.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmBandwidthAccounting: Send + Sync {
+pub trait SwarmAccounting: Send + Sync {
     /// The node identity type.
     type Identity: SwarmIdentity;
 
     /// The per-peer accounting handle type.
-    type Peer: SwarmPeerBandwidth;
+    type Peer: SwarmPeerAccounting;
 
     /// Reservation for receiving service (balance decreases), committed by value.
     type ReceiveAction: Commit;
@@ -209,7 +209,7 @@ pub trait OriginAccounting: Send + Sync {
     fn refund_received(&self, peer: OverlayAddress, price: Au);
 }
 
-impl<B: SwarmBandwidthAccounting + AdmissionControl> OriginAccounting for B {
+impl<B: SwarmAccounting + AdmissionControl> OriginAccounting for B {
     fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission {
         AdmissionControl::admit(self, peer, price)
     }
@@ -231,13 +231,13 @@ impl<B: SwarmBandwidthAccounting + AdmissionControl> OriginAccounting for B {
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmClientAccounting: Send + Sync {
     /// The underlying bandwidth accounting type.
-    type Bandwidth: SwarmBandwidthAccounting;
+    type Accounting: SwarmAccounting;
 
     /// The pricing strategy type.
     type Pricing: SwarmPricing;
 
     /// Get the bandwidth accounting.
-    fn bandwidth(&self) -> &Self::Bandwidth;
+    fn accounting(&self) -> &Self::Accounting;
 
     /// Get the pricer.
     fn pricing(&self) -> &Self::Pricing;
@@ -248,9 +248,9 @@ pub trait SwarmClientAccounting: Send + Sync {
         peer: OverlayAddress,
         chunk: &ChunkAddress,
         originated: bool,
-    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ReceiveAction> {
+    ) -> SwarmResult<<Self::Accounting as SwarmAccounting>::ReceiveAction> {
         let price = self.pricing().peer_price(&peer, chunk);
-        self.bandwidth().prepare_receive(peer, price, originated)
+        self.accounting().prepare_receive(peer, price, originated)
     }
 
     /// Prepare to provide a chunk (peer pays, balance increases).
@@ -258,8 +258,8 @@ pub trait SwarmClientAccounting: Send + Sync {
         &self,
         peer: OverlayAddress,
         chunk: &ChunkAddress,
-    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ProvideAction> {
+    ) -> SwarmResult<<Self::Accounting as SwarmAccounting>::ProvideAction> {
         let price = self.pricing().peer_price(&peer, chunk);
-        self.bandwidth().prepare_provide(peer, price)
+        self.accounting().prepare_provide(peer, price)
     }
 }

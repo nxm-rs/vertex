@@ -235,6 +235,9 @@ impl Au {
     }
 }
 
+// Hand-rolled on purpose, never a derive sweep candidate: every operator
+// saturates so an adversarial price or settlement sequence cannot wrap and
+// flip owed/owes. A derived operator would wrap in release.
 impl Add for Au {
     type Output = Au;
     #[inline]

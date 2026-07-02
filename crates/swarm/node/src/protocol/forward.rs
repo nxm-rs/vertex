@@ -124,11 +124,11 @@ mod tests {
     use nectar_primitives::{AnyChunk, ContentChunk, NetworkId, Nonce, compute_overlay};
     use tokio::sync::mpsc;
     use vertex_swarm_accounting::{
-        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+        Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer,
     };
     use vertex_swarm_api::{
-        Au, Bin, PeerReporter, ReportSource, StorageRadius, SwarmBandwidthAccounting,
-        SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
+        Au, Bin, PeerReporter, ReportSource, StorageRadius, SwarmAccounting, SwarmPeerAccounting,
+        SwarmPricing, SwarmScoringEvent,
     };
     use vertex_swarm_identity::Identity;
     use vertex_swarm_net_pushsync::{Receipt, WireReceipt};
@@ -267,12 +267,14 @@ mod tests {
         OverlayAddress::from(bytes)
     }
 
-    type TestAccounting =
-        ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>;
+    type TestAccounting = ClientAccounting<
+        Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>,
+        FixedPricer<Spec>,
+    >;
 
     fn accounting() -> Arc<TestAccounting> {
         let bandwidth = Arc::new(Accounting::new(
-            DefaultBandwidthConfig::default(),
+            DefaultAccountingConfig::default(),
             test_identity_arc(),
         ));
         let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
@@ -358,12 +360,12 @@ mod tests {
         // un-applied: until it is committed (which the handler does after a
         // successful wire write) the requester owes nothing.
         assert_eq!(
-            acct.bandwidth().for_peer(requester).balance(),
+            acct.accounting().for_peer(requester).balance(),
             Au::ZERO,
             "the upstream credit is deferred until the wire write"
         );
         assert_eq!(
-            acct.bandwidth().for_peer(closer).balance(),
+            acct.accounting().for_peer(closer).balance(),
             Au::ZERO - receive_price
         );
 
@@ -371,11 +373,11 @@ mod tests {
         // back: now the requester owes us provide_price.
         forwarded.provide.apply_boxed();
         assert_eq!(
-            acct.bandwidth().for_peer(requester).balance(),
+            acct.accounting().for_peer(requester).balance(),
             provide_price
         );
         assert_eq!(
-            acct.bandwidth().for_peer(closer).balance(),
+            acct.accounting().for_peer(closer).balance(),
             Au::ZERO - receive_price
         );
     }
@@ -424,12 +426,12 @@ mod tests {
 
         // The requester was never charged; the downstream leg stands.
         assert_eq!(
-            acct.bandwidth().for_peer(requester).balance(),
+            acct.accounting().for_peer(requester).balance(),
             Au::ZERO,
             "dropping the un-applied provide leg charges the requester nothing"
         );
         assert_eq!(
-            acct.bandwidth().for_peer(closer).balance(),
+            acct.accounting().for_peer(closer).balance(),
             Au::ZERO - receive_price
         );
     }
@@ -497,16 +499,16 @@ mod tests {
         assert_eq!(forwarded.receipt.to_wire(), expected);
 
         // Downstream committed; upstream deferred until the wire write.
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), Au::ZERO);
         assert_eq!(
-            acct.bandwidth().for_peer(closer).balance(),
+            acct.accounting().for_peer(closer).balance(),
             Au::ZERO - receive_price
         );
 
         forwarded.provide.apply_boxed();
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), provide_price);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), provide_price);
         assert_eq!(
-            acct.bandwidth().for_peer(closer).balance(),
+            acct.accounting().for_peer(closer).balance(),
             Au::ZERO - receive_price
         );
 
@@ -572,8 +574,8 @@ mod tests {
         assert_eq!(source, ReportSource::Protocol("pushsync"));
 
         // Both reservations released on drop: nothing was charged.
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(closer).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -624,8 +626,8 @@ mod tests {
         assert_eq!(reported_peer, closer);
         assert_eq!(event, SwarmScoringEvent::InvalidData);
 
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(closer).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -680,8 +682,8 @@ mod tests {
         assert!(reporter.is_empty());
 
         // Both reservations released on drop: nothing was charged.
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(closer).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -726,8 +728,8 @@ mod tests {
         // The forwarder did not relay and did not double-score: the decode
         // boundary already scored the malformed downstream peer.
         assert!(reporter.is_empty());
-        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(closer).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -751,8 +753,8 @@ mod tests {
         assert!(matches!(err, ForwardError::NoCloserPeer));
 
         // No leg was attempted, so no reservation is held or committed.
-        assert_eq!(acct.bandwidth().for_peer(requester).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(sideways).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(requester).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(sideways).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -787,8 +789,8 @@ mod tests {
         assert!(matches!(err, ForwardError::AllPeersFailed));
 
         // Both reservations were released on drop: balances are untouched.
-        assert_eq!(acct.bandwidth().for_peer(requester).balance(), Au::ZERO);
-        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(requester).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(closer).balance(), Au::ZERO);
     }
 
     #[tokio::test]
@@ -810,9 +812,9 @@ mod tests {
             .expect("within the settle line");
 
         // Reserved, not billed, until the handler commits after the write.
-        assert_eq!(acct.bandwidth().for_peer(requester).balance(), Au::ZERO);
+        assert_eq!(acct.accounting().for_peer(requester).balance(), Au::ZERO);
         provide.apply_boxed();
-        assert_eq!(acct.bandwidth().for_peer(requester).balance(), price);
+        assert_eq!(acct.accounting().for_peer(requester).balance(), price);
     }
 
     #[tokio::test]
@@ -842,7 +844,7 @@ mod tests {
         };
         assert!(matches!(refused, ForwardError::AccountingRefused));
         assert_eq!(
-            acct.bandwidth().for_peer(requester).balance(),
+            acct.accounting().for_peer(requester).balance(),
             Au::ZERO,
             "held serves reserve, never commit"
         );
@@ -879,7 +881,7 @@ mod tests {
         };
         assert!(matches!(refused, ForwardError::AccountingRefused));
         assert_eq!(
-            acct.bandwidth().for_peer(requester).balance(),
+            acct.accounting().for_peer(requester).balance(),
             Au::ZERO,
             "forfeits never commit"
         );

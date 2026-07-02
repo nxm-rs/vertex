@@ -551,9 +551,9 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
 // storer's receipt verbatim.
 
 use nectar_primitives::NetworkId;
-use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
+use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer};
 use vertex_swarm_api::{
-    Au, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPeerBandwidth, SwarmPricing,
+    Au, SwarmAccounting, SwarmClientAccounting, SwarmPeerAccounting, SwarmPricing,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_spec::Spec;
@@ -570,11 +570,11 @@ impl crate::SettlementTrigger for NoTriggeredSettle {
 }
 
 type RelayAccounting =
-    ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>;
+    ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>, FixedPricer<Spec>>;
 
 fn relay_accounting() -> Arc<RelayAccounting> {
     let bandwidth = Arc::new(Accounting::new(
-        DefaultBandwidthConfig::default(),
+        DefaultAccountingConfig::default(),
         test_identity_arc(),
     ));
     let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
@@ -714,12 +714,12 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
         "the forwarder earns a spread"
     );
     assert_eq!(
-        accounting.bandwidth().for_peer(a_overlay).balance(),
+        accounting.accounting().for_peer(a_overlay).balance(),
         provide_price,
         "A is debited for the chunk B served on"
     );
     assert_eq!(
-        accounting.bandwidth().for_peer(c_overlay).balance(),
+        accounting.accounting().for_peer(c_overlay).balance(),
         Au::ZERO - receive_price,
         "B is debited for the chunk C served it"
     );
@@ -860,11 +860,11 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
         "a forward with no strictly-closer peer must reset, not loop"
     );
     assert_eq!(
-        accounting.bandwidth().for_peer(a_overlay).balance(),
+        accounting.accounting().for_peer(a_overlay).balance(),
         Au::ZERO
     );
     assert_eq!(
-        accounting.bandwidth().for_peer(sideways).balance(),
+        accounting.accounting().for_peer(sideways).balance(),
         Au::ZERO
     );
 }
@@ -983,11 +983,11 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
         "the forwarder earns a spread"
     );
     assert_eq!(
-        b_accounting.bandwidth().for_peer(a_overlay).balance(),
+        b_accounting.accounting().for_peer(a_overlay).balance(),
         provide_price
     );
     assert_eq!(
-        b_accounting.bandwidth().for_peer(c_overlay).balance(),
+        b_accounting.accounting().for_peer(c_overlay).balance(),
         Au::ZERO - receive_price
     );
 }

@@ -8,7 +8,7 @@ use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+    Au, Direction, PeerReporter, ReportSource, SwarmAccounting, SwarmPeerAccounting,
     SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::{ClientCommand, PseudosettleAck, PseudosettleEvent};
@@ -49,7 +49,7 @@ struct PendingSettlement {
 }
 
 /// Processes settlement commands from handles and network events.
-pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
+pub struct PseudosettleService<A: SwarmAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
     /// Receive events routed from the network layer.
@@ -81,7 +81,7 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     reporter: Option<Arc<dyn PeerReporter>>,
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
+impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
     /// Create a new pseudosettle service.
     pub fn new(
         command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
@@ -370,7 +370,7 @@ fn wire_from_au(amount: Au) -> U256 {
     U256::from(amount.as_amount())
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleService<A> {
+impl<A: SwarmAccounting + 'static> SpawnableTask for PseudosettleService<A> {
     fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend {
         self.run(shutdown)
     }
@@ -393,10 +393,10 @@ fn ack_timestamp() -> i64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use vertex_swarm_accounting::{Accounting, BandwidthConfig};
+    use vertex_swarm_accounting::{Accounting, AccountingConfig};
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
-    type TestService = PseudosettleService<Accounting<BandwidthConfig, Identity>>;
+    type TestService = PseudosettleService<Accounting<AccountingConfig, Identity>>;
 
     #[derive(Default)]
     struct RecordingReporter {
@@ -418,7 +418,10 @@ mod tests {
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (_evt_tx, event_rx) = mpsc::unbounded_channel();
         let (client_tx, _client_rx) = mpsc::unbounded_channel();
-        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let accounting = Arc::new(Accounting::new(
+            AccountingConfig::default(),
+            test_identity(),
+        ));
 
         PseudosettleService::new(
             command_rx,
@@ -466,7 +469,10 @@ mod tests {
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (_evt_tx, event_rx) = mpsc::unbounded_channel();
         let (client_tx, client_rx) = mpsc::unbounded_channel();
-        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let accounting = Arc::new(Accounting::new(
+            AccountingConfig::default(),
+            test_identity(),
+        ));
         let svc = PseudosettleService::new(
             command_rx,
             event_rx,
@@ -702,7 +708,10 @@ mod tests {
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (_evt_tx, event_rx) = mpsc::unbounded_channel();
         let (client_tx, _client_rx) = mpsc::unbounded_channel();
-        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let accounting = Arc::new(Accounting::new(
+            AccountingConfig::default(),
+            test_identity(),
+        ));
         let svc =
             PseudosettleService::new(command_rx, event_rx, client_tx, accounting, refresh_rate);
         // Peer owes us a very large amount (positive balance).

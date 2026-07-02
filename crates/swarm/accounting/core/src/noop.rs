@@ -3,7 +3,7 @@
 use std::vec::Vec;
 
 use vertex_swarm_api::{
-    Au, Direction, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    Au, Direction, SwarmAccounting, SwarmIdentity, SwarmPeerAccounting, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -22,11 +22,11 @@ impl<I: SwarmIdentity> NoAccounting<I> {
 
 /// No-op per-peer bandwidth handle.
 #[derive(Debug, Clone)]
-pub struct NoPeerBandwidth {
+pub struct NoPeerAccounting {
     peer: OverlayAddress,
 }
 
-impl SwarmPeerBandwidth for NoPeerBandwidth {
+impl SwarmPeerAccounting for NoPeerAccounting {
     fn record(&self, _amount: Au, _direction: Direction) {}
 
     fn balance(&self) -> Au {
@@ -56,9 +56,9 @@ impl vertex_swarm_api::CommitOnWrite for NoProvideAction {
     fn apply_boxed(self: Box<Self>) {}
 }
 
-impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
+impl<I: SwarmIdentity> SwarmAccounting for NoAccounting<I> {
     type Identity = I;
-    type Peer = NoPeerBandwidth;
+    type Peer = NoPeerAccounting;
     type ReceiveAction = NoReceiveAction;
     type ProvideAction = NoProvideAction;
 
@@ -67,7 +67,7 @@ impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
     }
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-        NoPeerBandwidth { peer }
+        NoPeerAccounting { peer }
     }
 
     fn peers(&self) -> Vec<OverlayAddress> {

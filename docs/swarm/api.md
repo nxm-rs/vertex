@@ -78,7 +78,7 @@ Identity is accessed via `topology().identity()` rather than a separate componen
 | `SwarmIdentity` | Node identity, signing, overlay address | All |
 | `SwarmTopologyState` | Peer discovery and routing state | All |
 | `SwarmTopologyRouting` | Overlay routing decisions | All |
-| `SwarmBandwidthAccounting` | Per-peer bandwidth tracking | Client, Storer |
+| `SwarmAccounting` | Per-peer bandwidth tracking | Client, Storer |
 | `SwarmLocalStore` | Local chunk persistence | Storer only |
 
 ## Protocol Integration
@@ -101,8 +101,8 @@ Per-peer handles use atomics for `record()` operations. Multiple protocols can r
 
 Two-level design to avoid lock contention:
 
-1. `SwarmBandwidthAccounting`: factory that creates per-peer handles
-2. `SwarmPeerBandwidth`: per-peer handle with lock-free operations
+1. `SwarmAccounting`: factory that creates per-peer handles
+2. `SwarmPeerAccounting`: per-peer handle with lock-free operations
 
 Accounting uses overlay addresses (not `PeerId`) because:
 - Accounting is tied to Swarm identity, not connection

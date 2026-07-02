@@ -373,7 +373,7 @@ impl<I: SwarmIdentity> SwarmTopologyPeers for TopologyHandle<I> {
             .map(|overlay| {
                 let multiaddrs = self
                     .peer_manager
-                    .get_swarm_peer(&overlay)
+                    .swarm_peer(&overlay)
                     .map(|p| p.multiaddrs().to_vec())
                     .unwrap_or_default();
                 (overlay, multiaddrs)

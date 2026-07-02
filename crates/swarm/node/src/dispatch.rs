@@ -27,8 +27,8 @@ use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
     Bin, ChunkAddress, ChunkRetrievalResult, Commit, NeighborhoodDepth, OverlayAddress,
-    PeerReporter, ReportSource, StampedChunk, SwarmBandwidthAccounting, SwarmClientAccounting,
-    SwarmError, SwarmResult, SwarmScoringEvent, SwarmTopologyPeers, SwarmTopologyReporting,
+    PeerReporter, ReportSource, StampedChunk, SwarmAccounting, SwarmClientAccounting, SwarmError,
+    SwarmResult, SwarmScoringEvent, SwarmTopologyPeers, SwarmTopologyReporting,
     SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_client_behaviour::{ForwardError, closer_candidates};
@@ -502,7 +502,7 @@ where
     ) -> Result<
         (
             RetrievalResult,
-            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
+            <A::Accounting as SwarmAccounting>::ProvideAction,
         ),
         ForwardError,
     > {
@@ -521,13 +521,7 @@ where
         accounting: &A,
         chunk: StampedChunk,
         exclude: OverlayAddress,
-    ) -> Result<
-        (
-            Receipt,
-            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
-        ),
-        ForwardError,
-    > {
+    ) -> Result<(Receipt, <A::Accounting as SwarmAccounting>::ProvideAction), ForwardError> {
         let address = *chunk.address();
         // Snapshot the depth authority for the whole walk: the locally
         // observed depth anchors the required receipt depth, gated on that
@@ -572,7 +566,7 @@ where
     ) -> Result<
         (
             Op::Output,
-            <A::Bandwidth as SwarmBandwidthAccounting>::ProvideAction,
+            <A::Accounting as SwarmAccounting>::ProvideAction,
         ),
         ForwardError,
     > {

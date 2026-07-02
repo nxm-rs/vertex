@@ -16,7 +16,7 @@ use tracing::warn;
 
 use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol};
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::DefaultBandwidthConfig;
+use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{
     BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StorageRadius,
     StorerComponents, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
@@ -67,7 +67,7 @@ pub struct StorerConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultBandwidthConfig,
+    bandwidth: DefaultAccountingConfig,
     local_store: LocalStoreConfig,
     storage: StorageConfig,
     chain: ChainConfig,
@@ -83,7 +83,7 @@ impl StorerConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: DefaultAccountingConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
         chain: ChainConfig,
@@ -113,7 +113,7 @@ impl StorerConfig {
         &self.network
     }
 
-    pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
+    pub fn bandwidth(&self) -> &DefaultAccountingConfig {
         &self.bandwidth
     }
 
@@ -233,7 +233,7 @@ where
 pub type DefaultStorerBuilder = StorerNodeBuilder<
     Arc<Identity>,
     NetworkConfig<KademliaConfig>,
-    DefaultBandwidthConfig,
+    DefaultAccountingConfig,
     LocalStoreConfig,
     StorageConfig,
 >;
@@ -243,7 +243,7 @@ impl DefaultStorerBuilder {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: DefaultAccountingConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
     ) -> Self {

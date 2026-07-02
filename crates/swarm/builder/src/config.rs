@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
-use vertex_swarm_accounting::DefaultBandwidthConfig;
+use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
@@ -86,7 +86,7 @@ pub struct ClientConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultBandwidthConfig,
+    bandwidth: DefaultAccountingConfig,
     local_store: LocalStoreConfig,
     chain: ChainConfig,
     swap: SwapConfig,
@@ -97,7 +97,7 @@ impl ClientConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: DefaultAccountingConfig,
         local_store: LocalStoreConfig,
         chain: ChainConfig,
         swap: SwapConfig,
@@ -113,7 +113,7 @@ impl ClientConfig {
         }
     }
 
-    pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
+    pub fn bandwidth(&self) -> &DefaultAccountingConfig {
         &self.bandwidth
     }
 

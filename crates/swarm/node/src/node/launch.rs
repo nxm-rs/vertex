@@ -18,7 +18,7 @@ use std::time::Duration;
 use eyre::Result;
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_accounting::DefaultBandwidthConfig;
+use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{
     DefaultPeerConfig, SwarmLocalStore, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig,
     SwarmRoutingConfig,
@@ -185,7 +185,7 @@ pub struct ClientLauncher {
     identity: Arc<Identity>,
     bootnodes: Vec<Multiaddr>,
     kademlia: KademliaConfig,
-    bandwidth: DefaultBandwidthConfig,
+    bandwidth: DefaultAccountingConfig,
     max_peers: usize,
     idle_timeout: Duration,
     /// Byte budget for the default in-memory cache (ignored when a store is set).
@@ -207,7 +207,7 @@ impl ClientLauncher {
             identity: identity.into(),
             bootnodes: Vec::new(),
             kademlia: KademliaConfig::default(),
-            bandwidth: DefaultBandwidthConfig::default(),
+            bandwidth: DefaultAccountingConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
@@ -247,9 +247,9 @@ impl ClientLauncher {
     /// Set the bandwidth accounting configuration.
     ///
     /// Drives the pseudosettle allowance, the per-chunk price, and the admission
-    /// band thresholds. Defaults to [`DefaultBandwidthConfig::default`].
+    /// band thresholds. Defaults to [`DefaultAccountingConfig::default`].
     #[must_use]
-    pub fn with_bandwidth(mut self, bandwidth: DefaultBandwidthConfig) -> Self {
+    pub fn with_bandwidth(mut self, bandwidth: DefaultAccountingConfig) -> Self {
         self.bandwidth = bandwidth;
         self
     }

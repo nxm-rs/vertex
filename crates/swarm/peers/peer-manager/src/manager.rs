@@ -307,7 +307,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Get SwarmPeer for a single overlay.
     #[must_use]
-    pub fn get_swarm_peer(&self, overlay: &OverlayAddress) -> Option<SwarmPeer> {
+    pub fn swarm_peer(&self, overlay: &OverlayAddress) -> Option<SwarmPeer> {
         self.peers.get(overlay).map(|e| e.swarm_peer())
     }
 
@@ -832,7 +832,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
 impl<I: SwarmIdentity> SwarmPeerResolver for PeerManager<I> {
     type Peer = SwarmPeer;
 
-    fn get_swarm_peer(&self, overlay: &OverlayAddress) -> Option<SwarmPeer> {
+    fn swarm_peer(&self, overlay: &OverlayAddress) -> Option<SwarmPeer> {
         self.peers.get(overlay).map(|e| e.swarm_peer())
     }
 }
@@ -890,7 +890,7 @@ mod tests {
 
         let stored = pm.store_discovered_peer(swarm_peer.clone());
         assert_eq!(stored, overlay);
-        assert!(pm.get_swarm_peer(&overlay).is_some());
+        assert!(pm.swarm_peer(&overlay).is_some());
         assert!(pm.index().exists(&overlay));
     }
 
@@ -904,7 +904,7 @@ mod tests {
         let newer = test_swarm_peer_with_timestamp(1, base, 1000);
         pm.store_discovered_peer(newer);
         assert!(
-            pm.get_swarm_peer(&overlay)
+            pm.swarm_peer(&overlay)
                 .unwrap()
                 .multiaddr()
                 .unwrap()
@@ -917,7 +917,7 @@ mod tests {
         let stored = pm.store_discovered_peer(older);
         assert_eq!(stored, overlay);
         assert!(
-            pm.get_swarm_peer(&overlay)
+            pm.swarm_peer(&overlay)
                 .unwrap()
                 .multiaddr()
                 .unwrap()
@@ -941,7 +941,7 @@ mod tests {
         let fresh = test_swarm_peer_with_timestamp(1, base + interval + 1, 3000);
         pm.store_discovered_peer(fresh);
         assert!(
-            pm.get_swarm_peer(&overlay)
+            pm.swarm_peer(&overlay)
                 .unwrap()
                 .multiaddr()
                 .unwrap()
@@ -963,7 +963,7 @@ mod tests {
         let too_soon = test_swarm_peer_with_timestamp(1, base + 10, 4000);
         pm.store_discovered_peer(too_soon);
         assert!(
-            pm.get_swarm_peer(&overlay)
+            pm.swarm_peer(&overlay)
                 .unwrap()
                 .multiaddr()
                 .unwrap()
@@ -1086,11 +1086,11 @@ mod tests {
         pm.tick(unix_timestamp_secs());
 
         assert!(
-            pm.get_swarm_peer(&test_overlay(1)).is_none(),
+            pm.swarm_peer(&test_overlay(1)).is_none(),
             "unverified entry purged after three failed dials"
         );
         assert!(
-            pm.get_swarm_peer(&test_overlay(2)).is_some(),
+            pm.swarm_peer(&test_overlay(2)).is_some(),
             "verified peer keeps the long failure budget"
         );
     }
@@ -1106,11 +1106,11 @@ mod tests {
 
         let pm2 = manager_with_store(store);
         assert!(
-            pm2.get_swarm_peer(&test_overlay(1)).is_some(),
+            pm2.swarm_peer(&test_overlay(1)).is_some(),
             "verified peers persist"
         );
         assert!(
-            pm2.get_swarm_peer(&test_overlay(2)).is_none(),
+            pm2.swarm_peer(&test_overlay(2)).is_none(),
             "unverified gossip claims never persist"
         );
         assert!(
@@ -1128,7 +1128,7 @@ mod tests {
         pm.on_dialed_overlay_mismatch(&overlay);
 
         assert!(
-            pm.get_swarm_peer(&overlay).is_none(),
+            pm.swarm_peer(&overlay).is_none(),
             "wrong gossip claim removed outright"
         );
         assert!(!pm.index().exists(&overlay));
@@ -1144,7 +1144,7 @@ mod tests {
         pm.on_dialed_overlay_mismatch(&overlay);
 
         assert!(
-            pm.get_swarm_peer(&overlay).is_some(),
+            pm.swarm_peer(&overlay).is_some(),
             "once-verified peers keep their record"
         );
         assert!(
@@ -1293,14 +1293,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_swarm_peer() {
+    fn test_swarm_peer_lookup() {
         let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        assert!(pm.get_swarm_peer(&overlay).is_none());
+        assert!(pm.swarm_peer(&overlay).is_none());
         pm.store_discovered_peer(swarm_peer.clone());
-        assert!(pm.get_swarm_peer(&overlay).is_some());
+        assert!(pm.swarm_peer(&overlay).is_some());
     }
 
     #[test]
@@ -1316,7 +1316,7 @@ mod tests {
         let pm2 = manager_with_store(store);
         assert_eq!(pm2.index().len(), 5);
         for n in 1..=5 {
-            assert!(pm2.get_swarm_peer(&test_overlay(n)).is_some());
+            assert!(pm2.swarm_peer(&test_overlay(n)).is_some());
             assert_eq!(pm2.node_type(&test_overlay(n)), Some(SwarmNodeType::Storer));
         }
     }
@@ -1339,7 +1339,7 @@ mod tests {
         let pm2 = manager_with_store(store);
         assert_eq!(pm2.index().len(), 5);
         for n in 1..=5 {
-            assert!(pm2.get_swarm_peer(&test_overlay(n)).is_some());
+            assert!(pm2.swarm_peer(&test_overlay(n)).is_some());
             assert_eq!(pm2.node_type(&test_overlay(n)), Some(SwarmNodeType::Storer));
         }
     }
@@ -1391,7 +1391,7 @@ mod tests {
 
         let pm2 = manager_with_store(store);
         assert!(
-            pm2.get_swarm_peer(&test_overlay(1)).is_some(),
+            pm2.swarm_peer(&test_overlay(1)).is_some(),
             "peer identity survives the restart"
         );
         assert!(!pm2.is_banned(&test_overlay(1)), "bans are runtime-only");
@@ -1450,9 +1450,9 @@ mod tests {
 
         pm.tick(unix_timestamp_secs());
 
-        assert!(pm.get_swarm_peer(&test_overlay(2)).is_none());
+        assert!(pm.swarm_peer(&test_overlay(2)).is_none());
         assert!(!pm.index().exists(&test_overlay(2)));
-        assert!(pm.get_swarm_peer(&test_overlay(1)).is_some());
+        assert!(pm.swarm_peer(&test_overlay(1)).is_some());
     }
 
     #[test]
@@ -1484,9 +1484,9 @@ mod tests {
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
         let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
 
-        assert!(pm.get_swarm_peer(&newcomer).is_some());
-        assert!(pm.get_swarm_peer(&high).is_some());
-        assert!(pm.get_swarm_peer(&low).is_none(), "lowest score replaced");
+        assert!(pm.swarm_peer(&newcomer).is_some());
+        assert!(pm.swarm_peer(&high).is_some());
+        assert!(pm.swarm_peer(&low).is_none(), "lowest score replaced");
         assert_eq!(pm.index().bin_size(Bin::new(0).unwrap()), 2);
     }
 
@@ -1521,9 +1521,9 @@ mod tests {
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
         let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
 
-        assert!(pm.get_swarm_peer(&newcomer).is_some());
-        assert!(pm.get_swarm_peer(&stale).is_none(), "stale replaced first");
-        assert!(pm.get_swarm_peer(&low_score).is_some());
+        assert!(pm.swarm_peer(&newcomer).is_some());
+        assert!(pm.swarm_peer(&stale).is_none(), "stale replaced first");
+        assert!(pm.swarm_peer(&low_score).is_some());
     }
 
     #[test]
@@ -1550,11 +1550,11 @@ mod tests {
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
         let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
 
-        assert!(pm.get_swarm_peer(&newcomer).is_none());
+        assert!(pm.swarm_peer(&newcomer).is_none());
         assert!(!pm.index().exists(&newcomer));
         for byte in [0x80, 0xc0] {
             let overlay = OverlayAddress::from(*make_swarm_peer_minimal(byte).overlay());
-            assert!(pm.get_swarm_peer(&overlay).is_some());
+            assert!(pm.swarm_peer(&overlay).is_some());
         }
     }
 
@@ -1583,9 +1583,9 @@ mod tests {
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
         let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
 
-        assert!(pm.get_swarm_peer(&connected).is_some(), "connected kept");
-        assert!(pm.get_swarm_peer(&newcomer).is_some());
-        assert!(pm.get_swarm_peer(&disconnected).is_none());
+        assert!(pm.swarm_peer(&connected).is_some(), "connected kept");
+        assert!(pm.swarm_peer(&newcomer).is_some());
+        assert!(pm.swarm_peer(&disconnected).is_none());
     }
 
     #[test]

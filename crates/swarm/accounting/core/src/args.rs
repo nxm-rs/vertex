@@ -10,11 +10,11 @@ use crate::constants::*;
 /// Bandwidth accounting CLI arguments.
 ///
 /// This struct is for CLI parsing and serialization only.
-/// Convert to `BandwidthConfig` for runtime use.
+/// Convert to `AccountingConfig` for runtime use.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
-pub struct BandwidthArgs {
+pub struct AccountingArgs {
     /// Payment threshold (triggers settlement when exceeded).
     #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
     pub payment_threshold: u64,
@@ -41,7 +41,7 @@ pub struct BandwidthArgs {
     pub pricing: FixedPricingArgs,
 }
 
-impl Default for BandwidthArgs {
+impl Default for AccountingArgs {
     fn default() -> Self {
         Self {
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
@@ -54,9 +54,9 @@ impl Default for BandwidthArgs {
     }
 }
 
-impl BandwidthArgs {
-    /// Build the runtime BandwidthConfig from these CLI arguments.
-    pub fn accounting_config(&self) -> crate::DefaultBandwidthConfig {
-        crate::BandwidthConfig::from(self)
+impl AccountingArgs {
+    /// Build the runtime AccountingConfig from these CLI arguments.
+    pub fn accounting_config(&self) -> crate::DefaultAccountingConfig {
+        crate::AccountingConfig::from(self)
     }
 }

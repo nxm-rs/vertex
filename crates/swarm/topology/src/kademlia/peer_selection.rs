@@ -69,7 +69,7 @@ pub(crate) fn select_for_distant<I: SwarmIdentity>(
     let storers: Vec<_> = all_storers
         .iter()
         .filter_map(|overlay| {
-            let peer = peer_manager.get_swarm_peer(overlay)?;
+            let peer = peer_manager.swarm_peer(overlay)?;
             let proximity_to_recipient = recipient.proximity(overlay).get();
             let bin = local_overlay.proximity(overlay).get();
             Some((peer, proximity_to_recipient, bin))

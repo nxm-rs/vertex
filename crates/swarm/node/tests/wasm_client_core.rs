@@ -14,7 +14,7 @@
 #![allow(clippy::expect_used)]
 
 use nectar_primitives::{AnyChunk, ContentChunk};
-use vertex_swarm_accounting::{AccountingBuilder, DefaultBandwidthConfig};
+use vertex_swarm_accounting::{AccountingBuilder, DefaultAccountingConfig};
 use vertex_swarm_api::{SwarmClientAccounting, SwarmIdentity, SwarmLocalStore};
 use vertex_swarm_localstore::{ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS};
 use vertex_swarm_node::PseudosettleWiring;
@@ -25,7 +25,7 @@ use wasm_bindgen_test::wasm_bindgen_test;
 #[wasm_bindgen_test]
 fn client_core_accounting_wires_pseudosettle_on_wasm() {
     let identity = test_identity_arc();
-    let bandwidth = DefaultBandwidthConfig::default();
+    let bandwidth = DefaultAccountingConfig::default();
 
     // The launcher prepares the pseudosettle provider before the accounting is
     // built; the core then embeds it through the same builder tail.
@@ -130,7 +130,7 @@ fn client_core_accounting_wires_pseudosettle_and_swap_on_wasm() {
     use vertex_swarm_node::SwapWiring;
 
     let identity = test_identity_arc();
-    let bandwidth = DefaultBandwidthConfig::default();
+    let bandwidth = DefaultAccountingConfig::default();
     let spec = identity.spec().clone();
 
     let (pseudosettle_provider, _) = PseudosettleWiring::prepare(&bandwidth);

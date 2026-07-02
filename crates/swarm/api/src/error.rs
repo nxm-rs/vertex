@@ -37,10 +37,6 @@ pub enum AccountingError {
     #[error("peer {0} not found")]
     PeerNotFound(OverlayAddress),
 
-    /// Settlement failed.
-    #[error("settlement failed: {0}")]
-    SettlementFailed(String),
-
     /// Channel closed (service stopped).
     #[error("channel closed")]
     ChannelClosed,

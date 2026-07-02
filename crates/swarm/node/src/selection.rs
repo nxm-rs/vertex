@@ -39,8 +39,8 @@ use parking_lot::Mutex;
 use rustc_hash::FxBuildHasher;
 use tracing::debug;
 use vertex_swarm_api::{
-    Admission, AdmissionControl, DEFAULT_PEER_WARN_THRESHOLD, SwarmBandwidthAccounting,
-    SwarmIdentity, SwarmPeerBandwidth, SwarmPricing,
+    Admission, AdmissionControl, DEFAULT_PEER_WARN_THRESHOLD, SwarmAccounting, SwarmIdentity,
+    SwarmPeerAccounting, SwarmPricing,
 };
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
@@ -118,7 +118,7 @@ impl Drop for InFlightGuard {
 
 impl<B> SettlementTrigger for AccountingSettlement<B>
 where
-    B: SwarmBandwidthAccounting + 'static,
+    B: SwarmAccounting + 'static,
     B::Peer: 'static,
 {
     fn trigger_settlement(&self, peer: OverlayAddress) {
@@ -632,7 +632,7 @@ mod tests {
 
     use tokio::sync::Notify;
     use vertex_swarm_accounting::{NoProvideAction, NoReceiveAction};
-    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmResult};
+    use vertex_swarm_api::{Direction, SwarmAccounting, SwarmPeerAccounting, SwarmResult};
     use vertex_swarm_test_utils::MockIdentity;
     use vertex_tasks::TaskManager;
 
@@ -667,7 +667,7 @@ mod tests {
         gate: Arc<Notify>,
     }
 
-    impl SwarmPeerBandwidth for MockPeerBandwidth {
+    impl SwarmPeerAccounting for MockPeerBandwidth {
         fn record(&self, _amount: Au, _direction: Direction) {}
         fn balance(&self) -> Au {
             Au::ZERO
@@ -690,7 +690,7 @@ mod tests {
         gate: Arc<Notify>,
     }
 
-    impl SwarmBandwidthAccounting for MockBandwidth {
+    impl SwarmAccounting for MockBandwidth {
         type Identity = MockIdentity;
         type Peer = MockPeerBandwidth;
         type ReceiveAction = NoReceiveAction;
