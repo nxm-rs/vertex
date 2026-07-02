@@ -53,6 +53,8 @@
             cargo-watch        # File watcher
             cargo-expand       # Macro expansion
             cargo-nextest      # Test runner
+            trunk              # wasm bundler for bin/swarm-demo (fetches the
+                               # lockfile-matching wasm-bindgen itself)
 
             # Git
             git

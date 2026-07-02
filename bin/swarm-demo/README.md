@@ -23,7 +23,7 @@ The wasm-bindgen surface in `src/lib.rs` is small: a `#[wasm_bindgen(start)]` `m
 
 ## Build
 
-The build is single-threaded against the prebuilt `wasm32-unknown-unknown` std on a stable toolchain: no wasm atomics, no shared memory, no `build-std`, no nightly. It needs the `wasm32-unknown-unknown` target, Trunk, and `wasm-bindgen-cli`. The only extra rustflag is the getrandom wasm backend (`getrandom_backend="wasm_js"`), set in this crate's own `.cargo/config.toml`, which fully replaces the workspace config because this crate is its own workspace root. Trunk passes it through, so a plain `trunk build --release` needs no extra flags.
+The build is single-threaded against the prebuilt `wasm32-unknown-unknown` std on a stable toolchain: no wasm atomics, no shared memory, no `build-std`, no nightly. It needs the `wasm32-unknown-unknown` target and Trunk; Trunk fetches the lockfile-matching `wasm-bindgen-cli` itself. The only extra rustflag is the getrandom wasm backend (`getrandom_backend="wasm_js"`), set in this crate's own `.cargo/config.toml`, which fully replaces the workspace config because this crate is its own workspace root. Trunk passes it through, so a plain `trunk build --release` needs no extra flags.
 
 On the project's Nix host, the whole toolchain is available through the project shell:
 
