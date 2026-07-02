@@ -58,18 +58,18 @@ async-trait = "0.1"
 # `parallel`/`wasm-threads`, keeping the single-threaded wasm profile (the demo
 # never calls `initThreadPool`, so there is no rayon worker pool and no shared
 # memory).
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "304b548284f2f4d8b122ff98fea087743665948d" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "304b548284f2f4d8b122ff98fea087743665948d" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "aface29e9f01e836a654642db78d01974b9209ed" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "aface29e9f01e836a654642db78d01974b9209ed" }
 # `local-signer` brings the alloy-signer-local re-export for the in-browser key.
-nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "304b548284f2f4d8b122ff98fea087743665948d" }
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "aface29e9f01e836a654642db78d01974b9209ed" }
 # `issuer` + `seal` give signed content stamps (SnapshotIssuer) and the
 # usage-persistence seal path; default `std` is implied.
-nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "304b548284f2f4d8b122ff98fea087743665948d", features = [
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "aface29e9f01e836a654642db78d01974b9209ed", features = [
     "issuer",
     "seal",
     "client",
 ] }
-nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "304b548284f2f4d8b122ff98fea087743665948d" }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "aface29e9f01e836a654642db78d01974b9209ed" }
 
 # Chequebook address parsing for the optional SWAP config input and chain
 # types/signing for the browser. alloy-sol-types decodes the BatchCreated log
@@ -116,7 +116,7 @@ web-sys = { version = "0.3", features = [
     "File",
     "FileList",
     "Blob",
-    # `fetch`-based JSON-RPC for the gnosis log query (Milestone 4).
+    # `fetch`-based JSON-RPC for the gnosis batch-discovery log query.
     "Request",
     "RequestInit",
     "Response",
