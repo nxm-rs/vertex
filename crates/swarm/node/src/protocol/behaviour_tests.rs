@@ -25,7 +25,9 @@ use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
 
 use crate::ChunkTransferError;
 use crate::client_service::RetrievalResult;
-use crate::protocol::{BehaviourConfig as Config, ClientBehaviour, ClientCommand, StubForwarder};
+use crate::protocol::{
+    BehaviourConfig as Config, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
+};
 
 /// Fixed-instant clock for SOC freshness tests.
 struct FixedClock(i64);
@@ -134,14 +136,14 @@ async fn serves_a_content_chunk_from_the_cache() {
     connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
 
     let (tx, rx) = oneshot::channel();
-    client
-        .behaviour_mut()
-        .on_command(ClientCommand::RetrieveChunk {
-            peer: server_overlay,
+    client.behaviour_mut().on_command(ClientCommand::Peer {
+        peer: server_overlay,
+        command: PeerCommand::RetrieveChunk {
             address,
             response: tx,
             originated: true,
-        });
+        },
+    });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
     let delivered = result.expect("served from cache");
@@ -169,14 +171,14 @@ async fn serves_a_fresh_soc_from_the_cache() {
     connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
 
     let (tx, rx) = oneshot::channel();
-    client
-        .behaviour_mut()
-        .on_command(ClientCommand::RetrieveChunk {
-            peer: server_overlay,
+    client.behaviour_mut().on_command(ClientCommand::Peer {
+        peer: server_overlay,
+        command: PeerCommand::RetrieveChunk {
             address,
             response: tx,
             originated: true,
-        });
+        },
+    });
 
     let delivered = drive_until_retrieved(&mut client, &mut server, rx)
         .await
@@ -206,14 +208,14 @@ async fn expired_soc_is_not_served_and_resets() {
     connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
 
     let (tx, rx) = oneshot::channel();
-    client
-        .behaviour_mut()
-        .on_command(ClientCommand::RetrieveChunk {
-            peer: server_overlay,
+    client.behaviour_mut().on_command(ClientCommand::Peer {
+        peer: server_overlay,
+        command: PeerCommand::RetrieveChunk {
             address,
             response: tx,
             originated: true,
-        });
+        },
+    });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
     assert!(
@@ -235,14 +237,14 @@ async fn cache_miss_resets_with_stub_forwarder() {
     connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
 
     let (tx, rx) = oneshot::channel();
-    client
-        .behaviour_mut()
-        .on_command(ClientCommand::RetrieveChunk {
-            peer: server_overlay,
+    client.behaviour_mut().on_command(ClientCommand::Peer {
+        peer: server_overlay,
+        command: PeerCommand::RetrieveChunk {
             address,
             response: tx,
             originated: true,
-        });
+        },
+    });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
     assert!(
@@ -264,12 +266,13 @@ async fn inbound_pushsync_resets_with_stub_forwarder() {
     connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::PushChunk {
+    client.behaviour_mut().on_command(ClientCommand::Peer {
         peer: server_overlay,
-        address: *chunk.address(),
-        chunk,
-        response: tx,
-        originated: true,
+        command: PeerCommand::PushChunk {
+            chunk,
+            response: tx,
+            originated: true,
+        },
     });
 
     let drive = async {
@@ -455,12 +458,13 @@ async fn responsible_storer_stores_and_signs_a_receipt() {
     connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    pusher.behaviour_mut().on_command(ClientCommand::PushChunk {
+    pusher.behaviour_mut().on_command(ClientCommand::Peer {
         peer: storer_overlay,
-        address,
-        chunk,
-        response: tx,
-        originated: true,
+        command: PeerCommand::PushChunk {
+            chunk,
+            response: tx,
+            originated: true,
+        },
     });
 
     let drive = async {
@@ -511,12 +515,13 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
     connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    pusher.behaviour_mut().on_command(ClientCommand::PushChunk {
+    pusher.behaviour_mut().on_command(ClientCommand::Peer {
         peer: storer_overlay,
-        address,
-        chunk,
-        response: tx,
-        originated: true,
+        command: PeerCommand::PushChunk {
+            chunk,
+            response: tx,
+            originated: true,
+        },
     });
 
     let drive = async {
@@ -675,11 +680,13 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
     connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+    a.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
-        address,
-        response: tx,
-        originated: true,
+        command: PeerCommand::RetrieveChunk {
+            address,
+            response: tx,
+            originated: true,
+        },
     });
 
     // B's forwarder commands are pumped back into B.
@@ -768,11 +775,13 @@ async fn relay_does_not_cache_a_forwarded_soc() {
     connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+    a.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
-        address,
-        response: tx,
-        originated: true,
+        command: PeerCommand::RetrieveChunk {
+            address,
+            response: tx,
+            originated: true,
+        },
     });
 
     let result = {
@@ -832,11 +841,13 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
     connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+    a.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
-        address,
-        response: tx,
-        originated: true,
+        command: PeerCommand::RetrieveChunk {
+            address,
+            response: tx,
+            originated: true,
+        },
     });
 
     let result = {
@@ -939,12 +950,13 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
     connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::PushChunk {
+    a.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
-        address,
-        chunk,
-        response: tx,
-        originated: true,
+        command: PeerCommand::PushChunk {
+            chunk,
+            response: tx,
+            originated: true,
+        },
     });
 
     let result = {
@@ -958,7 +970,11 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
                     // C is the storer: answer its outbound push with the
                     // signed receipt instead of forwarding on.
                     Some(cmd) = c_commands.recv() => {
-                        if let ClientCommand::PushChunk { response, .. } = cmd {
+                        if let ClientCommand::Peer {
+                            command: PeerCommand::PushChunk { response, .. },
+                            ..
+                        } = cmd
+                        {
                             let _ = response.send(Ok(receipt_for_c.clone()));
                         }
                     }

@@ -49,7 +49,8 @@ pub use client_service::{ChunkTransferError, ClientHandle, ClientService, Retrie
 #[cfg(feature = "swap")]
 pub use protocol::SwapEvent;
 pub use protocol::{
-    ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
+    ClientCommand, ClientEvent, FailureKind, PeerCommand, PeerEvent, PseudosettleEvent,
+    PushResponseTx, RetrievalResponseTx,
 };
 
 pub use inflight::{DEFAULT_PEER_INFLIGHT_CAP, PeerInflightLimiter};

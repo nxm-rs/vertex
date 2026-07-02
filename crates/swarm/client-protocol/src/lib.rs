@@ -156,73 +156,52 @@ pub enum FailureKind {
     Protocol,
 }
 
-/// Events emitted by the client behaviour.
+/// A per-peer signal, addressed by the outer envelope that carries it.
+///
+/// One payload shared by the handler and the behaviour: the handler emits it
+/// under a per-connection overlay, the behaviour re-emits it enriched with the
+/// libp2p peer ID. No variant carries the peer address; the envelope does.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-pub enum ClientEvent {
-    /// Received a payment threshold from a peer.
+pub enum PeerEvent {
+    /// Received a payment threshold from the peer.
     PricingReceived {
-        /// The peer's overlay address.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
         /// The payment threshold announced by the peer.
         threshold: U256,
     },
 
-    /// Successfully sent our payment threshold to a peer.
-    PricingSent {
-        /// The peer we sent the threshold to.
-        peer: OverlayAddress,
-    },
+    /// Successfully sent our payment threshold.
+    PricingSent,
 
     /// We served an inbound retrieval request from our cache (scoring/metrics only).
-    InboundServed {
-        /// The peer we served.
-        peer: OverlayAddress,
-    },
+    InboundServed,
 
     /// We answered an inbound retrieval by forwarding to a closer peer.
-    InboundForwarded {
-        /// The peer we served.
-        peer: OverlayAddress,
-    },
+    InboundForwarded,
 
     /// We could not serve or forward an inbound retrieval; the substream reset.
     InboundMissed {
-        /// The peer that asked.
-        peer: OverlayAddress,
         /// The requested chunk address.
         address: ChunkAddress,
     },
 
     /// We relayed a storer's receipt for an inbound pushsync (never signed it).
-    InboundRelayed {
-        /// The peer that pushed.
-        peer: OverlayAddress,
-    },
+    InboundRelayed,
 
     /// We stored an inbound pushsync delivery in the reserve and acknowledged it
     /// with our own signed receipt. Reached only on a storer responsible for the
     /// chunk (scoring/metrics only).
-    InboundStored {
-        /// The peer that pushed.
-        peer: OverlayAddress,
-    },
+    InboundStored,
 
     /// We could not forward an inbound pushsync (or, on the storer ingest path,
     /// could not store or acknowledge it); the substream reset.
     InboundPushFailed {
-        /// The peer that pushed.
-        peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
     },
 
-    /// Received a chunk from a peer (response to our request).
+    /// Received a chunk from the peer (response to our request).
     ChunkReceived {
-        /// The peer that sent the chunk.
-        peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
         /// The received chunk.
@@ -238,8 +217,6 @@ pub enum ClientEvent {
 
     /// A chunk retrieval request failed.
     RetrievalFailed {
-        /// The peer we requested from.
-        peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
         /// Error description.
@@ -250,8 +227,6 @@ pub enum ClientEvent {
 
     /// Received a receipt for a chunk we pushed.
     ReceiptReceived {
-        /// The peer that sent the receipt.
-        peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
         /// Time from push to receipt, for latency scoring.
@@ -263,8 +238,6 @@ pub enum ClientEvent {
 
     /// A chunk push failed.
     PushFailed {
-        /// The peer we pushed to.
-        peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
         /// Error description.
@@ -276,18 +249,12 @@ pub enum ClientEvent {
     /// A peer sent malformed data on an inbound substream; rejected at decode and
     /// scored adversely for invalid data.
     InboundInvalidData {
-        /// The peer that sent the malformed data.
-        peer: OverlayAddress,
         /// The protocol that rejected the data.
         protocol: &'static str,
     },
 
-    /// Received a pseudosettle payment from a peer.
+    /// Received a pseudosettle payment from the peer.
     PseudosettleReceived {
-        /// The peer that sent the payment.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
         /// The payment amount.
         amount: U256,
         /// Request ID for sending ack.
@@ -296,36 +263,39 @@ pub enum ClientEvent {
 
     /// Successfully sent a pseudosettle payment.
     PseudosettleSent {
-        /// The peer we sent to.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
         /// The ack received.
         ack: PseudosettleAck,
     },
 
-    /// Received a swap cheque from a peer.
+    /// Received a swap cheque from the peer.
     #[cfg(feature = "swap")]
     SwapChequeReceived {
-        /// The peer that sent the cheque.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
         /// The signed cheque received.
         cheque: SignedCheque,
         /// The peer's advertised exchange rate, from the headers exchange.
         peer_rate: U256,
     },
 
-    /// Successfully sent a swap cheque to a peer.
+    /// Successfully sent a swap cheque.
     #[cfg(feature = "swap")]
     SwapChequeSent {
-        /// The peer we sent the cheque to.
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
+    },
+}
+
+/// Events emitted by the client behaviour.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ClientEvent {
+    /// A per-peer signal, enriched with the peer's overlay and libp2p peer ID.
+    Peer {
+        /// The peer's overlay address.
         peer: OverlayAddress,
         /// The libp2p peer ID.
         peer_id: PeerId,
-        /// The peer's advertised exchange rate, from the headers exchange.
-        peer_rate: U256,
+        /// The signal.
+        event: PeerEvent,
     },
 
     /// A peer's handler has been activated (after [`ClientCommand::ActivatePeer`]).
@@ -357,10 +327,65 @@ pub enum ClientEvent {
     },
 }
 
-/// Commands accepted by the client behaviour.
+/// A per-peer command, addressed by the outer envelope that carries it.
 ///
 /// Request commands ([`Self::RetrieveChunk`], [`Self::PushChunk`]) carry their
 /// response channel, so the enum is intentionally not `Clone`.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum PeerCommand {
+    /// Announce our payment threshold to the peer.
+    AnnouncePricing {
+        /// The payment threshold to announce.
+        threshold: U256,
+    },
+
+    /// Request a chunk from the peer.
+    RetrieveChunk {
+        /// The chunk address to retrieve.
+        address: ChunkAddress,
+        /// Resolves with the retrieved chunk or the failure.
+        response: RetrievalResponseTx,
+        /// True for our own request, false for a forwarder relay leg. Echoed
+        /// back on the completion event so only origin requests are debited.
+        originated: bool,
+    },
+
+    /// Push a chunk to the peer. The address is derived from the chunk.
+    PushChunk {
+        /// The chunk and its postage stamp to push.
+        chunk: StampedChunk,
+        /// Resolves with the storer's receipt or the failure.
+        response: PushResponseTx,
+        /// True for our own push, false for a forwarder relay leg. Echoed back
+        /// on the completion event so only origin pushes are debited.
+        originated: bool,
+    },
+
+    /// Send a pseudosettle payment to the peer.
+    SendPseudosettle {
+        /// The amount to pay.
+        amount: U256,
+    },
+
+    /// Acknowledge a pseudosettle payment. The domain ack is converted to the
+    /// wire form at the handler boundary.
+    AckPseudosettle {
+        /// Request ID from the received payment.
+        request_id: u64,
+        /// The ack to send.
+        ack: PseudosettleAck,
+    },
+
+    /// Send a swap cheque to the peer.
+    #[cfg(feature = "swap")]
+    SendCheque {
+        /// The signed cheque to send.
+        cheque: SignedCheque,
+    },
+}
+
+/// Commands accepted by the client behaviour.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ClientCommand {
@@ -375,67 +400,12 @@ pub enum ClientCommand {
         node_type: SwarmNodeType,
     },
 
-    /// Announce our payment threshold to a peer.
-    AnnouncePricing {
-        /// The peer to announce to.
+    /// A per-peer command, addressed to an overlay.
+    Peer {
+        /// The peer to address.
         peer: OverlayAddress,
-        /// The payment threshold to announce.
-        threshold: U256,
-    },
-
-    /// Request a chunk from a peer.
-    RetrieveChunk {
-        /// The peer to request from.
-        peer: OverlayAddress,
-        /// The chunk address to retrieve.
-        address: ChunkAddress,
-        /// Resolves with the retrieved chunk or the failure.
-        response: RetrievalResponseTx,
-        /// True for our own request, false for a forwarder relay leg. Echoed
-        /// back on the completion event so only origin requests are debited.
-        originated: bool,
-    },
-
-    /// Push a chunk to a peer.
-    PushChunk {
-        /// The peer to push to.
-        peer: OverlayAddress,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The chunk and its postage stamp to push.
-        chunk: StampedChunk,
-        /// Resolves with the storer's receipt or the failure.
-        response: PushResponseTx,
-        /// True for our own push, false for a forwarder relay leg. Echoed back
-        /// on the completion event so only origin pushes are debited.
-        originated: bool,
-    },
-
-    /// Send a pseudosettle payment to a peer.
-    SendPseudosettle {
-        /// The peer to send the payment to.
-        peer: OverlayAddress,
-        /// The amount to pay.
-        amount: U256,
-    },
-
-    /// Acknowledge a pseudosettle payment.
-    AckPseudosettle {
-        /// The peer to ack.
-        peer: OverlayAddress,
-        /// Request ID from the received payment.
-        request_id: u64,
-        /// The ack to send.
-        ack: PseudosettleAck,
-    },
-
-    /// Send a swap cheque to a peer.
-    #[cfg(feature = "swap")]
-    SendCheque {
-        /// The peer to send the cheque to.
-        peer: OverlayAddress,
-        /// The signed cheque to send.
-        cheque: SignedCheque,
+        /// The command.
+        command: PeerCommand,
     },
 }
 

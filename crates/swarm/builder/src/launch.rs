@@ -704,7 +704,8 @@ mod tests {
             OriginAccounting, SwarmAccounting, SwarmPeerAccounting, SwarmPricing,
         };
         use vertex_swarm_node::{
-            AccountingSettlement, ClientCommand, ClientHandle, RetrievalResult, SettlementTrigger,
+            AccountingSettlement, ClientCommand, ClientHandle, PeerCommand, RetrievalResult,
+            SettlementTrigger,
         };
 
         let identity = test_identity_arc();
@@ -740,7 +741,10 @@ mod tests {
 
         // The reservation is held the moment the command is dispatched.
         let response = match rx.recv().await.expect("origin retrieval dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         response

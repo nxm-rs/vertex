@@ -23,5 +23,6 @@ pub(crate) use vertex_swarm_client_behaviour::{
 #[cfg(feature = "swap")]
 pub use vertex_swarm_client_protocol::SwapEvent;
 pub use vertex_swarm_client_protocol::{
-    ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
+    ClientCommand, ClientEvent, FailureKind, PeerCommand, PeerEvent, PseudosettleEvent,
+    PushResponseTx, RetrievalResponseTx,
 };

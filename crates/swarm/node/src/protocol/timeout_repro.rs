@@ -36,7 +36,9 @@ use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use crate::ChunkTransferError;
 use crate::client_service::RetrievalResult;
-use crate::protocol::{BehaviourConfig, ClientBehaviour, ClientCommand, StubForwarder};
+use crate::protocol::{
+    BehaviourConfig, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
+};
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_retrieval::{RetrievalInboundProtocol, RetrievalResponder, inbound};
 
@@ -183,14 +185,14 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
 
     let address = ChunkAddress::new([0x11; 32]);
     let (tx, mut rx) = oneshot::channel::<Result<RetrievalResult, ChunkTransferError>>();
-    requester
-        .behaviour_mut()
-        .on_command(ClientCommand::RetrieveChunk {
-            peer: server_overlay,
+    requester.behaviour_mut().on_command(ClientCommand::Peer {
+        peer: server_overlay,
+        command: PeerCommand::RetrieveChunk {
             address,
             response: tx,
             originated: true,
-        });
+        },
+    });
 
     let start = Instant::now();
     let drive = async {
