@@ -1,16 +1,17 @@
 //! Fluent launcher for an embedded Swarm client node.
 //!
 //! [`ClientLauncher`] is the lightweight entry point shared by native embedders
-//! and the browser client: no database, no RPC server. It assembles a dial-only
-//! [`ClientNode`] over a handful of network knobs and delegates the shared
-//! client wiring (accounting, settlement, the chunk provider, service
-//! spawning) to [`build_client_core_tail`], the same tail the native builder
-//! uses, then spawns the returned run task. It hands back a [`LaunchedClient`]
-//! with the handles a caller needs to observe the topology and issue chunk reads
-//! and writes. Settlement is pseudosettle (the chain-free path) by default; SWAP
-//! is chequebook-based and so always resolves a chain, with on-chain cashout
-//! added behind `swap-chequebook`. The full native stack (persistent storage,
-//! RPC, the storer reserve) still goes through `vertex-swarm-builder`.
+//! and the browser client: no database, no RPC server. It carries the shared
+//! domain configs ([`NetworkConfig`], [`LocalStoreConfig`], and the plain-data
+//! [`SwapConfig`]) in a dial-only shape and delegates the shared client wiring
+//! (accounting, settlement, the chunk provider, service spawning) to
+//! [`build_client_core_tail`], the same tail the native builder uses, then spawns
+//! the returned run task. It hands back a [`LaunchedClient`] with the handles a
+//! caller needs to observe the topology and issue chunk reads and writes.
+//! Settlement is pseudosettle (the chain-free path) by default; SWAP is
+//! chequebook-based and so always resolves a chain, with on-chain cashout added
+//! behind `swap-chequebook`. The full native stack (persistent storage, RPC, the
+//! storer reserve) still goes through `vertex-swarm-builder`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,20 +20,16 @@ use eyre::Result;
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_accounting::DefaultAccountingConfig;
-use vertex_swarm_api::{
-    DefaultPeerConfig, SwarmLocalStore, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig,
-    SwarmRoutingConfig,
-};
+use vertex_swarm_api::{SwarmLocalStore, SwarmNodeType};
 use vertex_swarm_identity::Identity;
-use vertex_swarm_localstore::{ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS};
+use vertex_swarm_localstore::{ChunkStore, LocalStoreConfig};
 use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
+use crate::args::NetworkConfig;
 #[cfg(feature = "swap")]
 use crate::args::SwapConfig;
-#[cfg(feature = "swap")]
-use alloy_primitives::Address;
 
 use super::client::ClientNode;
 #[cfg(feature = "swap")]
@@ -43,123 +40,6 @@ use super::core::{
 };
 use crate::ClientHandle;
 use crate::inflight::PeerInflightLimiter;
-
-/// Default connection idle timeout for a launched client.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Default transport-layer cap on established connections.
-///
-/// A saturated routing table sits comfortably below this; it is a resource
-/// backstop, not a topology knob.
-const DEFAULT_MAX_PEERS: usize = 400;
-
-/// Network configuration assembled from the launcher's fields.
-///
-/// A launched client is dial-only: it carries no listen addresses and leaves
-/// mDNS, UPnP, and AutoNAT off. This is the trimmed counterpart to the
-/// CLI-driven `NetworkConfig` the full native builder uses.
-struct LaunchNetworkConfig {
-    bootnodes: Vec<Multiaddr>,
-    peer: DefaultPeerConfig,
-    routing: KademliaConfig,
-    max_peers: usize,
-    idle_timeout: Duration,
-}
-
-impl SwarmNetworkConfig for LaunchNetworkConfig {
-    fn listen_addrs(&self) -> &[Multiaddr] {
-        &[]
-    }
-
-    fn bootnodes(&self) -> &[Multiaddr] {
-        &self.bootnodes
-    }
-
-    fn discovery_enabled(&self) -> bool {
-        true
-    }
-
-    fn max_peers(&self) -> usize {
-        self.max_peers
-    }
-
-    fn idle_timeout(&self) -> Duration {
-        self.idle_timeout
-    }
-
-    fn nat_auto_enabled(&self) -> bool {
-        false
-    }
-
-    fn autonat_enabled(&self) -> bool {
-        false
-    }
-
-    fn upnp_enabled(&self) -> bool {
-        false
-    }
-
-    fn mdns_enabled(&self) -> bool {
-        false
-    }
-}
-
-impl SwarmPeerConfig for LaunchNetworkConfig {
-    type Peers = DefaultPeerConfig;
-
-    fn peers(&self) -> &Self::Peers {
-        &self.peer
-    }
-}
-
-impl SwarmRoutingConfig for LaunchNetworkConfig {
-    type Routing = KademliaConfig;
-
-    fn routing(&self) -> &Self::Routing {
-        &self.routing
-    }
-}
-
-/// SWAP settlement parameters for an embedded client.
-///
-/// The signer and the settlement chain are not carried here: the swap service
-/// signs with the launcher identity and resolves the chain from the identity's
-/// spec. SWAP is chequebook-based, so enabling it requires a resolvable chain;
-/// with the `swap-chequebook` feature an `rpc_url` supplies it and turns on
-/// on-chain cashout of received cheques, paying out to `beneficiary`.
-#[cfg(feature = "swap")]
-#[derive(Clone)]
-pub struct LauncherSwapConfig {
-    /// Our chequebook contract address, named in the cheques we issue.
-    pub chequebook: Address,
-    /// The payout address received cheques may name. Defaults to the identity's
-    /// Ethereum address when `None`.
-    pub beneficiary: Option<Address>,
-    /// Cap on the cumulative cheque value we accept from a peer before refusing
-    /// further cheques.
-    pub bounce_limit: u128,
-    /// RPC endpoint for on-chain cashout. `None` keeps settlement chain-free
-    /// (cheque exchange only, no cashout).
-    #[cfg(feature = "swap-chequebook")]
-    pub rpc_url: Option<String>,
-}
-
-#[cfg(feature = "swap")]
-impl LauncherSwapConfig {
-    /// A swap config for the given chequebook, beneficiary defaulted to the
-    /// identity address. Add an `rpc_url` (under `swap-chequebook`) to supply the
-    /// chain SWAP requires and turn on on-chain cashout.
-    #[must_use]
-    pub fn new(chequebook: Address) -> Self {
-        Self {
-            chequebook,
-            beneficiary: None,
-            bounce_limit: 0,
-            #[cfg(feature = "swap-chequebook")]
-            rpc_url: None,
-        }
-    }
-}
 
 /// Fluent launcher for an embedded Swarm client node.
 ///
@@ -185,20 +65,18 @@ impl LauncherSwapConfig {
 /// ```
 pub struct ClientLauncher {
     identity: Arc<Identity>,
-    bootnodes: Vec<Multiaddr>,
-    kademlia: KademliaConfig,
+    network: NetworkConfig<KademliaConfig>,
     bandwidth: DefaultAccountingConfig,
-    max_peers: usize,
-    idle_timeout: Duration,
-    /// Byte budget for the default in-memory cache (ignored when a store is set).
-    cache_budget_bytes: u64,
-    /// TTL (ns) governing single-owner-chunk freshness in the default cache.
-    soc_cache_ttl_ns: u64,
+    local_store: LocalStoreConfig,
     /// Caller-supplied client cache. `None` builds the default in-memory cache.
     store: Option<Arc<dyn SwarmLocalStore>>,
-    /// SWAP settlement parameters. `None` keeps settlement pseudosettle-only.
+    /// SWAP settlement parameters.
     #[cfg(feature = "swap")]
-    swap: Option<LauncherSwapConfig>,
+    swap: SwapConfig,
+    /// RPC endpoint for on-chain cashout of received cheques. `None` keeps
+    /// settlement chain-free (cheque exchange only, no cashout).
+    #[cfg(feature = "swap-chequebook")]
+    rpc_url: Option<String>,
 }
 
 impl ClientLauncher {
@@ -207,24 +85,29 @@ impl ClientLauncher {
     pub fn new(identity: impl Into<Arc<Identity>>) -> Self {
         Self {
             identity: identity.into(),
-            bootnodes: Vec::new(),
-            kademlia: KademliaConfig::default(),
+            network: NetworkConfig::dial_only(),
             bandwidth: DefaultAccountingConfig::default(),
-            max_peers: DEFAULT_MAX_PEERS,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
-            cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
-            soc_cache_ttl_ns: DEFAULT_SOC_CACHE_TTL_NS,
+            local_store: LocalStoreConfig::default(),
             store: None,
             #[cfg(feature = "swap")]
-            swap: None,
+            swap: SwapConfig::default(),
+            #[cfg(feature = "swap-chequebook")]
+            rpc_url: None,
         }
     }
 
-    /// Set the byte budget for the default in-memory cache. Ignored when a store
-    /// is supplied through [`Self::with_store`].
+    /// Set the local-store configuration for the default in-memory cache.
+    /// Ignored when a store is supplied through [`Self::with_store`].
     #[must_use]
-    pub fn with_cache_budget(mut self, budget_bytes: u64) -> Self {
-        self.cache_budget_bytes = budget_bytes;
+    pub fn with_local_store(mut self, config: LocalStoreConfig) -> Self {
+        self.local_store = config;
+        self
+    }
+
+    /// Replace the whole dial-only network configuration.
+    #[must_use]
+    pub fn with_network(mut self, network: NetworkConfig<KademliaConfig>) -> Self {
+        self.network = network;
         self
     }
 
@@ -235,14 +118,15 @@ impl ClientLauncher {
     /// system resolver natively, DNS-over-HTTPS in the browser.
     #[must_use]
     pub fn with_bootnodes(mut self, bootnodes: impl IntoIterator<Item = Multiaddr>) -> Self {
-        self.bootnodes = bootnodes.into_iter().collect();
+        self.network
+            .override_bootnodes(bootnodes.into_iter().collect());
         self
     }
 
     /// Set the Kademlia routing configuration.
     #[must_use]
     pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
-        self.kademlia = config;
+        self.network = self.network.with_routing(config);
         self
     }
 
@@ -259,14 +143,14 @@ impl ClientLauncher {
     /// Set the transport-layer cap on established connections.
     #[must_use]
     pub fn with_max_peers(mut self, max: usize) -> Self {
-        self.max_peers = max;
+        self.network = self.network.with_max_peers(max);
         self
     }
 
     /// Set the connection idle timeout.
     #[must_use]
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.idle_timeout = timeout;
+        self.network = self.network.with_idle_timeout(timeout);
         self
     }
 
@@ -282,13 +166,23 @@ impl ClientLauncher {
 
     /// Enable SWAP cheque settlement on top of pseudosettle.
     ///
-    /// Without this the launched client settles by pseudosettle only. With the
-    /// `swap-chequebook` feature and an `rpc_url` in the config, received cheques
-    /// are also cashed on chain.
+    /// An unset `enable` in the passed config defaults on: calling this at all
+    /// means the caller wants SWAP. With the `swap-chequebook` feature and an
+    /// RPC URL set through [`Self::with_swap_rpc_url`], received cheques are also
+    /// cashed on chain.
     #[cfg(feature = "swap")]
     #[must_use]
-    pub fn with_swap(mut self, cfg: LauncherSwapConfig) -> Self {
-        self.swap = Some(cfg);
+    pub fn with_swap(mut self, mut cfg: SwapConfig) -> Self {
+        cfg.enable.get_or_insert(true);
+        self.swap = cfg;
+        self
+    }
+
+    /// Set the RPC endpoint used to cash received cheques on chain.
+    #[cfg(feature = "swap-chequebook")]
+    #[must_use]
+    pub fn with_swap_rpc_url(mut self, url: impl Into<String>) -> Self {
+        self.rpc_url = Some(url.into());
         self
     }
 
@@ -316,13 +210,10 @@ impl ClientLauncher {
     /// construction). Failures after spawn, including the run loop exiting
     /// with an error, are logged by the spawned task.
     pub async fn launch(self) -> Result<LaunchedClient> {
-        let config = LaunchNetworkConfig {
-            bootnodes: self.bootnodes,
-            peer: DefaultPeerConfig::default(),
-            routing: self.kademlia.clone(),
-            max_peers: self.max_peers,
-            idle_timeout: self.idle_timeout,
-        };
+        let config = self.network;
+        // The routing config is needed by the node builder after `config` moves
+        // into the build closure, so clone it out up front.
+        let kademlia = config.routing().clone();
 
         let spec = Arc::clone(HasSpec::spec(&self.identity));
 
@@ -332,8 +223,8 @@ impl ClientLauncher {
         // browser) replaces the default in-memory one.
         let store: Arc<dyn SwarmLocalStore> = self.store.unwrap_or_else(|| {
             Arc::new(ChunkStore::with_budget(
-                self.cache_budget_bytes as usize,
-                self.soc_cache_ttl_ns,
+                self.local_store.cache_budget_bytes() as usize,
+                self.local_store.soc_cache_ttl(),
             ))
         });
 
@@ -343,9 +234,12 @@ impl ClientLauncher {
         // settlement path.
         #[cfg(feature = "swap")]
         let chain_provider = {
-            let swap_enabled = self.swap.is_some();
+            let swap_enabled = self
+                .swap
+                .enable
+                .unwrap_or(SwarmNodeType::Client.swap_default());
             #[cfg(feature = "swap-chequebook")]
-            let rpc_url = self.swap.as_ref().and_then(|cfg| cfg.rpc_url.as_deref());
+            let rpc_url = self.rpc_url.as_deref();
             #[cfg(not(feature = "swap-chequebook"))]
             let rpc_url: Option<&str> = None;
             node_chain_provider(
@@ -362,25 +256,13 @@ impl ClientLauncher {
         // The launcher always builds a client, which paces against the scaled line.
         let bandwidth = self.bandwidth.for_client();
 
-        // Bound before `tail_params` so the borrowed config outlives the build call.
-        #[cfg(feature = "swap")]
-        let swap_config = SwapConfig {
-            // An embedded client defaults SWAP off; `with_swap` turns it on.
-            enable: self.swap.as_ref().map(|_| true),
-            chequebook: self.swap.as_ref().map(|cfg| cfg.chequebook),
-            beneficiary: self.swap.as_ref().and_then(|cfg| cfg.beneficiary),
-            // The browser cannot deploy a chequebook.
-            deploy: false,
-            bounce_limit: self.swap.as_ref().map_or(0, |cfg| cfg.bounce_limit),
-        };
-
         let tail_params = ClientTailParams {
             node_type: SwarmNodeType::Client,
             spec: &spec,
             identity: &self.identity,
             bandwidth: &bandwidth,
             #[cfg(feature = "swap")]
-            swap: &swap_config,
+            swap: &self.swap,
         };
 
         let executor = TaskExecutor::current();
@@ -389,7 +271,6 @@ impl ClientLauncher {
         // settlement event sinks; the launcher carries no provider store, so it
         // returns its overlay and peer id for the handles below.
         let identity = Arc::clone(&self.identity);
-        let kademlia = self.kademlia;
         let store_for_node = store.clone();
 
         let parts: ClientNodeParts<(SwarmAddress, PeerId)> = build_client_core_tail(
@@ -547,5 +428,32 @@ impl LaunchedClient {
     /// The node's libp2p peer id.
     pub fn local_peer_id(&self) -> PeerId {
         self.peer_id
+    }
+}
+
+#[cfg(all(test, feature = "swap"))]
+mod tests {
+    use super::*;
+
+    fn test_launcher() -> ClientLauncher {
+        let spec = vertex_swarm_spec::init_testnet();
+        let identity = Arc::new(Identity::random(spec, SwarmNodeType::Client));
+        ClientLauncher::new(identity)
+    }
+
+    #[test]
+    fn with_swap_defaults_enable_on() {
+        let launcher = test_launcher().with_swap(SwapConfig::default());
+        assert_eq!(launcher.swap.enable, Some(true));
+    }
+
+    #[test]
+    fn with_swap_honours_explicit_disable() {
+        let cfg = SwapConfig {
+            enable: Some(false),
+            ..Default::default()
+        };
+        let launcher = test_launcher().with_swap(cfg);
+        assert_eq!(launcher.swap.enable, Some(false));
     }
 }

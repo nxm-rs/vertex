@@ -34,7 +34,7 @@ pub use node::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
-pub use node::{LauncherSwapConfig, NodeChainError, SwapWiring, node_chain_provider};
+pub use node::{NodeChainError, SwapWiring, node_chain_provider};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 /// The shared chain provider handle, re-exported so client entry points and the

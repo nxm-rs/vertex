@@ -19,7 +19,8 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::{
     ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS, IndexedDbBackend, SystemClock,
 };
-use vertex_swarm_node::{ClientLauncher, LauncherSwapConfig, SwarmNodeType};
+use vertex_swarm_node::args::SwapConfig;
+use vertex_swarm_node::{ClientLauncher, SwarmNodeType};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
@@ -312,9 +313,12 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
     // SWAP cheque settlement is enabled when a chequebook address is supplied
     // through the page config; without one the client settles by pseudosettle
     // alone. Cheque exchange is chain-free unless an RPC URL is also supplied.
-    if let Some(swap) = swap_config_from_page() {
-        info!(chequebook = %swap.chequebook, "SWAP settlement enabled");
-        launcher = launcher.with_swap(swap);
+    if let Some((cfg, rpc)) = swap_config_from_page() {
+        info!(chequebook = ?cfg.chequebook, "SWAP settlement enabled");
+        launcher = launcher.with_swap(cfg);
+        if let Some(rpc) = rpc {
+            launcher = launcher.with_swap_rpc_url(rpc);
+        }
     }
 
     let launched = launcher
@@ -375,7 +379,7 @@ async fn open_indexeddb_store() -> Result<Arc<dyn SwarmLocalStore>, JsValue> {
 /// turns on on-chain cashout of received cheques. Returns `None` when no
 /// chequebook is supplied or the address does not parse, leaving the client on
 /// pseudosettle-only settlement.
-fn swap_config_from_page() -> Option<LauncherSwapConfig> {
+fn swap_config_from_page() -> Option<(SwapConfig, Option<String>)> {
     let search = web_sys::window()?.location().search().ok()?;
     let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
 
@@ -388,9 +392,12 @@ fn swap_config_from_page() -> Option<LauncherSwapConfig> {
         }
     };
 
-    let mut config = LauncherSwapConfig::new(chequebook);
-    config.rpc_url = params.get("rpc").filter(|url| !url.is_empty());
-    Some(config)
+    let rpc = params.get("rpc").filter(|url| !url.is_empty());
+    let config = SwapConfig {
+        chequebook: Some(chequebook),
+        ..Default::default()
+    };
+    Some((config, rpc))
 }
 
 /// Publish a running demo handle on `window.__swarmDemo` for the JS frontend.

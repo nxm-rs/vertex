@@ -44,8 +44,6 @@ pub use core::{
 #[cfg(feature = "swap")]
 pub use core::{NodeChainError, SwapWiring, node_chain_provider};
 pub use error::NodeBuildError;
-#[cfg(feature = "swap")]
-pub use launch::LauncherSwapConfig;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};

@@ -2,15 +2,22 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "cli")]
 use clap::Args;
+#[cfg(feature = "cli")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "cli")]
+use vertex_swarm_api::{ConfigAddressKind, ConfigError};
 use vertex_swarm_api::{
-    ConfigAddressKind, ConfigError, ConnectionProfile, Multiaddr, SwarmNetworkConfig,
-    SwarmPeerConfig, SwarmRoutingConfig,
+    ConnectionProfile, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
-use vertex_swarm_topology::{KademliaConfig, RoutingArgs};
+use vertex_swarm_topology::KademliaConfig;
+#[cfg(feature = "cli")]
+use vertex_swarm_topology::RoutingArgs;
 
-use super::peer::{PeerArgs, PeerConfig};
+#[cfg(feature = "cli")]
+use super::peer::PeerArgs;
+use super::peer::PeerConfig;
 
 /// Default P2P listen port.
 const DEFAULT_P2P_PORT: u16 = 1634;
@@ -34,21 +41,25 @@ const DEFAULT_MAX_PEERS: usize = 400;
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
 
 /// Default for nat_auto (enabled by default for peer discovery).
+#[cfg(feature = "cli")]
 fn default_nat_auto() -> bool {
     true
 }
 
 /// Default for autonat (AutoNAT v2 enabled by default for all node types).
+#[cfg(feature = "cli")]
 fn default_autonat() -> bool {
     true
 }
 
 /// Default for mdns (local LAN peer discovery enabled by default).
+#[cfg(feature = "cli")]
 fn default_mdns() -> bool {
     true
 }
 
 /// P2P network CLI arguments.
+#[cfg(feature = "cli")]
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Networking")]
 #[serde(default)]
@@ -172,6 +183,7 @@ pub struct NetworkArgs {
     pub routing: RoutingArgs,
 }
 
+#[cfg(feature = "cli")]
 impl Default for NetworkArgs {
     fn default() -> Self {
         Self {
@@ -195,6 +207,7 @@ impl Default for NetworkArgs {
     }
 }
 
+#[cfg(feature = "cli")]
 impl NetworkArgs {
     /// Create validated NetworkConfig from these CLI arguments.
     ///
@@ -265,6 +278,18 @@ impl<R> NetworkConfig<R> {
         self
     }
 
+    /// Set the transport-layer cap on established connections.
+    pub fn with_max_peers(mut self, max: usize) -> Self {
+        self.max_peers = max;
+        self
+    }
+
+    /// Set the connection idle timeout.
+    pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
+    }
+
     /// Get the routing configuration.
     pub fn routing(&self) -> &R {
         &self.routing
@@ -300,6 +325,31 @@ impl<R> NetworkConfig<R> {
     }
 }
 
+impl NetworkConfig<KademliaConfig> {
+    /// Dial-only shape for embedded clients: no listeners, no NAT traversal, no
+    /// LAN discovery.
+    pub fn dial_only() -> NetworkConfig<KademliaConfig> {
+        NetworkConfig {
+            listen_addrs: Vec::new(),
+            bootnodes: Vec::new(),
+            trusted_peers: Vec::new(),
+            nat_addrs: Vec::new(),
+            nat_auto: false,
+            autonat: false,
+            upnp: false,
+            mdns: false,
+            discovery_enabled: true,
+            trust_local_peers: true,
+            connection_profile: None,
+            max_peers: DEFAULT_MAX_PEERS,
+            idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
+            peer: PeerConfig::default(),
+            routing: KademliaConfig::default(),
+            agent_version: None,
+        }
+    }
+}
+
 impl Default for NetworkConfig<KademliaConfig> {
     #[allow(clippy::expect_used)]
     fn default() -> Self {
@@ -328,6 +378,7 @@ impl Default for NetworkConfig<KademliaConfig> {
     }
 }
 
+#[cfg(feature = "cli")]
 impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
     type Error = ConfigError;
 
@@ -481,7 +532,63 @@ impl<R: Default> SwarmRoutingConfig for NetworkConfig<R> {
     }
 }
 
+/// Field-equivalence checks for the dial-only constructor. Kept outside the
+/// cli-gated module so a default build still exercises the launcher shape.
 #[cfg(test)]
+mod dial_only_tests {
+    use super::*;
+    use vertex_swarm_api::PeerConfigValues;
+
+    #[test]
+    fn dial_only_reproduces_the_launcher_shape() {
+        let config = NetworkConfig::dial_only();
+
+        assert!(config.listen_addrs().is_empty());
+        assert!(config.trusted_peers().is_empty());
+        assert!(config.nat_addrs().is_empty());
+        assert!(config.bootnodes().is_empty());
+        assert!(config.discovery_enabled());
+        assert!(!config.nat_auto_enabled());
+        assert!(!config.autonat_enabled());
+        assert!(!config.upnp_enabled());
+        assert!(!config.mdns_enabled());
+        assert!(config.trust_local_peers());
+        assert_eq!(config.connection_profile(), None);
+        assert_eq!(config.agent_version(), None);
+        assert_eq!(config.max_peers(), DEFAULT_MAX_PEERS);
+        assert_eq!(
+            config.idle_timeout(),
+            Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
+        );
+
+        let peers = config.peers();
+        let default = PeerConfig::default();
+        assert_eq!(peers.ban_threshold(), default.ban_threshold());
+        assert_eq!(peers.warn_threshold(), default.warn_threshold());
+        assert_eq!(peers.max_per_bin(), default.max_per_bin());
+    }
+
+    #[test]
+    fn with_max_peers_sets_the_cap() {
+        assert_eq!(
+            NetworkConfig::dial_only().with_max_peers(16).max_peers(),
+            16
+        );
+    }
+
+    #[test]
+    fn with_idle_timeout_sets_the_timeout() {
+        let timeout = Duration::from_secs(17);
+        assert_eq!(
+            NetworkConfig::dial_only()
+                .with_idle_timeout(timeout)
+                .idle_timeout(),
+            timeout
+        );
+    }
+}
+
+#[cfg(all(test, feature = "cli"))]
 mod tests {
     use super::*;
     use vertex_swarm_api::{DEFAULT_PEER_MAX_PER_BIN, PeerConfigValues};
