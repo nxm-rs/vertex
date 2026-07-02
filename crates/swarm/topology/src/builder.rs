@@ -243,6 +243,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             dial_rate: RateLimiter::new(dial_quota),
             dial_rate_timer: None,
             pending_bootnode_resolution: None,
+            isolation_probe: None,
             evaluator_handle,
             dial_tracker: DialTracker::new(DialTrackerConfig {
                 max_pending: 0, // not used as a queue, only for direct in-flight tracking
