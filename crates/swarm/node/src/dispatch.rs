@@ -1,13 +1,19 @@
-//! Shared dispatch engine for origin chunk retrieval.
+//! Shared dispatch engine for origin chunk retrieval and pushsync.
 //!
-//! Both the native and browser chunk providers build a [`RetrievalEngine`] and
-//! delegate their `retrieve_chunk` implementation to it, so the bin-route
-//! primary, staggered refilling race, in-flight cap, adaptive stagger, headroom
-//! spill, and over-fetch metrics live in one place. Each capability is a small
-//! trait the engine is generic over: the native client supplies
-//! [`PeerSelector`], [`PeerInflightLimiter`], and [`RetrievalLatency`]; the
-//! browser supplies the zero-sized null objects [`ProximityOnly`] and
-//! [`NoLatencyHint`] but the same real [`PeerInflightLimiter`].
+//! Both the native and browser chunk providers build a [`DispatchEngine`] and
+//! delegate their `retrieve_chunk` and push implementations to it, so the
+//! bin-route primary, staggered refilling race, sequential push walk, in-flight
+//! cap, adaptive stagger, headroom spill, and over-fetch metrics live in one
+//! place. Each capability is a small trait the engine is generic over: the
+//! native client supplies [`PeerSelector`], [`PeerInflightLimiter`], and
+//! [`RetrievalLatency`]; the browser supplies the zero-sized null objects
+//! [`ProximityOnly`] and [`NoLatencyHint`] but the same real
+//! [`PeerInflightLimiter`].
+//!
+//! Every phase is built through the [`RaceBounds`] constructors, which carry
+//! the discipline-to-commit-point rule: racing dispatch requires
+//! commit-at-dispatch, only sequential dispatch may pair with an on-verify
+//! commit.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,10 +22,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::OwnedSemaphorePermit;
+use tracing::warn;
 use vertex_swarm_api::{
-    Bin, ChunkAddress, ChunkRetrievalResult, OverlayAddress, SwarmError, SwarmResult,
-    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
+    Bin, ChunkAddress, ChunkRetrievalResult, NeighborhoodDepth, OverlayAddress, PeerReporter,
+    ReportSource, StampedChunk, SwarmError, SwarmResult, SwarmScoringEvent, SwarmTopologyPeers,
+    SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
 };
+use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_tasks::time::Duration;
 
 use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
@@ -122,12 +131,15 @@ const PRIMARY_ROUTE_BUDGET: usize = 4;
 /// pipeline slot.
 const PRIMARY_ROUTE_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Stagger for the primary route, set beyond [`PRIMARY_ROUTE_DEADLINE`] so it
-/// never fires: the primary is strict single-flight.
-///
-/// Exactly one metered attempt is in flight at a time on the primary path. The
-/// staggered fan-out is reserved for the fallback.
-const PRIMARY_ROUTE_SINGLE_FLIGHT: Duration = Duration::from_secs(3600);
+/// Stagger that never fires within any deadline: sequential phases are strict
+/// single-flight, so the staggered fan-out is reserved for racing phases.
+const NEVER_STAGGER: Duration = Duration::from_secs(3600);
+
+/// Number of closest peers to try when pushing a chunk before giving up.
+const PUSH_CANDIDATE_COUNT: usize = 5;
+
+/// Report source for shallow receipts caught on the origin upload path.
+const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 
 /// Topology surface the retrieval engine and native push path read.
 ///
@@ -272,14 +284,46 @@ impl LatencyHint for NoLatencyHint {
     }
 }
 
-/// Tuning for one staggered race phase: the lifetime attempt `budget`, the
+/// Tuning for one dispatch phase: the lifetime attempt `budget`, the
 /// concurrent-attempt width `max_in_flight`, the wall-clock `deadline`, and the
 /// per-attempt `stagger`.
+///
+/// The two constructors carry the discipline-to-commit-point rule: racing
+/// dispatch requires commit-at-dispatch, sequential dispatch permits
+/// commit-on-verify. Build a phase through them, never by literal.
 struct RaceBounds {
     budget: usize,
     max_in_flight: usize,
     deadline: Duration,
     stagger: Duration,
+}
+
+impl RaceBounds {
+    /// A staggered race of concurrent legs. Every raced leg must book its
+    /// debit at dispatch: a losing leg is cancelled by drop and a dropped
+    /// reservation releases, so a raced leg committing on verify could
+    /// un-book debt for bytes the wire may still deliver.
+    fn racing(budget: usize, max_in_flight: usize, deadline: Duration, stagger: Duration) -> Self {
+        Self {
+            budget,
+            max_in_flight,
+            deadline,
+            stagger,
+        }
+    }
+
+    /// One leg at a time: the stagger never fires and no leg is cancelled
+    /// mid-flight, so only a sequential phase may ever pair with an on-verify
+    /// commit (the relay profile consumes that freedom; every origin leg books
+    /// at dispatch regardless).
+    fn sequential(budget: usize, deadline: Duration) -> Self {
+        Self {
+            budget,
+            max_in_flight: 1,
+            deadline,
+            stagger: NEVER_STAGGER,
+        }
+    }
 }
 
 /// Shared dispatch engine for origin chunk retrieval.
@@ -291,7 +335,7 @@ struct RaceBounds {
 /// [`SwarmError::RetrievalExhausted`]: forwarding retrieval has no authoritative
 /// negative, so the engine never adjudicates absence.
 #[derive(Clone)]
-pub struct RetrievalEngine<O: CandidateOrdering, G: InflightLimit, L: LatencyHint> {
+pub struct DispatchEngine<O: CandidateOrdering, G: InflightLimit, L: LatencyHint> {
     client_handle: ClientHandle,
     topology: Arc<dyn RetrievalTopology>,
     /// The routing table's highest bin, the ceiling for the forwarding-bin route.
@@ -308,7 +352,7 @@ pub struct RetrievalEngine<O: CandidateOrdering, G: InflightLimit, L: LatencyHin
     settlement: Arc<dyn SettlementTrigger>,
 }
 
-impl<O, G, L> RetrievalEngine<O, G, L>
+impl<O, G, L> DispatchEngine<O, G, L>
 where
     O: CandidateOrdering,
     G: InflightLimit,
@@ -335,27 +379,112 @@ where
         }
     }
 
-    /// The topology, for the native push path's closest-storer dispatch;
-    /// retrieval reaches topology through the engine's own dispatch.
+    /// The topology, for the provider's local-cache serve labelling; dispatch
+    /// reaches topology through the engine's own methods.
     pub(crate) fn topology(&self) -> &Arc<dyn RetrievalTopology> {
         &self.topology
     }
 
-    /// The client handle, for dispatching a push on the native push path.
-    pub(crate) fn client_handle(&self) -> &ClientHandle {
-        &self.client_handle
-    }
-
-    /// Order `candidates` through the accounting band, for the native push path.
+    /// Push `chunk` to the closest storers, returning the first custody
+    /// receipt that verifies.
     ///
-    /// Drops refused peers and ranks by score; with [`ProximityOnly`] the order
-    /// is unchanged.
-    pub(crate) fn order(
-        &self,
-        candidates: Vec<OverlayAddress>,
-        chunk: &ChunkAddress,
-    ) -> Vec<OverlayAddress> {
-        self.ordering.order(candidates, chunk)
+    /// The push profile is sequential origin dispatch: the closest
+    /// [`PUSH_CANDIDATE_COUNT`] peers ranked through the accounting band, one
+    /// leg at a time (the client handle correlates a push response to its
+    /// request by chunk address alone, so legs are never raced), every leg
+    /// booking at dispatch through the origin credit gate.
+    pub async fn push(&self, chunk: StampedChunk) -> SwarmResult<Receipt> {
+        let address = *chunk.address();
+        let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
+        // Rank by band and score, hard-skipping a refused peer; an all-gated set
+        // yields an empty result and the generic no-storer outcome below.
+        let closest = self.ordering.order(closest, &address);
+        let attempts = closest.len();
+
+        // The required custody depth is derived from our locally observed
+        // neighbourhood depth (the trusted authority) and trust-but-verified
+        // against the receipt's own claimed `storage_radius`. The check is gated
+        // on that depth being credible (the neighbourhood has saturated); a
+        // non-credible view cannot anchor the floor and yields an unverifiable
+        // verdict. The receipt's signer was already recovered at the decode
+        // boundary; a malformed receipt never reaches here (it surfaces as a push
+        // error below).
+        let local_depth = self.topology.depth();
+        let neighbourhood_credible = self.topology.neighbourhood_credible();
+        let reporter = self.topology.reporter();
+
+        // Try each closest peer in order and return the first receipt that
+        // verifies. A shallow receipt is rejected, the responding peer scored
+        // adversely, and the loop continues to the next candidate: this is the
+        // retry-via-different-route dynamic the depth check exists to engage (a
+        // fabricated shallow receipt no longer convinces the uploader the push
+        // succeeded). An unverifiable receipt (non-credible local view) is also
+        // not trusted, but the responder is NOT penalised: it may be honest, we
+        // just cannot judge custody depth. If no candidate verifies and at least
+        // one was unverifiable, the push is reported as unconfirmed custody
+        // rather than a hard failure. The seed error covers the no-candidates
+        // case; each attempt replaces it, so the value after the loop is the last
+        // failure.
+        let mut outcome = Err(SwarmError::NoStorer {
+            chunk_address: address,
+        });
+        for peer in closest {
+            // `originated = true`: our own push, so the client service debits
+            // the storer on receipt.
+            match self
+                .client_handle
+                .push_chunk(peer, chunk.clone(), true)
+                .await
+            {
+                Ok(receipt) => {
+                    match accept_origin_receipt(
+                        &receipt,
+                        peer,
+                        local_depth,
+                        neighbourhood_credible,
+                        reporter.as_ref(),
+                    ) {
+                        DepthVerdict::Verified => return Ok(receipt),
+                        DepthVerdict::Shallow(err) => {
+                            outcome = Err(SwarmError::InvalidSignature {
+                                chunk_address: address,
+                                reason: err.to_string(),
+                            });
+                        }
+                        DepthVerdict::Unverifiable => {
+                            // Surface unconfirmed custody distinctly from a hard
+                            // invalid-signature failure. A later shallow verdict
+                            // (a proven finding) takes precedence over this; an
+                            // earlier one is not downgraded.
+                            if !matches!(outcome, Err(SwarmError::InvalidSignature { .. })) {
+                                outcome = Err(SwarmError::UnconfirmedCustody {
+                                    chunk_address: address,
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // A transport-level failure is the weakest signal: it does
+                    // not overwrite a depth verdict (shallow misbehaviour or
+                    // unconfirmed custody) already recorded for an earlier
+                    // candidate.
+                    if !matches!(
+                        outcome,
+                        Err(SwarmError::InvalidSignature { .. })
+                            | Err(SwarmError::UnconfirmedCustody { .. })
+                    ) {
+                        outcome = Err(SwarmError::AllPeersFailed {
+                            address,
+                            attempts,
+                            source: Box::new(e),
+                        });
+                    }
+                }
+            }
+        }
+
+        outcome
     }
 
     /// Order the close set, spilling to the closest admissible peers of a wider
@@ -465,14 +594,9 @@ where
                 .race_attempts(
                     bin_candidates,
                     chunk_address,
-                    RaceBounds {
-                        budget: PRIMARY_ROUTE_BUDGET,
-                        // Single-flight: at most one metered attempt in flight,
-                        // advancing the bin spill only on an explicit failure.
-                        max_in_flight: 1,
-                        deadline: PRIMARY_ROUTE_DEADLINE,
-                        stagger: PRIMARY_ROUTE_SINGLE_FLIGHT,
-                    },
+                    // Single-flight: at most one metered attempt in flight,
+                    // advancing the bin spill only on an explicit failure.
+                    RaceBounds::sequential(PRIMARY_ROUTE_BUDGET, PRIMARY_ROUTE_DEADLINE),
                     enforce_cap,
                     &attempts,
                 )
@@ -599,18 +723,18 @@ where
             break race_close_then_spill(
                 close_candidates,
                 spill_candidates,
-                RaceBounds {
-                    budget: RETRIEVE_ATTEMPT_BUDGET,
-                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
-                    deadline: RETRIEVE_DEADLINE,
-                    stagger: close_stagger,
-                },
-                RaceBounds {
-                    budget: RETRIEVE_SPILL_BUDGET,
-                    max_in_flight: RETRIEVE_MAX_IN_FLIGHT,
-                    deadline: RETRIEVE_SPILL_DEADLINE,
-                    stagger: spill_stagger,
-                },
+                RaceBounds::racing(
+                    RETRIEVE_ATTEMPT_BUDGET,
+                    RETRIEVE_MAX_IN_FLIGHT,
+                    RETRIEVE_DEADLINE,
+                    close_stagger,
+                ),
+                RaceBounds::racing(
+                    RETRIEVE_SPILL_BUDGET,
+                    RETRIEVE_MAX_IN_FLIGHT,
+                    RETRIEVE_SPILL_DEADLINE,
+                    spill_stagger,
+                ),
                 dispatch,
             )
             .await;
@@ -765,8 +889,219 @@ fn record_overfetch(attempts: usize, path: &'static str) {
     }
 }
 
+/// Decide whether an origin uploader accepts a custody receipt from `peer`.
+///
+/// The receipt is a [`Receipt`]: its storer was recovered and verified at the
+/// decode boundary (a malformed receipt never reaches here). This checks the
+/// custody depth against the locally observed neighbourhood depth,
+/// trust-but-verified against the receipt's own declared radius, gated on that
+/// depth being credible (`neighbourhood_credible`).
+///
+/// The verdict drives the caller:
+/// - [`DepthVerdict::Verified`]: the receipt is trusted; the push succeeded.
+/// - [`DepthVerdict::Shallow`]: the storer is provably too shallow. The
+///   responding peer is scored adversely for invalid data through the supplied
+///   reporter, and the caller retries via a different route instead of
+///   believing a fabricated shallow receipt.
+/// - [`DepthVerdict::Unverifiable`]: the local view is not credible enough to
+///   judge custody depth. The peer is NOT penalised (it may be honest); the
+///   caller treats the push as unconfirmed.
+fn accept_origin_receipt(
+    receipt: &Receipt,
+    peer: SwarmAddress,
+    local_depth: NeighborhoodDepth,
+    neighbourhood_credible: bool,
+    reporter: &dyn PeerReporter,
+) -> DepthVerdict {
+    let verdict = receipt.verify_depth(local_depth, neighbourhood_credible);
+    if let DepthVerdict::Shallow(err) = &verdict {
+        warn!(
+            %peer,
+            address = %receipt.address,
+            error = <&'static str>::from(err),
+            "rejected shallow custody receipt; retrying another route"
+        );
+        reporter.report_peer(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
+    }
+    verdict
+}
+
 #[cfg(test)]
 mod tests {
+    mod push_verdict {
+        use std::sync::Mutex;
+
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use nectar_primitives::{NetworkId, Nonce, compute_overlay};
+        use vertex_swarm_api::StorageRadius;
+        use vertex_swarm_net_pushsync::WireReceipt;
+
+        use super::super::*;
+
+        const NET: NetworkId = NetworkId::MAINNET;
+
+        #[derive(Default)]
+        struct RecordingReporter {
+            reports: Mutex<Vec<(SwarmAddress, SwarmScoringEvent, ReportSource)>>,
+        }
+
+        impl PeerReporter for RecordingReporter {
+            fn report_peer(
+                &self,
+                overlay: &SwarmAddress,
+                event: SwarmScoringEvent,
+                source: ReportSource,
+            ) {
+                self.reports.lock().unwrap().push((*overlay, event, source));
+            }
+        }
+
+        impl RecordingReporter {
+            /// Return the single recorded report, asserting exactly one exists.
+            fn single(&self) -> (SwarmAddress, SwarmScoringEvent, ReportSource) {
+                let reports = self.reports.lock().unwrap();
+                assert_eq!(reports.len(), 1, "expected exactly one report");
+                *reports.first().expect("one report")
+            }
+
+            fn count(&self) -> usize {
+                self.reports.lock().unwrap().len()
+            }
+        }
+
+        fn address(first_byte: u8) -> ChunkAddress {
+            let mut bytes = [0u8; 32];
+            bytes[0] = first_byte;
+            ChunkAddress::new(bytes)
+        }
+
+        /// A storer-verified receipt as the decode boundary produces it, with the
+        /// storer ground to sit exactly `proximity` bits deep relative to
+        /// `address`.
+        ///
+        /// The grind targets an exact proximity, not a lower bound: the depth
+        /// verdict turns on the observed proximity, so a lower bound would leave
+        /// it dependent on the random overlay and flake (a shallow case
+        /// occasionally grinding deep enough to verify). An exact target makes
+        /// every verdict deterministic.
+        fn signed_receipt(
+            signer: &PrivateKeySigner,
+            address: &ChunkAddress,
+            proximity: u8,
+            storage_radius: StorageRadius,
+        ) -> Receipt {
+            let eth = signer.address();
+            // The signature is over the 32-byte address only (the wire format)
+            // and is independent of the nonce, so sign once and grind for overlay
+            // depth.
+            let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
+            let mut counter = 0u64;
+            loop {
+                let mut nonce_bytes = [0u8; 32];
+                nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+                let nonce = Nonce::from(nonce_bytes);
+                let overlay = compute_overlay(&eth, NET, &nonce);
+                if address.proximity(&overlay).get() == proximity {
+                    let wire = WireReceipt::new(*address, signature, nonce, storage_radius);
+                    return Receipt::reconstruct(wire, NET).expect("reconstructs");
+                }
+                counter += 1;
+            }
+        }
+
+        fn depth(n: u8) -> NeighborhoodDepth {
+            NeighborhoodDepth::new(Bin::new(n).unwrap())
+        }
+
+        fn radius(n: u8) -> StorageRadius {
+            StorageRadius::new(Bin::new(n).unwrap())
+        }
+
+        #[test]
+        fn origin_accepts_a_deep_receipt_without_reporting() {
+            let signer = PrivateKeySigner::random();
+            let addr = address(0xff);
+            let receipt = signed_receipt(&signer, &addr, 8, radius(8));
+            let reporter = RecordingReporter::default();
+            let peer = SwarmAddress::from([0x11; 32]);
+
+            assert_eq!(
+                accept_origin_receipt(&receipt, peer, depth(8), true, &reporter),
+                DepthVerdict::Verified,
+                "deep receipt accepted"
+            );
+            assert!(reporter.reports.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn origin_rejects_a_shallow_receipt_and_reports_the_peer() {
+            let signer = PrivateKeySigner::random();
+            let addr = address(0xff);
+            // Shallow signer; against a credible local view the floor (depth 12)
+            // rejects it regardless of the claimed radius.
+            let receipt = signed_receipt(&signer, &addr, 0, radius(8));
+            let reporter = RecordingReporter::default();
+            let peer = SwarmAddress::from([0x22; 32]);
+
+            let DepthVerdict::Shallow(_) =
+                accept_origin_receipt(&receipt, peer, depth(12), true, &reporter)
+            else {
+                panic!("shallow receipt rejected");
+            };
+
+            let (reported_peer, event, source) = reporter.single();
+            assert_eq!(reported_peer, peer, "the responding peer is scored");
+            assert_eq!(event, SwarmScoringEvent::InvalidData);
+            assert_eq!(source, ReportSource::Protocol("pushsync"));
+        }
+
+        #[test]
+        fn origin_rejects_a_shallow_receipt_claiming_radius_zero() {
+            // Regression: against a credible local view an attacker setting
+            // storage_radius == 0 must not bypass the local floor at the origin
+            // uploader.
+            let signer = PrivateKeySigner::random();
+            let addr = address(0xff);
+            let receipt = signed_receipt(&signer, &addr, 0, radius(0));
+            let reporter = RecordingReporter::default();
+            let peer = SwarmAddress::from([0x55; 32]);
+
+            assert!(
+                matches!(
+                    accept_origin_receipt(&receipt, peer, depth(12), true, &reporter),
+                    DepthVerdict::Shallow(_)
+                ),
+                "radius 0 does not bypass the local floor"
+            );
+            assert_eq!(reporter.count(), 1);
+        }
+
+        #[test]
+        fn origin_treats_an_unverifiable_receipt_as_unconfirmed_without_reporting() {
+            // Regression for a non-credible local view (a fresh or sparse node,
+            // local_depth == 0): a shallow receipt declaring radius 0 must NOT be
+            // accepted, and the responder must NOT be penalised: the verdict is
+            // unverifiable, not a finding of misbehaviour.
+            let signer = PrivateKeySigner::random();
+            let addr = address(0xff);
+            let receipt = signed_receipt(&signer, &addr, 0, radius(0));
+            let reporter = RecordingReporter::default();
+            let peer = SwarmAddress::from([0x66; 32]);
+
+            assert_eq!(
+                accept_origin_receipt(&receipt, peer, depth(0), false, &reporter),
+                DepthVerdict::Unverifiable,
+                "non-credible view yields an unverifiable verdict"
+            );
+            assert_eq!(
+                reporter.count(),
+                0,
+                "an unverifiable receipt does not penalise the peer"
+            );
+        }
+    }
+
     mod bin_route {
         use std::collections::HashMap;
 
@@ -1099,7 +1434,7 @@ mod tests {
         use vertex_swarm_test_utils::MockTopology;
 
         use super::super::{
-            CandidateOrdering, NoLatencyHint, RETRIEVE_SETTLE_DRIVES, RetrievalEngine,
+            CandidateOrdering, DispatchEngine, NoLatencyHint, RETRIEVE_SETTLE_DRIVES,
             RetrievalTopology,
         };
         use crate::ClientHandle;
@@ -1151,7 +1486,7 @@ mod tests {
                 Arc::new(MockTopology::new(4, 4, 0).with_closest(peers.clone()));
             let settle = RecordingSettle::default();
             let (tx, _rx) = tokio::sync::mpsc::channel(16);
-            let engine = RetrievalEngine::new(
+            let engine = DispatchEngine::new(
                 ClientHandle::new(tx),
                 topology,
                 Bin::MAX,

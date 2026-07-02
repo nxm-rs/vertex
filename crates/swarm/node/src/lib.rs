@@ -16,10 +16,10 @@ pub use config::ProtocolConfig;
 mod bootnodes;
 mod chunks;
 mod client_service;
+mod dispatch;
 mod inflight;
 mod node;
 mod protocol;
-mod retrieval_engine;
 mod retrieval_latency;
 mod selection;
 mod staggered_race;
@@ -61,9 +61,9 @@ pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates, race_w
 
 pub use bootnodes::BootnodeProvider;
 pub use chunks::NetworkChunkProvider;
-pub use node::stats::StatsConfig;
-pub use node::task::spawn_stats_task;
-pub use retrieval_engine::{
-    CandidateOrdering, InflightLimit, LatencyHint, NoLatencyHint, ProximityOnly, RetrievalEngine,
+pub use dispatch::{
+    CandidateOrdering, DispatchEngine, InflightLimit, LatencyHint, NoLatencyHint, ProximityOnly,
     RetrievalTopology,
 };
+pub use node::stats::StatsConfig;
+pub use node::task::spawn_stats_task;
