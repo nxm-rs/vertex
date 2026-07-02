@@ -2,11 +2,13 @@
   <img src=".github/banner.svg" alt="Nexum · vertex — Ethereum Swarm node in Rust" width="100%" />
 </p>
 
-A new **Ethereum Swarm** node implementation in Rust — modular, high-performance, Bee-compatible. Vertex aims to be the fastest Swarm client while being easy to run on consumer hardware, and to contribute meaningful client diversity to the network.
+A new **Ethereum Swarm** node implementation in Rust - modular, high-performance, wire-compatible with the live network. Vertex aims to be the fastest Swarm client while being easy to run on consumer hardware, and to contribute meaningful client diversity to the network.
 
 Nexum builds on Swarm for content-addressed storage of firewall rulesets, snapshots, and shared state. Vertex is how we run our own node infrastructure for that.
 
 > **Pre-release** and under active development. Testnets and lab environments only.
+
+**Website: [vtx.rs](https://vtx.rs)** - the [devlog](https://vtx.rs/devlog/) tracks what actually shipped, and the [milestones](https://github.com/nxm-rs/vertex/milestones) are the roadmap's source of truth. Pre-release means stars steer: if Vertex should exist, say so with a star.
 
 Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-rs)**.
 
