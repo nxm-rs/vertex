@@ -167,7 +167,7 @@ where
 /// The staggered any-candidate race behind [`race_candidates`] and
 /// [`race_with_refill`]: one `FuturesUnordered` driver with the attempt `budget`,
 /// the in-flight `max_in_flight` width cap, and an optional wall-clock `deadline`
-/// parameterised. Keeping the drop-on-resolve and refill-on-failure invariants in
+/// parameterized. Keeping the drop-on-resolve and refill-on-failure invariants in
 /// one loop is the point; the two public entry points fix these parameters. An
 /// unbounded budget, unbounded width, and absent deadline reproduce
 /// [`race_candidates`]; a `Some` deadline surfaces [`RaceFailure::TimedOut`] when
@@ -240,11 +240,14 @@ where
                 // Grow the in-flight set only up to the width: a stagger adds an
                 // attempt, a withholding attempt never does. Failure-refill above
                 // still replaces a freed slot, so reach is preserved without
-                // widening.
-                if in_flight.len() < max_in_flight {
-                    dispatch_next(&mut in_flight, &mut dispatched);
+                // widening. A failed dispatch is permanent (the budget and the
+                // source are both monotone), so let the tick lapse rather than
+                // re-arm a wakeup that can never dispatch again.
+                if in_flight.len() >= max_in_flight
+                    || dispatch_next(&mut in_flight, &mut dispatched)
+                {
+                    stagger_tick = Delay::new(stagger).fuse();
                 }
-                stagger_tick = Delay::new(stagger).fuse();
             },
             _ = deadline_tick => {
                 // Out of wall-clock time. Surface the last real failure if one
