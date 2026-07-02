@@ -98,6 +98,12 @@ pub enum ChunkTransferError {
     /// candidate should be tried.
     #[error("Admission refused at the disconnect line")]
     Refused,
+
+    /// The local behaviour command queue was at capacity, so the request was
+    /// refused before any bytes left. Provably never dispatched, so the origin
+    /// debit refunds; retryable once pressure drops or against another peer.
+    #[error("Local command queue at capacity")]
+    Overloaded,
 }
 
 impl ChunkTransferError {
@@ -113,7 +119,8 @@ impl ChunkTransferError {
             | Self::Remote
             | Self::Protocol(_)
             | Self::NotFound(_)
-            | Self::Refused => true,
+            | Self::Refused
+            | Self::Overloaded => true,
             Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
         }
     }
@@ -127,7 +134,7 @@ impl ChunkTransferError {
     /// so the debit stays committed to keep our debt-view at or above the server's.
     pub fn is_confirmed_absent(&self) -> bool {
         match self {
-            Self::NotFound(_) | Self::NotConnected => true,
+            Self::NotFound(_) | Self::NotConnected | Self::Overloaded => true,
             Self::ChannelClosed
             | Self::Cancelled
             | Self::TimedOut
