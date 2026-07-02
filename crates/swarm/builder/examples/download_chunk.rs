@@ -1,9 +1,9 @@
 //! Build a Swarm client, wait until it can route, and download a chunk.
 //!
 //! The flow mirrors what an FFI or gRPC embedder does: launch a client through
-//! the node-builder shell (`launch_without_grpc`), which spawns its event loop,
-//! then dial bootnodes, await a deterministic readiness gate, and retrieve a
-//! chunk by address.
+//! the node-builder shell (`launch`), which spawns its event loop, then dial
+//! bootnodes, await a deterministic readiness gate, and retrieve a chunk by
+//! address.
 //!
 //! Readiness is `TopologyHandle::wait_until_ready`, the composite warm gate:
 //! for a client it resolves the moment a storer is connected, the state from
@@ -47,12 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Launch through the node-builder shell; the node task is spawned internally.
     let handle = NodeBuilder::new()
         .with_launch_context(
-            (),
             executor,
             DataDirs::ephemeral(std::env::temp_dir().join("vertex-example-download")),
         )
         .with_protocol(config)
-        .launch_without_grpc()
+        .launch()
         .await?;
     let topology = handle.components().topology();
 

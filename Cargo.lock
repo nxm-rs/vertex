@@ -8636,7 +8636,6 @@ dependencies = [
  "tonic-build",
  "tonic-reflection",
  "tracing",
- "vertex-node-api",
  "vertex-rpc-core",
 ]
 

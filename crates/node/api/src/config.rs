@@ -4,18 +4,6 @@
 //! protocols like Swarm. Protocol configuration is handled via the [`NodeProtocolConfig`]
 //! trait which protocols implement to provide their specific configuration.
 
-/// Configuration for RPC server (gRPC, REST, etc.).
-pub trait NodeRpcConfig {
-    /// Whether the gRPC server is enabled.
-    fn grpc_enabled(&self) -> bool;
-
-    /// gRPC server listen address.
-    fn grpc_addr(&self) -> &str;
-
-    /// gRPC server listen port.
-    fn grpc_port(&self) -> u16;
-}
-
 /// Trait for protocol-specific configuration.
 ///
 /// Protocols implement this trait to define their configuration structure.

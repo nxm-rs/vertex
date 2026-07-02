@@ -81,15 +81,15 @@ impl VertexClient {
             SwapConfig::default(),
         );
 
-        // Launch through the node-builder shell without a gRPC server: the node
-        // task is spawned internally on `executor`, and the bare client
-        // components come back in the handle.
+        // Launch through the node-builder shell: the node task is spawned
+        // internally on `executor`, and the bare client components come back in
+        // the handle. The gRPC serve add-on is never attached here.
         let handle = runtime
             .block_on(
                 NodeBuilder::new()
-                    .with_launch_context((), executor, client_data_dirs())
+                    .with_launch_context(executor, client_data_dirs())
                     .with_protocol(node_config)
-                    .launch_without_grpc(),
+                    .launch(),
             )
             .map_err(|e| FfiError::Build {
                 reason: e.to_string(),

@@ -1,30 +1,27 @@
 //! Type-state node builder for Vertex.
 
-use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
-use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol, NodeRpcConfig};
+use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol};
 use vertex_node_core::args::DatabaseConfig;
 use vertex_node_core::dirs::DataDirs;
-use vertex_rpc_server::{GrpcTransport, ServeWith, Transport, TransportServer};
 use vertex_tasks::TaskExecutor;
 
-use crate::{InfrastructureError, LaunchError, NodeHandle};
+use crate::{LaunchError, NodeHandle};
 
 #[cfg(feature = "metrics")]
 use crate::containers::WithMetrics;
 
-/// Executor, directories, database, API config, and the optional metrics
-/// attachment needed to launch a node.
+/// Executor, directories, database, and the optional metrics attachment needed
+/// to launch a node.
 ///
 /// One stage type carries every launch input: the binary attaches its metrics
 /// recorder here so it installs before any subsystem records, then flows the
 /// same context into `with_protocol`.
 #[derive(Clone)]
-pub struct LaunchContext<A = ()> {
+pub struct LaunchContext {
     pub executor: TaskExecutor,
     pub dirs: DataDirs,
-    pub api: A,
     pub database: DatabaseConfig,
     /// Metrics recorder and server config, threaded from `with_metrics` to
     /// `start_metrics_server`.
@@ -32,13 +29,12 @@ pub struct LaunchContext<A = ()> {
     metrics: Option<WithMetrics>,
 }
 
-impl<A> LaunchContext<A> {
+impl LaunchContext {
     /// Defaults to an in-memory database configuration.
-    pub fn new(executor: TaskExecutor, dirs: DataDirs, api: A) -> Self {
+    pub fn new(executor: TaskExecutor, dirs: DataDirs) -> Self {
         Self {
             executor,
             dirs,
-            api,
             database: DatabaseConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: None,
@@ -57,7 +53,7 @@ impl<A> LaunchContext<A> {
     }
 }
 
-impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
+impl InfrastructureContext for LaunchContext {
     fn executor(&self) -> &TaskExecutor {
         &self.executor
     }
@@ -71,20 +67,6 @@ impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
     }
 }
 
-impl<A: NodeRpcConfig> LaunchContext<A> {
-    /// gRPC socket address; falls back to localhost if the configured address is unparseable.
-    pub fn grpc_addr(&self) -> SocketAddr {
-        let ip: IpAddr = self.api.grpc_addr().parse().unwrap_or_else(|_| {
-            tracing::warn!(
-                addr = %self.api.grpc_addr(),
-                "Invalid gRPC address, falling back to localhost"
-            );
-            [127, 0, 0, 1].into()
-        });
-        SocketAddr::new(ip, self.api.grpc_port())
-    }
-}
-
 /// Node builder - first stage for adding launch context.
 pub struct NodeBuilder;
 
@@ -95,14 +77,9 @@ impl NodeBuilder {
     }
 
     #[must_use]
-    pub fn with_launch_context<A>(
-        self,
-        api: A,
-        executor: TaskExecutor,
-        dirs: DataDirs,
-    ) -> WithLaunchContext<A> {
+    pub fn with_launch_context(self, executor: TaskExecutor, dirs: DataDirs) -> WithLaunchContext {
         WithLaunchContext {
-            ctx: LaunchContext::new(executor, dirs, api),
+            ctx: LaunchContext::new(executor, dirs),
         }
     }
 }
@@ -114,12 +91,12 @@ impl Default for NodeBuilder {
 }
 
 /// Builder with launch context attached.
-pub struct WithLaunchContext<A> {
-    ctx: LaunchContext<A>,
+pub struct WithLaunchContext {
+    ctx: LaunchContext,
 }
 
-impl<A> WithLaunchContext<A> {
-    pub fn context(&self) -> &LaunchContext<A> {
+impl WithLaunchContext {
+    pub fn context(&self) -> &LaunchContext {
         &self.ctx
     }
 
@@ -139,7 +116,7 @@ impl<A> WithLaunchContext<A> {
 
     /// Protocol type is inferred from the config.
     #[must_use]
-    pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
+    pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol> {
         tracing::info!("Protocol: {}", config.protocol_name());
         WithProtocol {
             ctx: self.ctx,
@@ -149,7 +126,7 @@ impl<A> WithLaunchContext<A> {
 }
 
 #[cfg(feature = "metrics")]
-impl<A> WithLaunchContext<A> {
+impl WithLaunchContext {
     /// Install the process-global Prometheus recorder for the configured metrics
     /// server.
     ///
@@ -201,90 +178,27 @@ impl<A> WithLaunchContext<A> {
 }
 
 /// Builder with protocol configuration, ready to launch.
-pub struct WithProtocol<P: NodeProtocol, A> {
-    ctx: LaunchContext<A>,
+pub struct WithProtocol<P: NodeProtocol> {
+    ctx: LaunchContext,
     config: P::Config,
 }
 
-impl<P: NodeProtocol, A: NodeRpcConfig + Send + Sync> WithProtocol<P, A>
+impl<P: NodeProtocol> WithProtocol<P>
 where
     P::Config: NodeBuildsProtocol,
 {
-    pub fn context(&self) -> &LaunchContext<A> {
+    pub fn context(&self) -> &LaunchContext {
         &self.ctx
     }
 
-    /// Launch the node, serving its components with the caller-selected transport.
+    /// Build and launch the protocol, returning a handle over the bare components.
     ///
-    /// The components register through the protocol's serve view (`P::serve_view`),
-    /// a transport-specific projection; the node handle keeps the bare components.
-    pub async fn launch_with<Tr: Transport>(
-        self,
-    ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
-    where
-        P::ServeView: ServeWith<Tr>,
-    {
+    /// Serving is a separate step: attach a transport via
+    /// [`NodeHandle::serve_with`](crate::NodeHandle::serve_with) after launch.
+    pub async fn launch(self) -> Result<NodeHandle<P>, LaunchError<P::BuildError>> {
         use tracing::info;
 
         info!("Data directory: {}", self.ctx.dirs.root.display());
-        info!("RPC address: {}", self.ctx.grpc_addr());
-
-        let addr = self.ctx.grpc_addr();
-
-        let components = P::launch(self.config, &self.ctx)
-            .await
-            .map_err(LaunchError::Protocol)?;
-
-        let mut registry = Tr::Registry::default();
-        P::serve_view(&components).register(&mut registry);
-
-        let server = Tr::into_server(registry, addr)
-            .map_err(|e| InfrastructureError::Transport(e.into()))?;
-
-        let shutdown_executor = self.ctx.executor.clone();
-        self.ctx
-            .executor
-            .spawn_critical_with_graceful_shutdown_signal(
-                "rpc.server",
-                move |shutdown| async move {
-                    if let Err(e) = server.serve_with_shutdown(shutdown.ignore_guard()).await {
-                        tracing::error!(error = %e, "RPC server error");
-                    }
-                    // The server resolves on the shutdown signal in the normal
-                    // path; an exit for any other reason (a post-bind serve
-                    // failure) requests graceful shutdown so the node does not
-                    // linger without its RPC endpoint.
-                    let _ = shutdown_executor.initiate_graceful_shutdown();
-                },
-            );
-
-        Ok(NodeHandle::new(
-            components,
-            self.ctx.executor.on_shutdown_signal().clone(),
-        ))
-    }
-
-    /// Launch with the gRPC transport.
-    pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
-    where
-        P::ServeView: ServeWith<GrpcTransport>,
-    {
-        self.launch_with::<GrpcTransport>().await
-    }
-}
-
-impl<P: NodeProtocol> WithProtocol<P, ()>
-where
-    P::Config: NodeBuildsProtocol,
-{
-    /// Launch without a gRPC server.
-    pub async fn launch_without_grpc(
-        self,
-    ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>> {
-        use tracing::info;
-
-        info!("Data directory: {}", self.ctx.dirs.root.display());
-        info!("gRPC: disabled");
 
         let components = P::launch(self.config, &self.ctx)
             .await
@@ -292,6 +206,7 @@ where
 
         Ok(NodeHandle::new(
             components,
+            self.ctx.executor.clone(),
             self.ctx.executor.on_shutdown_signal().clone(),
         ))
     }

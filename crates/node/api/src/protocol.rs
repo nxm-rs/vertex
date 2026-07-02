@@ -93,9 +93,10 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
     /// View of the components the serving transport registers.
     ///
     /// Left unbounded here: node-api sits below the transport seam and cannot
-    /// name `ServeWith`. The builder applies the `ServeWith<Tr>` bound at launch,
-    /// so a protocol can wrap its components in a transport-specific newtype (for
-    /// the Swarm protocol, a gRPC adapter) without node-api naming that crate.
+    /// name `ServeWith`. The `ServeWith<Tr>` bound is applied at serve time on the
+    /// node handle, so a protocol can wrap its components in a transport-specific
+    /// newtype (for the Swarm protocol, a gRPC adapter) without node-api naming
+    /// that crate.
     type ServeView;
 
     /// Error type for launch failures.
@@ -116,6 +117,7 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
 
     /// Project the components into the view the serving transport registers.
     ///
-    /// Borrows so the node handle keeps the bare components after registration.
+    /// Borrows so the node handle keeps the bare components; the serve view is
+    /// built at serve time, not at launch.
     fn serve_view(components: &Self::Components) -> Self::ServeView;
 }
