@@ -19,6 +19,7 @@ mod behaviour;
 mod events;
 mod forward;
 mod handler;
+mod serve;
 mod storer;
 pub mod upgrade;
 
