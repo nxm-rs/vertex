@@ -13,11 +13,8 @@ use std::sync::Arc;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::Batch;
 use nectar_primitives::ChunkAddress;
-use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender, SwarmClientAccounting};
-use vertex_swarm_node::{
-    AccountingSettlement, LaunchedClient, NetworkChunkProvider, NoLatencyHint, ProximityOnly,
-    RetrievalTopology, SettlementTrigger,
-};
+use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender};
+use vertex_swarm_node::LaunchedClient;
 use wasm_bindgen::prelude::*;
 
 use cache::MemoryCache;
@@ -40,33 +37,14 @@ pub struct SwarmClient {
 impl SwarmClient {
     /// Build the client surface over an already-launched browser node.
     pub fn from_launched(launched: &LaunchedClient) -> Self {
-        // The launched client's handle already paces its own outbound retrieval
-        // and pushsync under each peer's pseudosettle allowance (the builder
-        // wires the self-throttle), so the provider reuses it as-is. The browser
-        // drives the shared provider with proximity ordering and the constant
-        // stagger, but the real per-peer in-flight cap the launched service
-        // maintains; it shares the native custody-verdict push.
-        let client = launched.client().clone();
-        // The engine drives this to drain a fully-gated peer set: the browser gates
-        // fast on its small neighbourhood, and pseudosettle is debtor-initiated, so
-        // without a settle drive a gated set would never reopen.
-        let settlement: Arc<dyn SettlementTrigger> = Arc::new(AccountingSettlement::new(
-            launched.accounting().bandwidth().clone(),
-        ));
-        let max_bin = launched.topology().max_bin();
-        let topology: Arc<dyn RetrievalTopology> = Arc::new(launched.topology().clone());
-        let routing = NetworkChunkProvider::new(
-            client,
-            topology,
-            max_bin,
-            ProximityOnly,
-            launched.inflight().clone(),
-            NoLatencyHint,
-            settlement,
-            Some(launched.store().clone()),
-        );
-        let provider: Arc<dyn SwarmChunkProvider> = Arc::new(routing.clone());
-        let sender: Arc<dyn SwarmChunkSender> = Arc::new(routing);
+        // The launched client already assembles the fully-capable chunk provider:
+        // score- and affordability-aware candidate ordering, the shared per-peer
+        // in-flight cap, the adaptive per-proximity retrieval stagger, the
+        // settle drive on a fully-gated peer set, and the session cache. Reuse
+        // it rather than assembling a second engine over the same handle.
+        let chunks = launched.chunks().clone();
+        let provider: Arc<dyn SwarmChunkProvider> = Arc::new(chunks.clone());
+        let sender: Arc<dyn SwarmChunkSender> = Arc::new(chunks);
         Self {
             provider,
             sender,
@@ -93,10 +71,10 @@ impl SwarmClient {
         let batch_id = parse_b256(&batch_id_hex)?;
         let owner = signer.address();
 
-        // Task B follow-up #5: resolve the real batch geometry from the
-        // discoverBatches path rather than assuming defaults. Only fall back to
-        // defaults when discovery is unavailable (no rpc) or the batch is not
-        // found in the queried window, and warn so the operator knows.
+        // Resolve the real batch geometry from batch discovery; fall back to
+        // the default geometry only when discovery is unavailable (no rpc) or
+        // the batch is not found in the queried window, and warn so the
+        // operator knows.
         let batch = if rpc_url.is_empty() {
             tracing::warn!(
                 "uploadFile: no rpc_url provided; using default batch geometry \
