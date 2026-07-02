@@ -16,6 +16,20 @@
 //! [`Accounting`] also implements the `Ledger` and `AdmissionControl` surfaces
 //! (from `vertex-swarm-api`), so peer selection and pacing can consume accounting
 //! state without depending on this crate's internals.
+//!
+//! # Commit points
+//!
+//! One [`Reservation`] contract, two commit points, coupled to the dispatch
+//! discipline. An origin leg books at dispatch (the `OriginAccounting` gate:
+//! reserve and apply in one step, refund only a confirmed no-charge) because
+//! origin dispatch may race and a losing raced leg is cancelled by drop: a
+//! dropped reservation releases, so a commit deferred to delivery could
+//! un-book debt for bytes the wire may still deliver. A relay leg defers its
+//! commit to the verified answer (reserve, apply on verify, release on drop),
+//! which is safe because relay walks are sequential and never cancel
+//! mid-flight, and strictly fairer to the peer. Never unify the two: the
+//! dropped-race-loser-keeps-commit guarantee is the reason the origin books
+//! at dispatch.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

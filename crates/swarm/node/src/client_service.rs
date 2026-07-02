@@ -8,8 +8,8 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Admission, AdmissionControl, Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore,
-    SwarmPricing, SwarmScoringEvent,
+    Admission, Au, OriginAccounting, PeerReporter, ReportSource, SwarmLocalStore, SwarmPricing,
+    SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
@@ -46,7 +46,7 @@ pub struct ClientHandle {
 
 /// Book-at-send and the admission band for origin requests.
 ///
-/// All four read the one shared accounting the selector uses, so the dispatch
+/// All three read the one shared accounting the selector uses, so the dispatch
 /// gate, the candidate selector, and the committed debit agree on one ledger.
 /// The settlement trigger is the selector's, so settles dedup across both
 /// paths. The band is the synchronous pacing brake: an over-threshold projected
@@ -54,8 +54,9 @@ pub struct ClientHandle {
 #[derive(Clone)]
 struct OriginGate {
     pricing: Arc<dyn SwarmPricing>,
-    debit: Arc<dyn BandwidthDebit>,
-    admission: Arc<dyn AdmissionControl>,
+    /// The admission band and the dispatch-committed debit behind one handle,
+    /// so both read the same ledger by construction.
+    accounting: Arc<dyn OriginAccounting>,
     settlement: Arc<dyn SettlementTrigger>,
 }
 
@@ -71,22 +72,20 @@ impl ClientHandle {
     /// Attach the origin credit gate so an own-request dispatch bands the
     /// request and books its price at the moment it dispatches.
     ///
-    /// `pricing`, `debit`, and `admission` must read the one shared accounting
-    /// the selector uses, and `settlement` must be the selector's so the
-    /// in-flight settle dedup is shared. Relay legs (`originated == false`) are
+    /// `pricing` and `accounting` must read the one shared accounting the
+    /// selector uses, and `settlement` must be the selector's so the in-flight
+    /// settle dedup is shared. Relay legs (`originated == false`) are
     /// accounted by the forwarder and bypass this gate.
     #[must_use]
     pub fn with_origin_gate(
         mut self,
         pricing: Arc<dyn SwarmPricing>,
-        debit: Arc<dyn BandwidthDebit>,
-        admission: Arc<dyn AdmissionControl>,
+        accounting: Arc<dyn OriginAccounting>,
         settlement: Arc<dyn SettlementTrigger>,
     ) -> Self {
         self.origin = Some(OriginGate {
             pricing,
-            debit,
-            admission,
+            accounting,
             settlement,
         });
         self
@@ -122,7 +121,7 @@ impl ClientHandle {
         }
 
         let price = gate.pricing.peer_price(&peer, address);
-        match gate.admission.admit(&peer, price) {
+        match gate.accounting.admit(&peer, price) {
             Admission::Refuse => {
                 gate.settlement.trigger_settlement(peer);
                 return Err(ChunkTransferError::Refused);
@@ -138,7 +137,7 @@ impl ClientHandle {
         // line too; a concurrent burst that crossed it between the band check and
         // here surfaces as a refusal, handled identically. The commit lands
         // immediately at dispatch.
-        match gate.debit.debit_received(peer, price, true) {
+        match gate.accounting.debit_received(peer, price, true) {
             Ok(()) => Ok(Some(price)),
             Err(_) => {
                 gate.settlement.trigger_settlement(peer);
@@ -151,7 +150,7 @@ impl ClientHandle {
     /// no origin gate is attached. Pure ledger op, never peer scoring.
     fn refund_origin(&self, peer: OverlayAddress, committed: Option<Au>) {
         if let (Some(gate), Some(price)) = (&self.origin, committed) {
-            gate.debit.refund_received(peer, price);
+            gate.accounting.refund_received(peer, price);
         }
     }
 
@@ -886,8 +885,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let handle = ClientHandle::new(tx).with_origin_gate(
             Arc::new(FixedPeerPricer(price)) as Arc<dyn SwarmPricing>,
-            accounting.clone() as Arc<dyn BandwidthDebit>,
-            accounting.clone() as Arc<dyn AdmissionControl>,
+            accounting.clone() as Arc<dyn OriginAccounting>,
             settlement.clone() as Arc<dyn SettlementTrigger>,
         );
         (handle, accounting, settlement, rx)
