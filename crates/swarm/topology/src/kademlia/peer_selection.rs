@@ -32,6 +32,18 @@ pub(crate) fn connected_neighbors<I: SwarmIdentity>(
         .collect()
 }
 
+/// Connected clients: gossip recipients only, never gossiped about.
+pub(crate) fn connected_clients<I: SwarmIdentity>(
+    peer_manager: &PeerManager<I>,
+    connection_registry: &ConnectionRegistry,
+) -> Vec<OverlayAddress> {
+    connection_registry
+        .active_ids()
+        .into_iter()
+        .filter(|overlay| peer_manager.node_type(overlay) == Some(SwarmNodeType::Client))
+        .collect()
+}
+
 /// Known storers in neighborhood, optionally excluding one overlay.
 pub(crate) fn known_neighborhood_peers<I: SwarmIdentity>(
     _local_overlay: &OverlayAddress,

@@ -274,19 +274,56 @@ impl<I: SwarmIdentity> GossipTask<I> {
     ) -> Vec<GossipAction> {
         self.last_depth = depth;
 
+        let new_peer_overlay = OverlayAddress::from(*peer.overlay());
+
         if !node_type.requires_storage() {
+            // A connecting client cannot grow past its bootnodes without
+            // help: send it the same recipient-targeted bootstrap set a
+            // distant storer receives. Clients are recipients only; they are
+            // never gossiped about.
+            if node_type == SwarmNodeType::Client {
+                return self.handle_new_distant_peer(new_peer_overlay);
+            }
             trace!(overlay = %peer.overlay(), "Skipping gossip for non-storer node");
             return Vec::new();
         }
 
-        let new_peer_overlay = OverlayAddress::from(*peer.overlay());
         let proximity = self.local_overlay.proximity(&new_peer_overlay).get();
 
-        if proximity >= depth {
+        let mut actions = if proximity >= depth {
             self.handle_new_neighbor(new_peer_overlay, peer.clone(), depth)
         } else {
             self.handle_new_distant_peer(new_peer_overlay)
+        };
+        // Connected clients hear about every newly connected storer, so they
+        // keep building topology from live supply, not just their bootstrap.
+        actions.extend(self.notify_clients(peer));
+        actions
+    }
+
+    /// Tell every connected client about a newly connected storer.
+    ///
+    /// Clients receive gossip but never appear in it: the payload here is the
+    /// storer, filtered per recipient reachability like any other broadcast.
+    fn notify_clients(&self, new_peer_info: &SwarmPeer) -> Vec<GossipAction> {
+        let new_peer_slice = [new_peer_info.clone()];
+        let mut actions = Vec::new();
+        for client in self.connected_clients() {
+            let profile = self.recipient_profile(&client);
+            let filtered = self.filter_for_recipient(&new_peer_slice, &profile);
+            if !filtered.is_empty() {
+                trace!(to = %client, about = %new_peer_info.overlay(), "Notifying client about new storer");
+                actions.push(GossipAction {
+                    to: client,
+                    peers: filtered.into_iter().cloned().collect(),
+                });
+            }
         }
+        actions
+    }
+
+    fn connected_clients(&self) -> Vec<OverlayAddress> {
+        peer_selection::connected_clients(&self.peer_manager, &self.connection_registry)
     }
 
     fn on_tick(&mut self) {
@@ -726,5 +763,129 @@ mod tests {
             filtered.is_empty(),
             "Loopback peers should be excluded for public recipients"
         );
+    }
+
+    mod client_recipients {
+        use libp2p::swarm::ConnectionId;
+        use vertex_swarm_test_utils::MockIdentity;
+
+        use super::*;
+
+        /// A full gossip task over the test context; the handle keeps the
+        /// channel ends alive while methods are driven directly.
+        fn test_task(
+            ctx: &TopologyTestContext,
+        ) -> (GossipTask<MockIdentity>, crate::gossip::GossipHandle) {
+            let (handle, channels) = gossip_channel();
+            let config = GossipConfig::default();
+            let task = GossipTask {
+                input_rx: channels.input_rx,
+                output_tx: channels.output_tx,
+                intake: GossipIntake::new(&config),
+                local_overlay: ctx.local_overlay,
+                peer_manager: Arc::clone(&ctx.peer_manager),
+                connection_registry: Arc::clone(&ctx.connection_registry),
+                current_depth: 0,
+                last_depth: 0,
+                last_broadcast: HashMap::new(),
+                gossip_dial_peers: HashSet::new(),
+                health_check_delay: config.health_check_delay,
+                refresh_interval: config.refresh_interval,
+                gossip_tick: vertex_tasks::time::interval_after(
+                    config.refresh_interval,
+                    config.refresh_interval,
+                ),
+                pending_exchanges: FuturesUnordered::new(),
+                cancelled_exchanges: HashSet::new(),
+                evaluator_handle: RoutingEvaluatorHandle::new(),
+            };
+            (task, handle)
+        }
+
+        /// Register `n` as a known, actively connected client.
+        fn connect_client(ctx: &TopologyTestContext, n: u8) -> OverlayAddress {
+            let peer = test_swarm_peer(n);
+            let overlay = OverlayAddress::from(*peer.overlay());
+            ctx.peer_manager.on_peer_connected(
+                peer,
+                SwarmNodeType::Client,
+                vertex_net_peer_registry::ConnectionDirection::Inbound,
+                vertex_swarm_peer_manager::TrustLevel::Normal,
+            );
+            let peer_id = PeerId::random();
+            let connection_id = ConnectionId::new_unchecked(usize::from(n));
+            ctx.connection_registry
+                .connected_inbound(peer_id, connection_id);
+            ctx.connection_registry
+                .activate(peer_id, connection_id, overlay);
+            overlay
+        }
+
+        #[tokio::test]
+        async fn connecting_client_receives_bootstrap_peers() {
+            let ctx = TopologyTestContext::new().with_peers();
+            let (mut task, _handle) = test_task(&ctx);
+
+            let client = test_swarm_peer(0xC1);
+            let client_overlay = OverlayAddress::from(*client.overlay());
+            ctx.peer_manager.on_peer_connected(
+                client.clone(),
+                SwarmNodeType::Client,
+                vertex_net_peer_registry::ConnectionDirection::Inbound,
+                vertex_swarm_peer_manager::TrustLevel::Normal,
+            );
+
+            let actions = task.on_peer_authenticated(&client, SwarmNodeType::Client, 0);
+
+            let action = actions.first().expect("one bootstrap action");
+            assert_eq!(actions.len(), 1);
+            assert_eq!(action.to, client_overlay);
+            assert!(!action.peers.is_empty(), "the client receives a peer list");
+            assert!(
+                action.peers.iter().all(|p| {
+                    ctx.peer_manager
+                        .node_type(&OverlayAddress::from(*p.overlay()))
+                        == Some(SwarmNodeType::Storer)
+                }),
+                "the payload carries storers only"
+            );
+        }
+
+        #[tokio::test]
+        async fn new_storer_is_announced_to_connected_clients() {
+            let ctx = TopologyTestContext::new().with_peers();
+            let (mut task, _handle) = test_task(&ctx);
+            let client_overlay = connect_client(&ctx, 0xC2);
+
+            let storer = test_swarm_peer(0xD1);
+            let actions = task.on_peer_authenticated(&storer, SwarmNodeType::Storer, 0);
+
+            let notify = actions
+                .iter()
+                .find(|a| a.to == client_overlay)
+                .expect("the connected client is notified");
+            let announced = notify.peers.first().expect("one announced peer");
+            assert_eq!(notify.peers.len(), 1);
+            assert_eq!(announced.overlay(), storer.overlay());
+        }
+
+        #[tokio::test]
+        async fn clients_never_appear_in_gossip_payloads() {
+            let ctx = TopologyTestContext::new().with_peers();
+            let (mut task, _handle) = test_task(&ctx);
+            let client_overlay = connect_client(&ctx, 0xC3);
+
+            let storer = test_swarm_peer(0xD2);
+            let actions = task.on_peer_authenticated(&storer, SwarmNodeType::Storer, 0);
+
+            assert!(!actions.is_empty());
+            assert!(
+                actions.iter().all(|a| a
+                    .peers
+                    .iter()
+                    .all(|p| OverlayAddress::from(*p.overlay()) != client_overlay)),
+                "clients are recipients only, never subjects"
+            );
+        }
     }
 }
