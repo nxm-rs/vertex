@@ -15,7 +15,6 @@
 //! commit-at-dispatch, only sequential dispatch may pair with an on-verify
 //! commit.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -231,10 +230,21 @@ impl InflightLimit for PeerInflightLimiter {
         // dispatching over their cap as the bounded last resort that actually
         // reaches the holder. Free-first ordering is what keeps the tail a last
         // resort, so the cap is never enforced.
-        let (free, busy): (Vec<OverlayAddress>, Vec<OverlayAddress>) = candidates
-            .into_iter()
-            .partition(|peer| self.has_free_slot(peer));
-        (free.into_iter().chain(busy).collect(), false)
+        let mut candidates = candidates;
+        // One linear pass: free peers compact in place through `retain`
+        // (keeping their relative order), the busy tail spills to a scratch
+        // that stays unallocated when nothing is busy.
+        let mut busy: Vec<OverlayAddress> = Vec::new();
+        candidates.retain(|peer| {
+            if self.has_free_slot(peer) {
+                true
+            } else {
+                busy.push(*peer);
+                false
+            }
+        });
+        candidates.append(&mut busy);
+        (candidates, false)
     }
 
     fn try_acquire(&self, peer: &OverlayAddress) -> Option<Self::Permit> {
@@ -777,15 +787,14 @@ where
             // beyond the close set rather than re-racing the same failing peers. A
             // gated close set already spilled to this slice above, so its
             // already-raced set covers the slice and the difference is empty.
-            let raced: HashSet<OverlayAddress> = close_candidates.iter().copied().collect();
             let wide = self
                 .topology
                 .closest_to(&chunk_address, RETRIEVE_SPILL_WIDTH);
-            let wide = self.ordering.order_closest_admissible(wide, address);
-            let spill_ring: Vec<OverlayAddress> = wide
-                .into_iter()
-                .filter(|peer| !raced.contains(peer))
-                .collect();
+            let mut spill_ring = self.ordering.order_closest_admissible(wide, address);
+            // A linear scan over the close set (at most RETRIEVE_WIDTH entries,
+            // contiguous) beats building a hash set for one pass, and dedups in
+            // place.
+            spill_ring.retain(|peer| !close_candidates.contains(peer));
             let (spill_candidates, _spill_enforce_cap) = self.inflight.available(spill_ring);
 
             if close_candidates.is_empty() && spill_candidates.is_empty() {

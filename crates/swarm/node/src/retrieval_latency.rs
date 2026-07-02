@@ -98,13 +98,12 @@ pub(crate) fn adaptive_stagger(estimates: impl Iterator<Item = Option<Duration>>
     if known.is_empty() {
         return RETRIEVAL_STAGGER;
     }
-    known.sort_unstable();
-    match known.get(known.len() / 2) {
-        Some(median) => median
-            .saturating_mul(HEDGE_RTT_MULTIPLIER)
-            .clamp(HEDGE_STAGGER_FLOOR, RETRIEVAL_STAGGER),
-        None => RETRIEVAL_STAGGER,
-    }
+    // Selection, not a full sort: only the median needs its place.
+    let mid = known.len() / 2;
+    let (_, median, _) = known.select_nth_unstable(mid);
+    median
+        .saturating_mul(HEDGE_RTT_MULTIPLIER)
+        .clamp(HEDGE_STAGGER_FLOOR, RETRIEVAL_STAGGER)
 }
 
 #[cfg(test)]

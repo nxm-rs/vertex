@@ -9262,6 +9262,7 @@ dependencies = [
  "auto_impl",
  "bytes",
  "clap 4.6.1",
+ "codspeed-criterion-compat",
  "eyre",
  "futures",
  "futures-bounded 0.2.4",

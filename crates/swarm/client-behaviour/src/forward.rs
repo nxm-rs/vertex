@@ -246,17 +246,20 @@ pub fn closer_candidates<T: SwarmTopologyRouting + ?Sized>(
     requester: OverlayAddress,
     local: OverlayAddress,
 ) -> Vec<OverlayAddress> {
-    topology
-        .closest_to(target, MAX_FORWARD_CANDIDATES * 2)
-        .into_iter()
-        .filter(|peer| *peer != requester && *peer != local)
-        // `target.closer(peer, other)` is true iff `peer` is strictly closer to
-        // `target` than `other` by full XOR distance. The candidate must beat
-        // both the requester (loop prevention) and this node (the
-        // self-relative "closer than me" gate).
-        .filter(|peer| target.closer(peer, &requester) && target.closer(peer, &local))
-        .take(MAX_FORWARD_CANDIDATES)
-        .collect()
+    let mut candidates = topology.closest_to(target, MAX_FORWARD_CANDIDATES * 2);
+    // `target.closer(peer, other)` is true iff `peer` is strictly closer to
+    // `target` than `other` by full XOR distance. The candidate must beat
+    // both the requester (loop prevention) and this node (the
+    // self-relative "closer than me" gate). In place: the topology snapshot
+    // is the walk's only allocation.
+    candidates.retain(|peer| {
+        *peer != requester
+            && *peer != local
+            && target.closer(peer, &requester)
+            && target.closer(peer, &local)
+    });
+    candidates.truncate(MAX_FORWARD_CANDIDATES);
+    candidates
 }
 
 #[cfg(test)]

@@ -134,6 +134,7 @@ alloy-signer-local.workspace = true
 # native-only and would drag native-only transitive crates (mio, errno) into the
 # wasm test build, so they stay off wasm32.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync", "test-util"] }
 vertex-swarm-test-utils = { workspace = true, features = ["cluster"] }
 vertex-swarm-topology.workspace = true
@@ -202,3 +203,7 @@ storer = [
 # any `SwarmLocalStore` through `with_store`, so the node crate needs no backend
 # code of its own.
 indexeddb = ["vertex-swarm-localstore/indexeddb"]
+
+[[bench]]
+name = "dispatch_hot_loop"
+harness = false
