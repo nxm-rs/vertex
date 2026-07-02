@@ -89,6 +89,18 @@ impl<L: Leg> Reservation<L> {
     }
 }
 
+impl Reservation<Provide> {
+    /// Release the reservation but accrue its price as ghost debt: the answer
+    /// was in hand and the peer refused to take delivery. The ghost is never
+    /// committed or settled; it consumes serve headroom in the provide
+    /// projection so a repeat refuser starves. Our-fault failures drop
+    /// instead, releasing without a trace.
+    pub fn forfeit(self) {
+        self.state.add_ghost(self.price);
+        // Drop releases the shadow reservation.
+    }
+}
+
 impl<L: Leg> Drop for Reservation<L> {
     fn drop(&mut self) {
         if !self.applied {
@@ -106,6 +118,10 @@ impl vertex_swarm_api::Commit for Reservation<Receive> {
 impl vertex_swarm_api::CommitOnWrite for Reservation<Provide> {
     fn apply_boxed(self: Box<Self>) {
         Reservation::apply(*self);
+    }
+
+    fn forfeit_boxed(self: Box<Self>) {
+        Reservation::forfeit(*self);
     }
 }
 
@@ -159,5 +175,18 @@ mod tests {
 
         assert_eq!(state.balance(), Au::ZERO);
         assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
+        assert_eq!(state.ghost_balance(), Au::ZERO);
+    }
+
+    #[test]
+    fn provide_forfeit_releases_shadow_reserve_and_accrues_ghost() {
+        let state = Arc::new(PeerState::new(au(1000), au(10000)));
+        state.add_shadow_reserved(au(100));
+
+        Reservation::<Provide>::new(Arc::clone(&state), au(100)).forfeit();
+
+        assert_eq!(state.balance(), Au::ZERO, "never committed");
+        assert_eq!(state.shadow_reserved_balance(), Au::ZERO, "released");
+        assert_eq!(state.ghost_balance(), au(100), "the refusal leaves a trace");
     }
 }

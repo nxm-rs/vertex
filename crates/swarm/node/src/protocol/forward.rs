@@ -1157,4 +1157,46 @@ mod tests {
         held.clear();
         assert!(forwarder.prepare_serve(requester, &address).is_ok());
     }
+
+    #[tokio::test]
+    async fn refused_deliveries_accrue_ghost_debt_and_starve_the_serve_gate() {
+        // A peer that requests answers and never takes delivery: every
+        // forfeited serve leaves a ghost trace, so the gate refuses long
+        // before any balance commits, and unlike a released in-flight serve
+        // the ghost persists.
+        let chunk = stamped();
+        let address = *chunk.address();
+        let requester = overlay_at_proximity(&address, 2);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        let topo = Arc::new(MockTopology::default());
+        let (tx, _rx) = mpsc::channel::<ClientCommand>(4);
+        let forwarder = NetworkForwarder::new(
+            local,
+            topo,
+            Arc::clone(&acct),
+            ClientHandle::new(tx),
+            Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
+        );
+
+        let mut refusals = 0usize;
+        let refused = loop {
+            match forwarder.prepare_serve(requester, &address) {
+                Ok(provide) => provide.forfeit_boxed(),
+                Err(err) => break err,
+            }
+            refusals += 1;
+            assert!(refusals <= 20_000, "the serve gate never engaged");
+        };
+        assert!(matches!(refused, ForwardError::AccountingRefused));
+        assert_eq!(
+            acct.bandwidth().for_peer(requester).balance(),
+            Au::ZERO,
+            "forfeits never commit"
+        );
+
+        // The ghost persists: the peer stays starved.
+        assert!(forwarder.prepare_serve(requester, &address).is_err());
+    }
 }

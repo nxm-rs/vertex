@@ -113,6 +113,13 @@ pub trait Commit: Send {
 pub trait CommitOnWrite: Send {
     /// Commit the reserved balance change through a boxed reservation.
     fn apply_boxed(self: Box<Self>);
+
+    /// Release without committing, recording that the peer refused the
+    /// delivery: the answer was in hand and the write back to the peer
+    /// failed. An accounting impl accrues this as ghost debt against the
+    /// peer's serve headroom; the default releases like a plain drop. Never
+    /// call it for a failure on our side of the relay.
+    fn forfeit_boxed(self: Box<Self>) {}
 }
 
 /// Per-peer bandwidth accounting handle.

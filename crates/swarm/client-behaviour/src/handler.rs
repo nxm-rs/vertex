@@ -498,9 +498,10 @@ impl ClientHandler {
                         return InboundOutcome::Served { overlay };
                     }
                     Err(e) => {
-                        // Not delivered: drop the unapplied credit.
+                        // The peer refused delivery of an answer in hand:
+                        // release with a ghost trace so repeat refusers starve.
                         debug!(%overlay, %address, error = %e, "Cache serve send failed");
-                        drop(provide);
+                        provide.forfeit_boxed();
                         return InboundOutcome::Missed { overlay, address };
                     }
                 }
@@ -531,10 +532,11 @@ impl ClientHandler {
                             InboundOutcome::Forwarded { overlay }
                         }
                         Err(e) => {
-                            // Not delivered: drop the unapplied credit so we never
-                            // bill for a delivery that did not land.
+                            // The peer refused delivery after the relay paid the
+                            // downstream leg: release with a ghost trace so we
+                            // never bill for it but repeat refusers starve.
                             debug!(%overlay, %address, error = %e, "Forward serve send failed");
-                            drop(forwarded.provide);
+                            forwarded.provide.forfeit_boxed();
                             InboundOutcome::Missed { overlay, address }
                         }
                     }
@@ -596,9 +598,10 @@ impl ClientHandler {
                             InboundOutcome::Relayed { overlay }
                         }
                         Err(e) => {
-                            // Receipt not delivered: drop the unapplied credit.
+                            // The pusher refused its receipt after the relay paid
+                            // the downstream leg: release with a ghost trace.
                             debug!(%overlay, %address, error = %e, "Receipt relay send failed");
-                            drop(forwarded.provide);
+                            forwarded.provide.forfeit_boxed();
                             InboundOutcome::PushFailed { overlay, address }
                         }
                     }
@@ -667,10 +670,11 @@ impl ClientHandler {
             Err(e) => {
                 // Stored; only the ack failed to reach the pusher. The pusher
                 // retries, which is idempotent (the reserve put is
-                // content-addressed, so a re-delivery is a no-op). Drop the
-                // unapplied credit: never bill for an ack that did not land.
+                // content-addressed, so a re-delivery is a no-op). Release the
+                // unapplied credit with a ghost trace: never bill for an ack
+                // that did not land, but a repeat refuser starves.
                 debug!(%overlay, %address, error = %e, "Receipt send failed after store");
-                drop(provide);
+                provide.forfeit_boxed();
                 InboundOutcome::PushFailed { overlay, address }
             }
         }

@@ -75,7 +75,9 @@ wasm imposes no constraint on settlement: `vertex_tasks` and `web-time` are wasm
 
 ## Peer state
 
-`PeerState` carries `balance`, `reserved_balance`, `shadow_reserved_balance`, and the two thresholds. The dead fields (`last_refresh`/`set_last_refresh`, `surplus_balance`/`add_surplus`, `set_balance`, and the `snapshot`/`from_snapshot`/`PeerStateSnapshot` path) were removed in the prior deletions sweep. The `SwarmPeerState` trait is `balance()`-only (the only method read through it), which the settlement provider uses for its recheck.
+`PeerState` carries `balance`, `reserved_balance`, `shadow_reserved_balance`, `ghost_balance`, and the two thresholds. The dead fields (`last_refresh`/`set_last_refresh`, `surplus_balance`/`add_surplus`, `set_balance`, and the `snapshot`/`from_snapshot`/`PeerStateSnapshot` path) were removed in the prior deletions sweep. The `SwarmPeerState` trait is `balance()`-only (the only method read through it), which the settlement provider uses for its recheck.
+
+Ghost debt is the trace of refused deliveries. A provide reservation released because the peer refused to take the answer off the wire (`CommitOnWrite::forfeit_boxed`, only ever called by the handler arms where the answer was in hand and the write back failed) accrues its price into `ghost_balance` instead of vanishing. The ghost is never committed and never settled; it participates only in the `prepare_provide` projection (`balance + shadow_reserved + ghost + price` against the payment threshold), so a peer that repeatedly requests answers and refuses delivery starves out of service instead of draining relay legs for free. Failures on our side of a relay drop the reservation as before, releasing without a trace.
 
 ## Removed dead code
 
