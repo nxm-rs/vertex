@@ -226,15 +226,17 @@ impl PeerSelector {
         // nothing is settled here. A request settles only the peer it actually
         // dispatches to, at the origin credit gate, so the settle fan-out is the
         // legs contacted rather than the whole candidate window.
+        let mut candidates = candidates;
         rank_candidates(
-            &candidates,
+            &mut candidates,
             |peer| self.scores.peer_score(peer),
             |peer| {
                 self.admission
                     .admit(peer, self.pricing.peer_price(peer, chunk))
             },
             tiering,
-        )
+        );
+        candidates
     }
 }
 
@@ -265,46 +267,44 @@ enum Tiering {
 /// proximity order so a degraded request can still go out; a refused peer is
 /// never resurrected this way. `admit` is invoked exactly once per candidate.
 fn rank_candidates(
-    candidates: &[OverlayAddress],
+    candidates: &mut Vec<OverlayAddress>,
     score: impl Fn(&OverlayAddress) -> Option<f64>,
     admit: impl Fn(&OverlayAddress) -> Admission,
     tiering: Tiering,
-) -> Vec<OverlayAddress> {
-    let mut headroom = Vec::with_capacity(candidates.len());
-    let mut near_threshold = Vec::new();
-    let mut warned = Vec::new();
-
-    for peer in candidates {
+) {
+    // One linear pass: the leading tier compacts in place through `retain`
+    // (which keeps proximity order), the two rarer tiers spill to scratches
+    // that stay unallocated on the common all-headroom call.
+    let mut near_threshold: Vec<OverlayAddress> = Vec::new();
+    let mut warned: Vec<OverlayAddress> = Vec::new();
+    candidates.retain(|peer| {
         let band = admit(peer);
         if matches!(band, Admission::Refuse) {
-            continue;
+            return false;
         }
         if score(peer).is_some_and(|s| s <= DEFAULT_PEER_WARN_THRESHOLD) {
             warned.push(*peer);
-        } else if matches!(tiering, Tiering::SpreadDebt)
-            && matches!(band, Admission::SettleAndAdmit)
-        {
-            near_threshold.push(*peer);
-        } else {
-            // Under `Proximity` both admissible bands land here, preserving the
-            // input proximity order; under `SpreadDebt` only headroom peers do.
-            headroom.push(*peer);
+            return false;
         }
-    }
+        if matches!(tiering, Tiering::SpreadDebt) && matches!(band, Admission::SettleAndAdmit) {
+            near_threshold.push(*peer);
+            return false;
+        }
+        // Under `Proximity` both admissible bands land here, preserving the
+        // input proximity order; under `SpreadDebt` only headroom peers do.
+        true
+    });
 
     // Headroom (or, under `Proximity`, all admissible) first, near-threshold
     // after, each in proximity order.
-    let mut ordered = headroom;
-    ordered.append(&mut near_threshold);
+    candidates.append(&mut near_threshold);
 
-    if ordered.is_empty() {
+    if candidates.is_empty() {
         // Every admissible candidate is warned (or there are none). Fall back to
         // the warned admissible peers so a degraded request can still be
         // attempted; refused peers stay excluded.
-        ordered = warned;
+        candidates.append(&mut warned);
     }
-
-    ordered
 }
 
 #[cfg(test)]
@@ -422,8 +422,9 @@ mod tests {
         // peer(1) and peer(3) are past the settle trigger; under SpreadDebt the
         // headroom peers lead, proximity within each tier.
         let candidates = vec![peer(1), peer(2), peer(3), peer(4)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[]),
             settle_due(&[peer(1), peer(3)]),
             Tiering::SpreadDebt,
@@ -438,8 +439,9 @@ mod tests {
         // spill travels the minimum distance rather than skipping a near in-band
         // peer for a far headroom one.
         let candidates = vec![peer(1), peer(2), peer(3), peer(4)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[]),
             settle_due(&[peer(1), peer(3)]),
             Tiering::Proximity,
@@ -452,8 +454,9 @@ mod tests {
         // Proximity changes only the admissible ordering: a refused peer is still
         // hard-skipped and a warned peer still excluded.
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[peer(3)]),
             refusing(&[peer(1)]),
             Tiering::Proximity,
@@ -464,15 +467,17 @@ mod tests {
     #[test]
     fn healthy_admitted_candidates_keep_proximity_order() {
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(&candidates, warned(&[]), refusing(&[]), Tiering::SpreadDebt);
+        let mut ranked = candidates.clone();
+        rank_candidates(&mut ranked, warned(&[]), refusing(&[]), Tiering::SpreadDebt);
         assert_eq!(ranked, candidates);
     }
 
     #[test]
     fn warned_peer_is_excluded() {
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[peer(2)]),
             refusing(&[]),
             Tiering::SpreadDebt,
@@ -483,7 +488,8 @@ mod tests {
     #[test]
     fn unknown_peer_is_not_treated_as_warned() {
         let candidates = vec![peer(1), peer(2)];
-        let ranked = rank_candidates(&candidates, |_| None, refusing(&[]), Tiering::SpreadDebt);
+        let mut ranked = candidates.clone();
+        rank_candidates(&mut ranked, |_| None, refusing(&[]), Tiering::SpreadDebt);
         assert_eq!(ranked, candidates);
     }
 
@@ -492,8 +498,9 @@ mod tests {
         // A refused peer is excluded entirely, not deprioritized: sending would
         // cross its disconnect line.
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[]),
             refusing(&[peer(1)]),
             Tiering::SpreadDebt,
@@ -505,8 +512,9 @@ mod tests {
     fn all_refused_yields_no_candidates() {
         // Every candidate would cross its disconnect line, so none is sendable.
         let candidates = vec![peer(1), peer(2), peer(3)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[]),
             refusing(&[peer(1), peer(2), peer(3)]),
             Tiering::SpreadDebt,
@@ -517,8 +525,9 @@ mod tests {
     #[test]
     fn all_warned_falls_back_to_proximity_order() {
         let candidates = vec![peer(1), peer(2)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[peer(1), peer(2)]),
             refusing(&[]),
             Tiering::SpreadDebt,
@@ -531,8 +540,9 @@ mod tests {
         // peer(1) is refused and peer(2) is warned: the fallback returns the
         // warned admissible peer, never the refused one.
         let candidates = vec![peer(1), peer(2)];
-        let ranked = rank_candidates(
-            &candidates,
+        let mut ranked = candidates.clone();
+        rank_candidates(
+            &mut ranked,
             warned(&[peer(2)]),
             refusing(&[peer(1)]),
             Tiering::SpreadDebt,
@@ -542,7 +552,8 @@ mod tests {
 
     #[test]
     fn empty_candidates_stay_empty() {
-        let ranked = rank_candidates(&[], warned(&[]), refusing(&[]), Tiering::SpreadDebt);
+        let mut ranked: Vec<OverlayAddress> = Vec::new();
+        rank_candidates(&mut ranked, warned(&[]), refusing(&[]), Tiering::SpreadDebt);
         assert!(ranked.is_empty());
     }
 
