@@ -174,7 +174,7 @@ impl SwarmDemo {
 
                     // multiaddrs: format each Multiaddr to its string form.
                     let multiaddrs = js_sys::Array::new();
-                    if let Some(peer) = pm.get_swarm_peer(&overlay) {
+                    if let Some(peer) = pm.swarm_peer(&overlay) {
                         for ma in peer.multiaddrs() {
                             multiaddrs.push(&JsValue::from_str(&ma.to_string()));
                         }
