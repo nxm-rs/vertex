@@ -27,6 +27,7 @@ vertex-swarm-net-retrieval.workspace = true
 vertex-swarm-net-swap = { workspace = true, optional = true }
 
 ## vertex - swarm (libp2p-free abstractions)
+vertex-net-peer-registry.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-client-protocol.workspace = true
 

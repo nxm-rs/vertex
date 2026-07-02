@@ -39,6 +39,7 @@ use crate::client_service::RetrievalResult;
 use crate::protocol::{
     BehaviourConfig, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
 };
+use vertex_net_peer_registry::PeerRegistry;
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_retrieval::{RetrievalInboundProtocol, RetrievalResponder, inbound};
 
@@ -148,13 +149,26 @@ impl NetworkBehaviour for WithholdingBehaviour {
 
 /// Build a requester `ClientBehaviour` with a short retrieval deadline so the
 /// withholding peer is bounded in milliseconds, not the shared 30s default.
-fn requester_with_retrieval_timeout(retrieval_timeout: Duration) -> Swarm<ClientBehaviour> {
-    Swarm::new_ephemeral_tokio(move |_| {
+fn requester_with_retrieval_timeout(
+    retrieval_timeout: Duration,
+) -> (
+    Swarm<ClientBehaviour>,
+    Arc<PeerRegistry<OverlayAddress, ()>>,
+) {
+    let registry: Arc<PeerRegistry<OverlayAddress, ()>> = Arc::new(PeerRegistry::new());
+    let registry_for_behaviour = Arc::clone(&registry);
+    let swarm = Swarm::new_ephemeral_tokio(move |_| {
         let mut config = BehaviourConfig::for_role(SwarmNodeType::Client);
         config.handler.retrieval_timeout = retrieval_timeout;
         let store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
-        ClientBehaviour::new(config, store, Arc::new(StubForwarder))
-    })
+        ClientBehaviour::new(
+            config,
+            store,
+            Arc::new(StubForwarder),
+            registry_for_behaviour,
+        )
+    });
+    (swarm, registry)
 }
 
 #[tokio::test]
@@ -163,7 +177,7 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
     // shared 30s default that the bug would otherwise impose.
     let retrieval_timeout = Duration::from_millis(200);
 
-    let mut requester = requester_with_retrieval_timeout(retrieval_timeout);
+    let (mut requester, requester_registry) = requester_with_retrieval_timeout(retrieval_timeout);
     let mut server = Swarm::new_ephemeral_tokio(|_| WithholdingBehaviour);
 
     let server_peer = *server.local_peer_id();
@@ -175,6 +189,11 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
     // The requester must know the server's overlay to dispatch the request; the
     // overlay value is arbitrary since the server never validates it.
     let server_overlay = OverlayAddress::from([0x2a; 32]);
+    // Topology is absent here, so mark the server Active directly, as the
+    // connection registry would at handshake completion.
+    let conn = ConnectionId::new_unchecked(1);
+    requester_registry.connected_inbound(server_peer, conn);
+    requester_registry.activate(server_peer, conn, server_overlay);
     requester
         .behaviour_mut()
         .on_command(ClientCommand::ActivatePeer {

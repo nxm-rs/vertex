@@ -61,5 +61,5 @@ impl<Id> ActivateResult<Id> {
 mod registry;
 mod state;
 
-pub use registry::PeerRegistry;
+pub use registry::{ActivePeers, PeerRegistry};
 pub use state::ConnectionState;

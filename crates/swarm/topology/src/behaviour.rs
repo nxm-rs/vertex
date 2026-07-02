@@ -35,7 +35,7 @@ use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
 
 use crate::DialReason;
 use vertex_net_dialer::DialTracker;
-use vertex_net_peer_registry::PeerRegistry;
+use vertex_net_peer_registry::{ActivePeers, PeerRegistry};
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
 
@@ -344,6 +344,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Shared agent version map, populated by identify and read by topology handle.
     pub fn agent_versions(&self) -> identify::AgentVersions {
         Arc::clone(&self.agent_versions)
+    }
+
+    /// Shared read view of the handshake-complete overlay-to-PeerId map. The
+    /// connection registry stays the single writer; consumers only look up.
+    pub fn identity_view(&self) -> Arc<dyn ActivePeers<OverlayAddress>> {
+        self.connection_registry.clone()
     }
 
     /// Shared topology metrics (atomic counters for connected peers).

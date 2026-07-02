@@ -52,8 +52,10 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
     /// one sub-behaviour.
     pub(crate) nat: NatBehaviour,
-    pub(crate) topology: TopologyBehaviour<I>,
+    /// Before topology: reads the identity view at connection close while the
+    /// registry entry is live.
     pub(crate) client: ClientBehaviour,
+    pub(crate) topology: TopologyBehaviour<I>,
 }
 
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
@@ -66,6 +68,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
+        let identity = topology.identity_view();
         Self {
             connection_limits,
             // Identify advertises addresses scoped to each peer (see
@@ -76,7 +79,6 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 agent_versions,
             ),
             nat,
-            topology,
             // A bootnode advertises pricing only and never serves retrieval or
             // pushsync, so its cache is never consulted; a zero-budget cache and
             // the stub forwarder keep the behaviour inert.
@@ -84,7 +86,9 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode),
                 Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(0, 0)),
                 Arc::new(StubForwarder),
+                identity,
             ),
+            topology,
         }
     }
 

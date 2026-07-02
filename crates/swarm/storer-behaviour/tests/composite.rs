@@ -13,13 +13,14 @@ use libp2p::Swarm;
 use libp2p_swarm_test::SwarmExt;
 use nectar_postage::Stamp;
 use nectar_primitives::{AnyChunk, Bin, ChunkAddress, ContentChunk, ProximityOrder};
+use vertex_net_peer_registry::PeerRegistry;
 use vertex_swarm_api::{
     BatchId, BinScanItem, PullStorage, StampedChunk, StorageRadius, SwarmLocalStore, SwarmResult,
 };
 use vertex_swarm_client_behaviour::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, StubForwarder,
 };
-use vertex_swarm_primitives::CachedChunk;
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress};
 use vertex_swarm_storer_behaviour::{
     PullsyncBehaviour, PullsyncEvent, StorerBehaviour, StorerBehaviourEvent,
 };
@@ -156,10 +157,12 @@ fn storer(storage: MockStorage) -> Swarm<StorerBehaviour> {
     let storage = Arc::new(storage);
     let store = Arc::clone(&storage);
     Swarm::new_ephemeral_tokio(move |_| {
+        let identity = Arc::new(PeerRegistry::<OverlayAddress, ()>::new());
         let client = ClientBehaviour::new(
             ClientBehaviourConfig::default(),
             store.clone(),
             Arc::new(StubForwarder),
+            identity,
         );
         let pullsync = PullsyncBehaviour::new(Arc::clone(&storage) as Arc<dyn PullStorage>);
         StorerBehaviour { client, pullsync }
