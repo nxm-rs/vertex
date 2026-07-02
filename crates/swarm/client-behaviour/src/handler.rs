@@ -38,10 +38,11 @@ use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::forward::Forwarder;
+use super::serve::{self, PushServe, RetrieveServe};
 use super::storer::StorerCapability;
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
@@ -473,80 +474,13 @@ impl ClientHandler {
         let address = request.address;
         debug!(%overlay, %address, "Received retrieval request");
 
-        let store = Arc::clone(&self.store);
-        let forward = Arc::clone(&self.forward);
-        self.inbound.push(Box::pin(async move {
-            // Cache hit: the store applies the single-owner TTL on `get`. Serve
-            // whichever stamp the cache held. A terminal serve is billed like a
-            // relay: reserve the upstream credit before responding, commit only
-            // after the wire write. A refusal means the requester is past its
-            // settle line, so the serve is refused too.
-            if let Ok(Some(cached)) = store.get(&address)
-                && *cached.address() == address
-            {
-                let provide = match forward.prepare_serve(overlay, &address) {
-                    Ok(provide) => provide,
-                    Err(_) => {
-                        responder.send_error();
-                        return InboundOutcome::Missed { overlay, address };
-                    }
-                };
-                let (chunk, stamp) = cached.into_parts();
-                match responder.send_chunk(chunk, stamp).await {
-                    Ok(()) => {
-                        provide.apply_boxed();
-                        return InboundOutcome::Served { overlay };
-                    }
-                    Err(e) => {
-                        // The peer refused delivery of an answer in hand:
-                        // release with a ghost trace so repeat refusers starve.
-                        debug!(%overlay, %address, error = %e, "Cache serve send failed");
-                        provide.forfeit_boxed();
-                        return InboundOutcome::Missed { overlay, address };
-                    }
-                }
-            }
-
-            // Miss: forward to a closer peer, excluding the requester. Only
-            // content chunks are cached (immutable, address-keyed); a retrieved
-            // SOC has no version signal so it is relayed but never stored.
-            match forward.retrieve(address, overlay).await {
-                Ok(forwarded) => {
-                    if *forwarded.chunk.address() != address {
-                        // Wrong address means a relay bug, not the requester's
-                        // fault; reset and drop the credit unapplied.
-                        drop(forwarded.provide);
-                        responder.send_error();
-                        return InboundOutcome::Missed { overlay, address };
-                    }
-                    if forwarded.chunk.is_content() {
-                        let _ = store.put(CachedChunk::new(
-                            forwarded.chunk.clone(),
-                            forwarded.stamp.clone(),
-                        ));
-                    }
-                    match responder.send_chunk(forwarded.chunk, forwarded.stamp).await {
-                        Ok(()) => {
-                            // Delivered: commit the upstream credit.
-                            forwarded.provide.apply_boxed();
-                            InboundOutcome::Forwarded { overlay }
-                        }
-                        Err(e) => {
-                            // The peer refused delivery after the relay paid the
-                            // downstream leg: release with a ghost trace so we
-                            // never bill for it but repeat refusers starve.
-                            debug!(%overlay, %address, error = %e, "Forward serve send failed");
-                            forwarded.provide.forfeit_boxed();
-                            InboundOutcome::Missed { overlay, address }
-                        }
-                    }
-                }
-                Err(_) => {
-                    responder.send_error();
-                    InboundOutcome::Missed { overlay, address }
-                }
-            }
-        }));
+        let op = RetrieveServe {
+            store: Arc::clone(&self.store),
+            forward: Arc::clone(&self.forward),
+            overlay,
+            address,
+        };
+        self.inbound.push(Box::pin(serve::drive(op, responder)));
     }
 
     /// Handle an inbound pushsync delivery.
@@ -571,113 +505,13 @@ impl ClientHandler {
         let address = *chunk.address();
         debug!(%overlay, %address, "Received pushsync delivery");
 
-        // Storer ingest: if responsible for the chunk, take custody locally
-        // instead of relaying. Absent on a client.
-        if let Some(storer) = &self.storer
-            && storer.reserve.is_responsible_for(&address)
-        {
-            let storer = storer.clone();
-            let forward = Arc::clone(&self.forward);
-            self.inbound.push(Box::pin(async move {
-                Self::store_and_sign(forward, storer, chunk, address, overlay, responder).await
-            }));
-            return;
-        }
-
-        let forward = Arc::clone(&self.forward);
-        self.inbound.push(Box::pin(async move {
-            match forward.push(chunk, overlay).await {
-                Ok(forwarded) => {
-                    // Relay the storer's receipt verbatim: we never sign. The
-                    // signer was verified at decode, so the wire bytes reproduce
-                    // the storer's signature, nonce, and radius unchanged.
-                    let relay = forwarded.receipt.to_wire();
-                    match responder.send_receipt(relay).await {
-                        Ok(()) => {
-                            forwarded.provide.apply_boxed();
-                            InboundOutcome::Relayed { overlay }
-                        }
-                        Err(e) => {
-                            // The pusher refused its receipt after the relay paid
-                            // the downstream leg: release with a ghost trace.
-                            debug!(%overlay, %address, error = %e, "Receipt relay send failed");
-                            forwarded.provide.forfeit_boxed();
-                            InboundOutcome::PushFailed { overlay, address }
-                        }
-                    }
-                }
-                Err(_) => {
-                    responder.send_error();
-                    InboundOutcome::PushFailed { overlay, address }
-                }
-            }
-        }));
-    }
-
-    /// Take custody of a delivery: store it into the reserve and acknowledge with
-    /// a freshly signed custody receipt. Reached only when the node holds a
-    /// [`StorerCapability`] and is responsible for `address`. A reserve put or
-    /// sign failure resets the substream rather than acknowledging a chunk we did
-    /// not durably take.
-    async fn store_and_sign(
-        forward: Arc<dyn Forwarder>,
-        storer: StorerCapability,
-        chunk: StampedChunk,
-        address: ChunkAddress,
-        overlay: OverlayAddress,
-        responder: vertex_swarm_net_pushsync::PushsyncResponder,
-    ) -> InboundOutcome {
-        // Custody is billed like any serve: reserve the upstream credit before
-        // the storage work, commit only after the receipt write. A refusal
-        // means the pusher is past its settle line, so custody is refused too.
-        let provide = match forward.prepare_serve(overlay, &address) {
-            Ok(provide) => provide,
-            Err(_) => {
-                responder.send_error();
-                return InboundOutcome::PushFailed { overlay, address };
-            }
+        let op = PushServe {
+            storer: self.storer.clone(),
+            forward: Arc::clone(&self.forward),
+            overlay,
+            chunk,
         };
-
-        // Persist before acknowledging: a receipt must never claim custody of a
-        // chunk that is not durably in the reserve.
-        if let Err(e) = storer.reserve.put(CachedChunk::from(chunk)) {
-            debug!(%overlay, %address, error = %e, "Reserve put failed; not acknowledging");
-            responder.send_error();
-            return InboundOutcome::PushFailed { overlay, address };
-        }
-
-        // Sign our own custody receipt over the address, declaring our current
-        // storage radius. The capability supplies the signing key and
-        // overlay-derivation inputs; an upstream forwarder recovers our overlay
-        // from the signature.
-        let storage_radius = storer.reserve.storage_radius();
-        let receipt = match Receipt::sign(&storer.signer, address, storage_radius) {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                // Stored, but cannot prove custody. Reset rather than send an
-                // unsigned ack; the pusher retries.
-                debug!(%overlay, %address, error = %e, "Receipt sign failed; not acknowledging");
-                responder.send_error();
-                return InboundOutcome::PushFailed { overlay, address };
-            }
-        };
-
-        match responder.send_receipt(receipt.to_wire()).await {
-            Ok(()) => {
-                provide.apply_boxed();
-                InboundOutcome::Stored { overlay }
-            }
-            Err(e) => {
-                // Stored; only the ack failed to reach the pusher. The pusher
-                // retries, which is idempotent (the reserve put is
-                // content-addressed, so a re-delivery is a no-op). Release the
-                // unapplied credit with a ghost trace: never bill for an ack
-                // that did not land, but a repeat refuser starves.
-                debug!(%overlay, %address, error = %e, "Receipt send failed after store");
-                provide.forfeit_boxed();
-                InboundOutcome::PushFailed { overlay, address }
-            }
-        }
+        self.inbound.push(Box::pin(serve::drive(op, responder)));
     }
 
     /// Turn a resolved inbound outcome into a scoring/metrics event.
