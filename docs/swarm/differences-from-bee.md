@@ -86,6 +86,22 @@ Bee does not penalize a peer for disconnecting: its kademlia `Disconnected` hand
 
 The signal is deliberately narrow. Every locally-initiated close records its reason at the close site (`vertex_swarm_api::DisconnectReason`), so a close the node chose (bin trim, ban, low-score disconnect, bootnode rotation, shutdown) or an idle keep-alive teardown is never attributed to the peer. The penalty is reserved for a fast remote or transport close of a peer that did no useful work; a peer that served or accepted a chunk during the connection is exempt regardless of how it closed. This keeps honest serving peers, including mobile and browser clients whose transports reset under load, out of the penalty path while still scoring down a peer that handshakes and vanishes.
 
+## Hive Gossip
+
+Vertex speaks the hive wire protocol (`vertex-swarm-net-hive`, protocol id `/swarm/hive/2.0.0/peers`, thirty-record batches) byte-for-byte with the reference. Every divergence below is in gossip policy, who is told about which peers and when, and none of them changes a wire byte, so none needs a fork gate. The gossip engine lives in `vertex-swarm-topology`; the operator-facing behaviour and the tuning knobs are described in the hive gossip guide.
+
+**Recipient-targeted bootstrap composition.** Gossiping its view to a distant peer, the reference sends a sample drawn at random per kademlia bin. Vertex composes the list for the specific recipient instead: the closest storers to that recipient, then one storer per bin for diversity, filling to sixteen. A joining node's first list therefore already points toward its own neighbourhood rather than a uniform cross-section. Wire-compatible: identical record type and batch framing, only the selection differs.
+
+**Clients are gossip recipients but never subjects or sources.** Like the reference, vertex serves connecting light and browser clients discovery help: a client receives the recipient-targeted list on connect and is notified about each newly connected storer. This is parity of intent with the reference's light-node announce; only the composition is vertex's, as above. Client records are never placed in a payload and a client is never counted as a gossip source, so the population a client learns is always storers. Wire-compatible.
+
+**Periodic neighbourhood refresh.** The reference re-gossips only in reaction to connection events. Vertex adds a periodic refresh (roughly ten minutes, `GossipConfig::refresh_interval`) that re-broadcasts the local neighbourhood view, so a quiet network keeps supply flowing without waiting for churn. It is bounded by the same per-recipient broadcast stamp that damps the event-driven path. Wire-compatible.
+
+**Depth-decrease promotion.** When the locally observed neighbourhood depth decreases, meaning the neighbourhood widened, vertex gossips the newly promoted neighbours at once rather than waiting for the next connection event to surface them. The reference has no equivalent. This is a promptness gain over the same records. Wire-compatible.
+
+**No outbound rate bucket.** The reference caps outbound gossip per peer. Vertex removed the outbound per-peer bucket: the broadcast cadence is already paced by the dial and refresh intervals, each payload is capped at the batch size, and an outbound bucket measurably starved legitimate gossip cycles after a few neighbourhood refreshes. Inbound throttling is unaffected. Wire-compatible.
+
+**Inbound rate charged before signature recovery.** The reference rate-limits inbound gossip after the records are processed. Vertex charges its per-source rate bucket against the raw wire record count before any ECDSA recovery runs, so a flood of invalid signatures cannot bypass the throttle by being filtered out afterwards. This strengthens the reference posture rather than relaxing it. Wire-compatible.
+
 ## Bandwidth Accounting and Pseudosettle
 
 Vertex prices chunks and tracks per-peer balances with the same arithmetic as Bee: the proximity price is `(max_po - proximity + 1) * base_price` with `base_price` 10000 and `max_po` 31, balances are signed (positive means the peer owes us), and the pseudosettle allowance is `min(requested, owed, refresh_rate * elapsed)`. Two behaviours on the pseudosettle path are deliberately not identical to Bee.
@@ -103,6 +119,7 @@ Vertex prices chunks and tracks per-peer balances with the same arithmetic as Be
 | Postage Verification | Cached pubkeys, parallel, structural separation | Per-stamp recovery |
 | Modularity | Composable traits, pluggable backends | Monolithic implementation |
 | no_std Support | Core types work without std | Requires std |
+| Hive Gossip | Recipient-targeted composition, client recipients, periodic and depth-decrease broadcasts, inbound rate charged before crypto, no outbound bucket | Random per-bin sample, event-driven only, post-hoc inbound limit, outbound bucket |
 | Disconnect Scoring | Activity-gated early-disconnect penalty, intent-attributed closes | No disconnect penalty |
 | Pseudosettle First Contact | Allowance ramps from first-contact clock | Full debt accepted immediately |
 | Payment Threshold | Local threshold only (peer-advertised not yet applied) | Honours peer-advertised threshold |
@@ -110,4 +127,5 @@ Vertex prices chunks and tracks per-peer balances with the same arithmetic as Be
 ## See Also
 
 - [Architecture Overview](../architecture/overview.md) - High-level design
+- [Hive Gossip](hive-gossip.md) - Gossip rules, recipient composition, and client policy
 - [Swarm API](api.md) - Protocol trait definitions

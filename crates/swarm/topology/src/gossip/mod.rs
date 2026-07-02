@@ -26,6 +26,11 @@
 //! - Exchange cadence: `refresh_interval` paces neighborhood broadcasts and
 //!   `health_check_delay` defers exchanges on fresh gossip dials until the
 //!   connection proves stable.
+//!
+//! The deliberate policy divergences from the reference (recipient-targeted
+//! composition, client recipients, the periodic and depth-decrease broadcasts,
+//! the inbound-before-crypto rate charge, and the removed outbound bucket) are
+//! wire-compatible and catalogued in `docs/swarm/differences-from-bee.md`.
 
 mod config;
 mod engine;
