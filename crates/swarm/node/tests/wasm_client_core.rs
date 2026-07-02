@@ -35,7 +35,7 @@ fn client_core_accounting_wires_pseudosettle_on_wasm() {
         .with_settlement(provider)
         .build(&identity);
 
-    let names = accounting.bandwidth().provider_names();
+    let names = accounting.accounting().provider_names();
     assert!(
         names.contains(&"pseudosettle"),
         "expected pseudosettle in the provider list, got {names:?}"
@@ -79,7 +79,7 @@ async fn launched_client_has_providers_and_working_cache_on_wasm() {
         .expect("launch");
 
     // The lifted tail wires pseudosettle into the accounting.
-    let providers = launched.accounting().bandwidth().provider_names();
+    let providers = launched.accounting().accounting().provider_names();
     assert!(
         providers.contains(&"pseudosettle"),
         "expected pseudosettle in the launched provider list, got {providers:?}"
@@ -155,7 +155,7 @@ fn client_core_accounting_wires_pseudosettle_and_swap_on_wasm() {
         .build(&identity);
 
     assert_eq!(
-        accounting.bandwidth().provider_names(),
+        accounting.accounting().provider_names(),
         vec!["pseudosettle", "swap"],
         "a swap-enabled client reports pseudosettle then swap"
     );
