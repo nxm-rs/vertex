@@ -5,8 +5,13 @@
 //!
 //! Construction goes through [`TopologyBehaviourBuilder`], which builds the
 //! behaviour and its [`TopologyHandle`] without spawning background tasks;
-//! [`TopologyBehaviour::spawn_tasks`] starts the connection evaluator,
-//! interface watcher, and gossip tasks once a runtime is available.
+//! [`TopologyBehaviour::spawn_tasks`] starts the connection evaluator and
+//! interface watcher once a runtime is available.
+//!
+//! Task placement rule: detached tasks are for heavy or coalescible compute
+//! and real I/O (the routing evaluator, hive validation); reactive policy and
+//! its timers live in the behaviour's poll (dialing, depth, gossip);
+//! cross-boundary event flows are streams polled with a registered waker.
 //!
 //! # Timing and capacity assumptions
 //!

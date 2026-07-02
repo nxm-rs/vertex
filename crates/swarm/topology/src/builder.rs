@@ -26,7 +26,7 @@ use crate::behaviour::{
 };
 use crate::composed::ProtocolBehaviours;
 use crate::error::TopologyError;
-use crate::gossip::{GossipChannels, GossipConfig, gossip_channel, spawn_gossip_task};
+use crate::gossip::GossipEngine;
 use crate::handle::TopologyHandle;
 use crate::kademlia::{
     KademliaRouting, RoutingEvaluatorHandle, kademlia_admission_control, spawn_evaluator,
@@ -39,10 +39,6 @@ use crate::profile::PacingProfile;
 /// [`TopologyBehaviour::spawn_tasks`] can start them later without re-deriving
 /// state from the behaviour.
 pub(crate) struct PendingTopologyTasks {
-    /// Tuning knobs for the gossip task.
-    gossip_config: GossipConfig,
-    /// Task-side gossip channel endpoints.
-    gossip_channels: GossipChannels,
     /// Profile-resolved cadence for the background connection evaluator.
     evaluation_interval: Duration,
 }
@@ -119,7 +115,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
     ///
     /// The returned behaviour carries the captured task inputs; call
     /// [`TopologyBehaviour::spawn_tasks`] from within a tokio runtime to start
-    /// the connection evaluator, interface watcher, and gossip tasks.
+    /// the connection evaluator and interface watcher tasks.
     /// Construction itself needs no runtime.
     pub fn try_build(self) -> Result<(TopologyBehaviour<I>, TopologyHandle<I>), TopologyError> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
@@ -223,8 +219,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 
         // Handles wired here; the tasks behind them start in `spawn_tasks`.
         let evaluator_handle = RoutingEvaluatorHandle::new();
-        let (gossip, gossip_channels) = gossip_channel();
-        let gossip_config = self.config.gossip.clone();
+        let gossip = GossipEngine::new(
+            self.config.gossip.clone(),
+            identity.overlay_address(),
+            peer_manager.clone(),
+            connection_registry.clone(),
+            evaluator_handle.clone(),
+        );
 
         let behaviour = TopologyBehaviour {
             identity,
@@ -265,8 +266,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             pending_nat_external_addrs,
             metrics,
             pending_tasks: Some(PendingTopologyTasks {
-                gossip_config,
-                gossip_channels,
                 evaluation_interval,
             }),
         };
@@ -277,8 +276,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 
 impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
     /// Spawn the background tasks that drive this behaviour: the kademlia
-    /// connection evaluator, the network interface watcher, and the gossip
-    /// task (peer exchange and record intake).
+    /// connection evaluator and the network interface watcher.
     ///
     /// Requires a [`vertex_tasks::TaskExecutor`] reachable through
     /// [`vertex_tasks::TaskExecutor::try_current`]. The captured task inputs
@@ -306,17 +304,6 @@ impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
 
         // Spawn interface watcher for push-based subnet discovery.
         crate::tasks::spawn_interface_watcher(&executor);
-
-        // Spawn the gossip task (peer exchange + record intake).
-        spawn_gossip_task(
-            pending.gossip_config,
-            self.identity.overlay_address(),
-            self.peer_manager.clone(),
-            self.connection_registry.clone(),
-            self.evaluator_handle.clone(),
-            pending.gossip_channels,
-            &executor,
-        );
 
         Ok(())
     }

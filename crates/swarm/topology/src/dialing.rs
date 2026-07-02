@@ -13,7 +13,6 @@ use vertex_util_runtime::rand::non_crypto_rng;
 
 use crate::DialReason;
 use crate::behaviour::BootnodeResolutionFuture;
-use crate::gossip::GossipInput;
 use crate::kademlia::RoutingCapacity;
 
 use crate::behaviour::{DialTarget, TopologyBehaviour};
@@ -125,7 +124,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         // Track discovery dials for delayed gossip exchange
         if reason == DialReason::Discovery {
-            self.gossip.send(GossipInput::MarkGossipDial(peer_id));
+            self.gossip.mark_gossip_dial(peer_id);
         }
 
         self.pending_actions.push_back(ToSwarm::Dial { opts });
