@@ -54,8 +54,12 @@ impl GossipHandle {
         }
     }
 
-    /// Try to receive a gossip broadcast action (non-blocking).
-    pub(crate) fn try_recv(&mut self) -> Result<GossipAction, mpsc::error::TryRecvError> {
-        self.output_rx.try_recv()
+    /// Poll for a gossip broadcast action, registering the waker so a new
+    /// action wakes the behaviour instead of waiting for an unrelated poll.
+    pub(crate) fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<GossipAction>> {
+        self.output_rx.poll_recv(cx)
     }
 }
