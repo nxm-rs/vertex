@@ -555,11 +555,20 @@ where
     Box::new(move |shutdown| Box::pin(f(shutdown)))
 }
 
+/// Tail-built shared components a node assembly applies to its concrete node
+/// (forwarding, and for a storer ingest) before returning the run-loop task.
+pub struct AssemblyContext {
+    /// The one shared accounting instance; the run task keeps it alive.
+    pub accounting: SharedAccounting,
+    /// The fully-wired dispatch engine, applied as the node's relay role.
+    pub engine: NativeDispatchEngine,
+}
+
 /// A run-task factory: applies multi-hop forwarding (and, for a storer, ingest)
 /// over the shared accounting and the engine's relay role, then returns the
 /// node's run-loop task. Keeps the concrete node type out of the shared launch
 /// tail.
-pub type RunTaskFn = Box<dyn FnOnce(SharedAccounting, NativeDispatchEngine) -> NodeRunTaskFn>;
+pub type RunTaskFn = Box<dyn FnOnce(AssemblyContext) -> NodeRunTaskFn>;
 
 /// The native client's fully-capable dispatch engine instantiation, shared by
 /// the chunk provider (origin dispatch) and the forwarder (relay role).
@@ -586,7 +595,7 @@ pub struct NodeRunParts {
 pub type NativeChunkProvider =
     NetworkChunkProvider<Arc<PeerSelector>, Arc<PeerInflightLimiter>, Arc<RetrievalLatency>>;
 
-/// Outputs of [`build_client_core_tail`]: the run-loop task, the topology handle,
+/// Outputs of [`ClientCoreTail::finish`]: the run-loop task, the topology handle,
 /// the chunk provider, the shared accounting and throttled client handle
 /// (for an embedder that observes them), and the node-type-specific provider store
 /// (`()` for a client, the serve view plus reserve for a storer).
@@ -620,7 +629,7 @@ pub struct SettlementEventSenders {
     pub swap: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
-/// Borrowed, wasm-clean inputs to [`build_client_core_tail`].
+/// Borrowed, wasm-clean inputs to [`ClientCoreTail::prepare`].
 pub struct ClientTailParams<'a> {
     /// The runtime node type, which selects the SWAP default and chain need.
     pub node_type: SwarmNodeType,
@@ -637,177 +646,214 @@ pub struct ClientTailParams<'a> {
 
 /// Shared client launch tail for the client- and storer-backed node types.
 ///
-/// Wires accounting (violations to the peer manager, SWAP settlement when
-/// enabled) and the selection-aware chunk provider, then spawns the
-/// client and settlement services and the peer-manager tick. `build_node` builds
-/// the concrete node over the settlement event sinks and returns its run parts
-/// plus the node-type provider store; the tail is agnostic to whether that node
-/// is a bare client or a storer. SWAP defaults on for storers and off for
-/// clients, overridable through `params.swap.enable`.
-///
-/// The returned run task is left for the caller to spawn: the native builder
-/// hands it to the binary, the embedded launcher spawns it on its executor.
-pub async fn build_client_core_tail<P, E, FBuild, Fut>(
-    executor: &TaskExecutor,
-    params: ClientTailParams<'_>,
-    #[cfg(feature = "swap")] chain_provider: Option<SharedChainProvider>,
-    build_node: FBuild,
-) -> Result<ClientNodeParts<P>, E>
-where
-    FBuild: FnOnce(SettlementEventSenders) -> Fut,
-    Fut: std::future::Future<Output = Result<(NodeRunParts, P), E>>,
-{
-    // Pseudosettle (soft accounting) is always on: prepare the provider so it
-    // embeds in the accounting, and the event sink so wire events route at the
-    // node build below.
-    let (pseudosettle_provider, pseudosettle_wiring) =
-        PseudosettleWiring::prepare(params.bandwidth);
-    let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
-
-    // SWAP settlement is prepared next: the provider embeds in the accounting and
-    // the swap event sink routes at node build time. The enable decision lives
-    // here, once, for both entry points.
+/// Splits assembly into two infallible synchronous phases around the concrete
+/// node build. [`ClientCoreTail::prepare`] wires the settlement providers into
+/// the accounting and yields the event sinks the node build routes wire events
+/// into; [`ClientCoreTail::finish`] takes the built node's run parts, wires the
+/// selection-aware chunk provider and the shared accounting, spawns the client
+/// and settlement services and the peer-manager tick, and returns the run parts
+/// for the caller to spawn. SWAP defaults on for storers and off for clients,
+/// overridable through `params.swap.enable`.
+pub struct ClientCoreTail {
+    spec: Arc<Spec>,
+    identity: Arc<Identity>,
+    bandwidth: DefaultAccountingConfig,
+    pseudosettle_provider: PseudosettleProvider<DefaultAccountingConfig>,
+    pseudosettle_wiring: PseudosettleWiring,
     #[cfg(feature = "swap")]
-    let (swap_provider, swap_wiring) = {
-        let swap_enabled = params
-            .swap
-            .enable
-            .unwrap_or(params.node_type.swap_default());
-        SwapWiring::prepare(
-            params.spec,
-            params.identity,
-            params.bandwidth,
-            params.swap,
-            swap_enabled,
-        )
-        .unzip()
-    };
+    swap: Option<(SwapProvider<DefaultAccountingConfig>, SwapWiring)>,
     #[cfg(feature = "swap")]
-    let swap_event_sender = swap_wiring.as_ref().map(|w| w.swap_event_sender());
+    chain_provider: Option<SharedChainProvider>,
+}
 
-    // The concrete node is built over the settlement event sinks: a bare client,
-    // or (for a storer) the pullsync-capable node plus its puller. Accounting,
-    // selection, and settlement wiring below is identical for both.
-    let (
-        NodeRunParts {
+impl ClientCoreTail {
+    /// Prepare the settlement wiring and return the event sinks the node build
+    /// routes wire events into.
+    ///
+    /// Pseudosettle (soft accounting) is always wired; SWAP is wired when enabled
+    /// (defaulting on for storers, off for clients). The enable decision lives
+    /// here, once, for both entry points.
+    pub fn prepare(
+        params: ClientTailParams<'_>,
+        #[cfg(feature = "swap")] chain_provider: Option<SharedChainProvider>,
+    ) -> (Self, SettlementEventSenders) {
+        // Pseudosettle: prepare the provider so it embeds in the accounting, and
+        // the event sink so wire events route at the node build.
+        let (pseudosettle_provider, pseudosettle_wiring) =
+            PseudosettleWiring::prepare(params.bandwidth);
+        let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
+
+        // SWAP: the provider embeds in the accounting and the swap event sink
+        // routes at node build time.
+        #[cfg(feature = "swap")]
+        let swap = {
+            let swap_enabled = params
+                .swap
+                .enable
+                .unwrap_or(params.node_type.swap_default());
+            SwapWiring::prepare(
+                params.spec,
+                params.identity,
+                params.bandwidth,
+                params.swap,
+                swap_enabled,
+            )
+        };
+        #[cfg(feature = "swap")]
+        let swap_event_sender = swap.as_ref().map(|(_, wiring)| wiring.swap_event_sender());
+
+        let senders = SettlementEventSenders {
+            pseudosettle: pseudosettle_event_sender,
+            #[cfg(feature = "swap")]
+            swap: swap_event_sender,
+        };
+
+        let tail = Self {
+            spec: Arc::clone(params.spec),
+            identity: params.identity.clone(),
+            bandwidth: params.bandwidth.clone(),
+            pseudosettle_provider,
+            pseudosettle_wiring,
+            #[cfg(feature = "swap")]
+            swap,
+            #[cfg(feature = "swap")]
+            chain_provider,
+        };
+
+        (tail, senders)
+    }
+
+    /// Finish assembly over the built node's run parts: wire the shared accounting
+    /// and the selection-aware chunk provider, spawn the client and settlement
+    /// services and the peer-manager tick, and return the run parts for the caller
+    /// to spawn.
+    pub fn finish<P>(
+        self,
+        executor: &TaskExecutor,
+        parts: NodeRunParts,
+        provider_store: P,
+    ) -> ClientNodeParts<P> {
+        let NodeRunParts {
             topology,
             client_service,
             client_handle,
             run,
-        },
-        provider_store,
-    ) = build_node(SettlementEventSenders {
-        pseudosettle: pseudosettle_event_sender,
+        } = parts;
+
+        // The provider reads the node's own cache before racing the swarm; it is
+        // the same store the service caches deliveries into and the handler serves
+        // from. Read before the service moves into the core.
+        let provider_cache = client_service.store();
+
+        spawn_peer_manager_task(
+            Arc::clone(topology.peer_manager()),
+            DEFAULT_TICK_INTERVAL,
+            executor,
+        );
+
+        // The peer manager is the reporting authority: accounting and the
+        // settlement services report violations through it so misbehaving peers
+        // are scored down.
+        let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+
         #[cfg(feature = "swap")]
-        swap: swap_event_sender,
-    })
-    .await?;
+        let (swap_provider, swap_wiring) = self.swap.unzip();
 
-    // The provider reads the node's own cache before racing the swarm; it is the
-    // same store the service caches deliveries into and the handler serves from.
-    let provider_cache = client_service.store();
+        // SWAP is the only extra provider; pseudosettle is registered first inside
+        // the core so soft accounting forgives total debt before SWAP settles.
+        let extra_settlement: Vec<Box<dyn SwarmSettlementProvider>> = {
+            #[cfg(feature = "swap")]
+            {
+                swap_provider
+                    .map(|provider| Box::new(provider) as Box<dyn SwarmSettlementProvider>)
+                    .into_iter()
+                    .collect()
+            }
+            #[cfg(not(feature = "swap"))]
+            Vec::new()
+        };
 
-    spawn_peer_manager_task(
-        Arc::clone(topology.peer_manager()),
-        DEFAULT_TICK_INTERVAL,
-        executor,
-    );
+        let core = assemble_client_core(ClientCoreCtx {
+            spec: Arc::clone(&self.spec),
+            identity: self.identity.clone(),
+            bandwidth: self.bandwidth.clone(),
+            topology: topology.clone(),
+            client_service,
+            client_handle: client_handle.clone(),
+            pseudosettle_provider: self.pseudosettle_provider,
+            extra_settlement,
+            reporter: Arc::clone(&reporter),
+        });
 
-    // The peer manager is the reporting authority: accounting and the settlement
-    // services report violations through it so misbehaving peers are scored down.
-    let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+        // One dispatch engine for every origin and relay path. The routing table's
+        // max bin is a spec constant; read it once here and hand it to the engine as
+        // a field rather than a per-request topology query. Origin dispatch runs
+        // over the gated origin handle; relay legs debit through the forwarder's
+        // two-leg accounting instead (`originated = false`), so the shared handle is
+        // the origin-gated one and the gate simply never fires for relays.
+        let max_bin = topology.max_bin();
+        let engine = DispatchEngine::new(
+            core.origin_handle.clone(),
+            Arc::new(topology.clone()) as Arc<dyn RetrievalTopology>,
+            max_bin,
+            Arc::clone(&core.selector),
+            Arc::clone(&core.inflight),
+            Arc::clone(&core.retrieval_latency),
+            Arc::clone(&core.settlement_trigger),
+        );
 
-    // SWAP is the only extra provider; pseudosettle is registered first inside
-    // the core so soft accounting forgives total debt before SWAP settles.
-    let extra_settlement: Vec<Box<dyn SwarmSettlementProvider>> = {
-        #[cfg(feature = "swap")]
-        {
-            swap_provider
-                .map(|provider| Box::new(provider) as Box<dyn SwarmSettlementProvider>)
-                .into_iter()
-                .collect()
-        }
-        #[cfg(not(feature = "swap"))]
-        Vec::new()
-    };
+        // Multi-hop forwarding plus storer ingest must precede the event loop. The
+        // run closure applies both to its concrete node over the shared accounting
+        // and the engine's relay role, then returns the run task.
+        let task = (run)(AssemblyContext {
+            accounting: Arc::clone(&core.accounting),
+            engine: engine.clone(),
+        });
 
-    let core = assemble_client_core(ClientCoreCtx {
-        spec: Arc::clone(params.spec),
-        identity: params.identity.clone(),
-        bandwidth: params.bandwidth.clone(),
-        topology: topology.clone(),
-        client_service,
-        client_handle: client_handle.clone(),
-        pseudosettle_provider,
-        extra_settlement,
-        reporter: Arc::clone(&reporter),
-    });
+        let chunks = NetworkChunkProvider::new(engine, provider_cache);
 
-    // One dispatch engine for every origin and relay path. The routing table's
-    // max bin is a spec constant; read it once here and hand it to the engine as
-    // a field rather than a per-request topology query. Origin dispatch runs
-    // over the gated origin handle; relay legs debit through the forwarder's
-    // two-leg accounting instead (`originated = false`), so the shared handle is
-    // the origin-gated one and the gate simply never fires for relays.
-    let max_bin = topology.max_bin();
-    let engine = DispatchEngine::new(
-        core.origin_handle.clone(),
-        Arc::new(topology.clone()) as Arc<dyn RetrievalTopology>,
-        max_bin,
-        Arc::clone(&core.selector),
-        Arc::clone(&core.inflight),
-        Arc::clone(&core.retrieval_latency),
-        Arc::clone(&core.settlement_trigger),
-    );
+        executor.spawn_service("swarm.client_service", core.client_service);
 
-    // Multi-hop forwarding plus storer ingest must precede the event loop. The
-    // run closure applies both to its concrete node over the shared accounting
-    // and the engine's relay role, then returns the run task.
-    let task = (run)(Arc::clone(&core.accounting), engine.clone());
-
-    let chunks = NetworkChunkProvider::new(engine, provider_cache);
-
-    executor.spawn_service("swarm.client_service", core.client_service);
-
-    // Pseudosettle settlement service over the shared accounting: applies
-    // time-based refresh and forwards our outbound settlement to the node.
-    pseudosettle_wiring.spawn(
-        executor,
-        core.accounting.accounting().clone(),
-        client_handle.clone(),
-        Arc::clone(&reporter),
-    );
-
-    // SWAP settlement service over the shared accounting: forwards cheque
-    // commands to the node and, with a connected chain provider, cashes received
-    // cheques on chain.
-    #[cfg(feature = "swap")]
-    if let Some(wiring) = swap_wiring {
-        wiring.spawn(
+        // Pseudosettle settlement service over the shared accounting: applies
+        // time-based refresh and forwards our outbound settlement to the node.
+        self.pseudosettle_wiring.spawn(
             executor,
             core.accounting.accounting().clone(),
-            client_handle,
+            client_handle.clone(),
             Arc::clone(&reporter),
-            #[cfg(feature = "swap-chequebook")]
-            chain_provider.as_ref(),
-            #[cfg(feature = "swap-chequebook")]
-            params.spec,
         );
+
+        // SWAP settlement service over the shared accounting: forwards cheque
+        // commands to the node and, with a connected chain provider, cashes
+        // received cheques on chain.
+        #[cfg(feature = "swap")]
+        if let Some(wiring) = swap_wiring {
+            wiring.spawn(
+                executor,
+                core.accounting.accounting().clone(),
+                client_handle,
+                Arc::clone(&reporter),
+                #[cfg(feature = "swap-chequebook")]
+                self.chain_provider.as_ref(),
+                #[cfg(feature = "swap-chequebook")]
+                &self.spec,
+            );
+        }
+
+        // The chain provider is kept alive for the node's lifetime by the run task.
+        #[cfg(feature = "swap")]
+        let task = wrap_with_chain(task, self.chain_provider);
+
+        ClientNodeParts {
+            task,
+            topology,
+            chunks,
+            inflight: core.inflight,
+            accounting: core.accounting,
+            client: core.origin_handle,
+            provider_store,
+        }
     }
-
-    // The chain provider is kept alive for the node's lifetime by the run task.
-    #[cfg(feature = "swap")]
-    let task = wrap_with_chain(task, chain_provider);
-
-    Ok(ClientNodeParts {
-        task,
-        topology,
-        chunks,
-        inflight: core.inflight,
-        accounting: core.accounting,
-        client: core.origin_handle,
-        provider_store,
-    })
 }
 
 /// Resolve and validate the shared chain provider for a client- or storer-backed
@@ -955,6 +1001,55 @@ mod tests {
             accounting.accounting().provider_names(),
             vec!["pseudosettle", "swap"],
             "a swap-enabled client reports pseudosettle then swap"
+        );
+    }
+
+    /// The tail's prepare phase leaves SWAP unwired for a default client (swap
+    /// defaults off) and for an enable-forced client with no chequebook (warn and
+    /// degrade), so the returned event sinks carry no swap sender.
+    #[cfg(feature = "swap")]
+    #[test]
+    fn prepare_leaves_swap_unwired_without_chequebook() {
+        let identity = test_identity_arc();
+        let spec = identity.spec().clone();
+        let bandwidth = DefaultAccountingConfig::default();
+
+        // A default client leaves SWAP off (swap_default is off for clients).
+        let swap_off = SwapConfig::default();
+        let (_tail, senders) = ClientCoreTail::prepare(
+            ClientTailParams {
+                node_type: SwarmNodeType::Client,
+                spec: &spec,
+                identity: &identity,
+                bandwidth: &bandwidth,
+                swap: &swap_off,
+            },
+            None,
+        );
+        assert!(
+            senders.swap.is_none(),
+            "a default client leaves swap unwired"
+        );
+
+        // Enable forced on, but no chequebook: the swap wiring warns and degrades,
+        // so still no swap sender.
+        let swap_no_chequebook = SwapConfig {
+            enable: Some(true),
+            ..Default::default()
+        };
+        let (_tail, senders) = ClientCoreTail::prepare(
+            ClientTailParams {
+                node_type: SwarmNodeType::Client,
+                spec: &spec,
+                identity: &identity,
+                bandwidth: &bandwidth,
+                swap: &swap_no_chequebook,
+            },
+            None,
+        );
+        assert!(
+            senders.swap.is_none(),
+            "an enable-forced client with no chequebook degrades swap-free"
         );
     }
 

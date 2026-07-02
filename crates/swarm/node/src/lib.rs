@@ -25,11 +25,11 @@ mod selection;
 mod staggered_race;
 
 pub use node::{
-    BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
-    ClientNodeBuilder, ClientNodeParts, ClientTailParams, LaunchedClient, NativeChunkProvider,
-    NativeDispatchEngine, NodeBuildError, NodeRunParts, NodeRunTaskFn, PseudosettleWiring,
-    RunTaskFn, SettlementEventSenders, SharedAccounting, assemble_client_core,
-    build_client_core_tail, single_task, spawn_client_command_bridge,
+    AssemblyContext, BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientCoreTail,
+    ClientLauncher, ClientNode, ClientNodeBuilder, ClientNodeParts, ClientTailParams,
+    LaunchedClient, NativeChunkProvider, NativeDispatchEngine, NodeBuildError, NodeRunParts,
+    NodeRunTaskFn, PseudosettleWiring, RunTaskFn, SettlementEventSenders, SharedAccounting,
+    assemble_client_core, single_task, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder};

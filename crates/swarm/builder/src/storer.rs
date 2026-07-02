@@ -41,7 +41,10 @@ use crate::launch::{
     build_client_backed_node, resolve_cache,
 };
 use crate::protocol::SwarmProtocol;
-use vertex_swarm_node::{NativeChunkProvider, NodeRunParts, RunTaskFn, single_task};
+use vertex_swarm_node::{
+    AssemblyContext, NativeChunkProvider, NodeRunParts, RunTaskFn, SettlementEventSenders,
+    single_task,
+};
 
 /// A reserve override supplied through the config setters. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.
@@ -331,9 +334,7 @@ impl NodeAssembly for StorerAssembly {
             serve.reserve,
             serve.pullsync,
             serve.batches,
-            inputs.pseudosettle_event_sender,
-            #[cfg(feature = "swap")]
-            inputs.swap_event_sender,
+            inputs.senders,
         )
         .await?;
         Ok((capable, provider_store))
@@ -398,12 +399,7 @@ async fn assemble_storer_node(
     reserve: Arc<dyn BinCursorStore>,
     pullsync: Option<Arc<dyn PullStorage>>,
     batches: Option<DbBatchStore<RedbDatabase>>,
-    pseudosettle_event_sender: tokio::sync::mpsc::UnboundedSender<
-        vertex_swarm_node::PseudosettleEvent,
-    >,
-    #[cfg(feature = "swap")] swap_event_sender: Option<
-        tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
-    >,
+    senders: SettlementEventSenders,
 ) -> Result<NodeRunParts, SwarmNodeError> {
     // A storer without a `PullStorage`-shaped reserve cannot serve pullsync; this
     // only happens with a reserve seam that is not the default `DbReserve`.
@@ -413,9 +409,9 @@ async fn assemble_storer_node(
     let node_builder = StorerNode::builder(identity.clone())
         .with_store(node_store)
         .with_pullsync_storage(pullsync_storage)
-        .with_pseudosettle_events(pseudosettle_event_sender);
+        .with_pseudosettle_events(senders.pseudosettle);
     #[cfg(feature = "swap")]
-    let node_builder = match swap_event_sender {
+    let node_builder = match senders.swap {
         Some(tx) => node_builder.with_swap_events(tx),
         None => node_builder,
     };
@@ -441,7 +437,8 @@ async fn assemble_storer_node(
     );
     node.set_puller(puller_handle);
 
-    let run: RunTaskFn = Box::new(move |accounting, engine| {
+    let run: RunTaskFn = Box::new(move |ctx: AssemblyContext| {
+        let AssemblyContext { accounting, engine } = ctx;
         node.enable_forwarding(engine, Arc::clone(&accounting));
         node.enable_storage(reserve as Arc<dyn ReserveStore>);
         single_task(move |shutdown| async move {
