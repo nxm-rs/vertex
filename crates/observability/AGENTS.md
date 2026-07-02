@@ -18,6 +18,8 @@ The native slices:
 
 The bucket presets and `HistogramBucketConfig` physically live in the leaf as `vertex_metrics::buckets`; `vertex-observability` re-exports them as `metrics::buckets` and at its crate root so the host-side recorder and node crates compile unchanged. Instrumented library crates (topology, the `/swarm/...` wire crates, `vertex-storage-redb`) depend on `vertex-metrics` only, never on `vertex-observability`, and declare their `HISTOGRAM_BUCKETS` against `vertex_metrics::buckets`.
 
+Aggregation happens in two places, not the binary. `vertex_swarm_node::metrics::HISTOGRAM_BUCKETS` is the const protocol-cone aggregate (one group per instrumented wire crate, wasm-clean and alloc-free). `vertex_swarm_builder::histogram_buckets()` is the launch aggregate: it flattens the protocol cone and appends the redb storage backend group. The binary only installs the result through `HistogramRegistry` (which keeps the startup dup-suffix panic).
+
 Consumer enablement: `vertex-node-core` enables nothing (plain config structs only), `vertex-node-commands` enables `otlp` (it sets up `VertexTracer`), `vertex-node-builder` enables `http-server` (it installs the Prometheus recorder and metrics server), `bin/vertex` enables `host`.
 
 ## Dos

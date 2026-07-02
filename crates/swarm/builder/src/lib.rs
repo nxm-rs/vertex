@@ -40,6 +40,7 @@ mod chain;
 pub mod config;
 mod error;
 mod launch;
+mod metrics;
 mod protocol;
 #[cfg(feature = "reserve")]
 mod storer;
@@ -47,6 +48,10 @@ mod storer;
 // The Swarm `NodeProtocol` the node builder launches. Lives here so its serve
 // view can name the gRPC adapter.
 pub use protocol::SwarmProtocol;
+
+// The launch-path histogram bucket aggregate: the protocol cone plus the redb
+// storage backend, installed by the binary before the Prometheus recorder.
+pub use metrics::histogram_buckets;
 
 // Chunk provider: the network retrieval/push provider lives in
 // `vertex-swarm-node` (the wasm-clean cone both client entry points share);

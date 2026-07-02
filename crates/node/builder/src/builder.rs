@@ -131,8 +131,8 @@ impl WithLaunchContext {
     /// server.
     ///
     /// Runs before `with_protocol` so the recorder is in place before any
-    /// subsystem records. Each protocol crate exports its histogram bucket
-    /// requirements as `HISTOGRAM_BUCKETS`; collect them all and pass here.
+    /// subsystem records. Pass the launch-path bucket aggregate assembled by the
+    /// protocol builder, not the individual per-crate consts.
     pub fn with_metrics(
         mut self,
         config: Option<vertex_observability::MetricsServerConfig>,
