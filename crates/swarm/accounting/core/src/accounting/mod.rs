@@ -181,6 +181,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
                     self.config.client_payment_threshold(),
                     self.config.payment_threshold(),
                     self.config.disconnect_threshold(),
+                    self.config.client_refresh_rate(),
                 ))
             })
             .clone()
@@ -196,6 +197,15 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             SwarmNodeType::Client | SwarmNodeType::Bootnode => {
                 self.config.client_payment_threshold()
             }
+        }
+    }
+
+    /// Settlement allowance rate for a peer of the given handshake node type,
+    /// keyed on the remote's type from the unscaled base like the serve line.
+    fn allowance_rate(&self, node_type: SwarmNodeType) -> Au {
+        match node_type {
+            SwarmNodeType::Storer => self.config.base_refresh_rate(),
+            SwarmNodeType::Client | SwarmNodeType::Bootnode => self.config.client_refresh_rate(),
         }
     }
 
@@ -300,6 +310,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         // carries exactly what the provide gate enforces.
         let state = self.peer_state(peer);
         state.set_payment_threshold(self.provide_line(node_type));
+        state.set_refresh_allowance(self.allowance_rate(node_type));
         state.payment_threshold()
     }
 
@@ -416,6 +427,15 @@ impl SwarmPeerAccounting for AccountingPeerHandle {
             Direction::Upload => self.state.add_balance(amount),
             Direction::Download => self.state.add_balance(-amount),
         }
+    }
+
+    fn settlement_received(&self, amount: Au) -> Au {
+        self.state.add_balance(-amount);
+        self.state.add_settlement_received(amount)
+    }
+
+    fn refresh_allowance(&self) -> Au {
+        self.state.refresh_allowance()
     }
 
     fn balance(&self) -> Au {
@@ -1287,6 +1307,63 @@ mod tests {
             accounting.prepare_provide(b, au(1001)),
             Err(AccountingError::PaymentThreshold { .. })
         ));
+    }
+
+    #[test]
+    fn settlement_received_credits_and_accumulates_through_one_seam() {
+        // The single settlement-received entry point: the ledger credit and the
+        // cumulative repayment move together, and the returned total is the
+        // running accumulator any settlement method feeds.
+        let accounting = test_accounting();
+        let peer = test_peer();
+        let handle = accounting.for_peer(peer);
+        handle.record(au(1000), Direction::Upload);
+
+        assert_eq!(handle.settlement_received(au(300)), au(300));
+        assert_eq!(handle.balance(), au(700));
+
+        assert_eq!(handle.settlement_received(au(200)), au(500));
+        assert_eq!(handle.balance(), au(500));
+        assert_eq!(accounting.peer_state(peer).settlement_received(), au(500));
+    }
+
+    #[test]
+    fn connect_peer_keys_the_allowance_rate_on_the_remote_type() {
+        // Default config: base refresh 4_500_000, factor 10. The allowance rate
+        // heals with the serve line at connect, keyed on the remote's type from
+        // the unscaled base; a peer never connected keeps the conservative
+        // client-rate seed.
+        let accounting = test_accounting();
+        let storer = OverlayAddress::from([1u8; 32]);
+        let client = OverlayAddress::from([2u8; 32]);
+        let unknown = OverlayAddress::from([3u8; 32]);
+
+        accounting.connect_peer(storer, SwarmNodeType::Storer);
+        accounting.connect_peer(client, SwarmNodeType::Client);
+
+        assert_eq!(
+            accounting.for_peer(storer).refresh_allowance(),
+            au(4_500_000)
+        );
+        assert_eq!(accounting.for_peer(client).refresh_allowance(), au(450_000));
+        assert_eq!(
+            accounting.for_peer(unknown).refresh_allowance(),
+            au(450_000)
+        );
+    }
+
+    #[test]
+    fn allowance_rate_on_a_client_node_derives_from_the_unscaled_base() {
+        // for_client scales only the debtor pacing rate; the allowance extended
+        // to a storer remote stays the full base rate.
+        let accounting = Accounting::new(client_config(), test_identity());
+        let storer = OverlayAddress::from([1u8; 32]);
+        accounting.connect_peer(storer, SwarmNodeType::Storer);
+
+        assert_eq!(
+            accounting.for_peer(storer).refresh_allowance(),
+            au(4_500_000)
+        );
     }
 
     #[test]

@@ -107,6 +107,24 @@ pub trait SwarmAccountingConfig: Send + Sync {
             .scale_down(self.client_only_factor())
             .max(Au::new(1))
     }
+
+    /// The unscaled refresh rate the per-peer settlement allowance derives from.
+    ///
+    /// Allowance rates key on the remote's node type only; the debtor direction
+    /// (our own settle pacing) keeps the own-type-scaled
+    /// [`refresh_rate`](Self::refresh_rate). Implementations that scale the
+    /// working rate must preserve and return the base here.
+    fn base_refresh_rate(&self) -> Au {
+        self.refresh_rate()
+    }
+
+    /// The settlement allowance rate for a client peer: the unscaled base rate
+    /// divided by the client-only factor, floored at one AU.
+    fn client_refresh_rate(&self) -> Au {
+        self.base_refresh_rate()
+            .scale_down(self.client_only_factor())
+            .max(Au::new(1))
+    }
 }
 
 /// A reserved receive leg awaiting commit or release.
@@ -150,6 +168,19 @@ pub trait CommitOnWrite: Send {
 pub trait SwarmPeerAccounting: Send + Sync {
     /// Record a priced amount of bandwidth usage (lock-free, must not block).
     fn record(&self, amount: Au, direction: Direction);
+
+    /// Credit an accepted inbound settlement and accumulate it toward the
+    /// peer's cumulative repayment; returns the new cumulative total.
+    ///
+    /// Settlement-method-agnostic: every provider's validated inbound credit
+    /// lands here, and the returned total is the signal threshold growth
+    /// checkpoints against. The caller clamps `amount` before calling; this
+    /// method never validates.
+    fn settlement_received(&self, amount: Au) -> Au;
+
+    /// The per-second time-based settlement allowance extended to this peer,
+    /// keyed on its handshake node type at connect.
+    fn refresh_allowance(&self) -> Au;
 
     /// Get current balance (positive = peer owes us).
     fn balance(&self) -> Au;

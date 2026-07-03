@@ -11,7 +11,6 @@ use vertex_swarm_api::{
     Admission, Au, OriginAccounting, PeerReporter, ReportSource, SwarmLocalStore, SwarmPricing,
     SwarmScoringEvent,
 };
-use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
 use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
@@ -634,25 +633,12 @@ impl ClientService {
                 }
 
                 PeerEvent::PseudosettleReceived { amount, request_id } => {
+                    // The accounting pseudosettle service is the single inbound
+                    // consumer via the dedicated channel configured with
+                    // `route_pseudosettle_events`: it validates against the time
+                    // allowance, credits the ledger, and acks the clamped
+                    // amount. Acking here too would race it for the wire.
                     debug!(%peer, %peer_id, %amount, %request_id, "Pseudosettle received");
-
-                    // TODO: Validate amount against accounting rules
-                    // TODO: Credit peer's balance in accounting system:
-                    //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
-
-                    let ack = PseudosettleAck {
-                        accepted: Au::saturating_from_u256(amount),
-                        // Unix seconds: the payer rejects an ack whose timestamp is
-                        // more than a couple of seconds off its own clock.
-                        timestamp: vertex_util_runtime::time::now_unix_secs() as i64,
-                    };
-
-                    if let Err(e) = self.handle.send_command(ClientCommand::Peer {
-                        peer,
-                        command: PeerCommand::AckPseudosettle { request_id, ack },
-                    }) {
-                        warn!(%peer, %peer_id, error = ?e, "Failed to send pseudosettle ack");
-                    }
                 }
 
                 PeerEvent::PseudosettleSent { ack } => {
@@ -1543,6 +1529,32 @@ mod tests {
         raw[64] = 27;
         let sig = Signature::try_from(&raw[..]).expect("valid signature bytes");
         Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+    }
+
+    #[test]
+    fn inbound_pseudosettle_is_not_acked_here() {
+        // The accounting pseudosettle service is the single inbound consumer;
+        // an ack from this arm would race it for the wire and could accept a
+        // claim at face value that the service clamps (a mutual-book desync).
+        use alloy_primitives::U256;
+
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (_event_tx, event_rx) = mpsc::channel(4);
+        let (service, _handle) = ClientService::with_channels(command_tx, event_rx);
+
+        service.process_event(ClientEvent::Peer {
+            peer: peer(7),
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::PseudosettleReceived {
+                amount: U256::from(1_000_000u64),
+                request_id: 42,
+            },
+        });
+
+        assert!(
+            command_rx.try_recv().is_err(),
+            "the node service must emit no command for an inbound refreshment"
+        );
     }
 
     #[test]

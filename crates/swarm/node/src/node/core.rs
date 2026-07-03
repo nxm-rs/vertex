@@ -20,7 +20,7 @@ use vertex_swarm_accounting_pseudosettle::{
     PseudosettleService,
 };
 use vertex_swarm_api::{
-    Au, PeerReporter, SwarmAccounting, SwarmAccountingConfig, SwarmClientAccounting, SwarmNodeType,
+    PeerReporter, SwarmAccounting, SwarmAccountingConfig, SwarmClientAccounting, SwarmNodeType,
     SwarmSettlementProvider,
 };
 use vertex_swarm_identity::Identity;
@@ -236,12 +236,11 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
 ///
 /// Produced by [`PseudosettleWiring::prepare`] before the accounting is built;
 /// consumed by [`PseudosettleWiring::spawn`] after the node command channel
-/// exists. Wasm-clean: tokio sync channels and an `Au` refresh rate only.
+/// exists. Wasm-clean: tokio sync channels only.
 pub struct PseudosettleWiring {
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
     event_tx: mpsc::UnboundedSender<PseudosettleEvent>,
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
-    refresh_rate: Au,
 }
 
 impl PseudosettleWiring {
@@ -265,7 +264,6 @@ impl PseudosettleWiring {
                 command_rx,
                 event_tx,
                 event_rx,
-                refresh_rate: config.refresh_rate(),
             },
         )
     }
@@ -306,7 +304,6 @@ impl PseudosettleWiring {
             self.event_rx,
             client_command_tx,
             accounting,
-            self.refresh_rate,
         )
         .with_reporter(reporter);
 
@@ -956,8 +953,7 @@ mod tests {
         let identity = test_identity_arc();
         let config = DefaultAccountingConfig::default();
 
-        let (provider, wiring) = PseudosettleWiring::prepare(&config);
-        assert_eq!(wiring.refresh_rate, config.refresh_rate());
+        let (provider, _wiring) = PseudosettleWiring::prepare(&config);
 
         // Compose the accounting exactly as the launch tail does for a default
         // client: the pseudosettle provider is registered, so outbound settlement
