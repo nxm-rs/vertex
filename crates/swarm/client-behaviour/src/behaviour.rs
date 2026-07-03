@@ -229,9 +229,9 @@ impl ClientBehaviour {
             }
             HandlerEvent::Peer { overlay, event } => {
                 self.tee_settlement(overlay, &event);
-                // Inherited cap policy: a chunk delivery and a pricing-sent
-                // notification ride past the soft cap; every other signal drops
-                // at it.
+                // Inherited cap policy: a chunk delivery and a
+                // payment-threshold-sent notification ride past the soft cap;
+                // every other signal drops at it.
                 let cap_exempt = matches!(
                     event,
                     PeerEvent::ChunkReceived { .. } | PeerEvent::PaymentThresholdSent

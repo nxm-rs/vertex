@@ -170,7 +170,7 @@ impl PeerState {
             .fetch_add(amount.as_amount(), Ordering::Relaxed);
     }
 
-    /// Get the payment threshold in AU.
+    /// Get the serve line in AU.
     pub fn serve_line(&self) -> Au {
         Au::new(self.serve_line.load(Ordering::Relaxed))
     }
