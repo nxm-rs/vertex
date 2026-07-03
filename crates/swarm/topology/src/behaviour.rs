@@ -1304,9 +1304,13 @@ mod tests {
         use super::*;
 
         use libp2p::swarm::ConnectionId;
+        use vertex_net_peer_registry::{ActivePeers, ConnectionDirection};
         use vertex_swarm_api::BanCause;
+        use vertex_swarm_net_handshake::{HandshakeError, HandshakeEvent};
         use vertex_swarm_peer_manager::LIFECYCLE_CHANNEL_CAPACITY;
         use vertex_swarm_test_utils::test_overlay;
+
+        use crate::composed::ProtocolEvent;
 
         /// Register an active (handshake-complete) connection in the registry.
         fn activate_connection(
@@ -1424,6 +1428,85 @@ mod tests {
                 } => assert_eq!(closed, peer_id),
                 _ => panic!("expected CloseConnection for the disconnect request"),
             }
+        }
+
+        /// Build a handshake-failed protocol event for a given connection.
+        fn failed_event(peer_id: PeerId, connection_id: ConnectionId) -> ProtocolEvent {
+            ProtocolEvent::Handshake(HandshakeEvent::Failed {
+                peer_id,
+                connection_id,
+                direction: ConnectionDirection::Inbound,
+                // Timeout is not the peer's fault, so no reachability or score hit.
+                error: HandshakeError::Timeout,
+            })
+        }
+
+        /// A failed handshake on a duplicate connection must not remove the
+        /// healthy connection's Active entry: the peer stays routable.
+        #[tokio::test]
+        async fn handshake_failure_on_duplicate_leaves_healthy_active_entry() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+
+            // A second, unregistered connection to the same peer fails.
+            let c2 = ConnectionId::new_unchecked(2);
+            behaviour.process_protocol_event(peer_id, c2, failed_event(peer_id, c2));
+
+            assert!(
+                behaviour
+                    .connection_registry
+                    .get(&overlay)
+                    .expect("active entry survives")
+                    .is_active()
+            );
+            assert_eq!(
+                ActivePeers::active_peer_id(&*behaviour.connection_registry, &overlay),
+                Some(peer_id)
+            );
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+        }
+
+        /// A failed handshake removes only the failing connection's own pending
+        /// entry, leaving the peer's Active connection in place.
+        #[tokio::test]
+        async fn handshake_failure_removes_only_the_failing_pending_entry() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            let c2 = ConnectionId::new_unchecked(2);
+            behaviour.connection_registry.connected_inbound(peer_id, c2);
+            assert_eq!(behaviour.connection_registry.pending_count(), 1);
+
+            behaviour.process_protocol_event(peer_id, c2, failed_event(peer_id, c2));
+
+            assert!(
+                behaviour
+                    .connection_registry
+                    .get(&overlay)
+                    .expect("active entry survives")
+                    .is_active()
+            );
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
+        }
+
+        /// A failed handshake on the peer's sole connection still removes its
+        /// registry entry exactly as before.
+        #[tokio::test]
+        async fn handshake_failure_removes_the_sole_connection_entry() {
+            let mut behaviour = test_behaviour();
+            let peer_id = PeerId::random();
+            let c1 = ConnectionId::new_unchecked(1);
+            behaviour.connection_registry.connected_inbound(peer_id, c1);
+            assert_eq!(behaviour.connection_registry.pending_count(), 1);
+
+            behaviour.process_protocol_event(peer_id, c1, failed_event(peer_id, c1));
+
+            assert!(!behaviour.connection_registry.contains_peer(&peer_id));
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
         }
     }
 

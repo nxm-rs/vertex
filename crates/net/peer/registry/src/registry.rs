@@ -520,6 +520,31 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static>
         state
     }
 
+    /// Remove the entry recorded for this connection; entries owned by other
+    /// connections of the same peer are left untouched.
+    pub fn disconnected_connection(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<ConnectionState<Id, R>> {
+        let state = self.with_maps(|maps| {
+            let key = maps.conn_to_key.get(&connection_id).cloned()?;
+            maps.remove_by_key(&key)
+        });
+
+        if let Some(ref s) = state {
+            match s {
+                ConnectionState::Active { .. } => {
+                    self.num_active.fetch_sub(1, Ordering::Relaxed);
+                }
+                ConnectionState::Connected { .. } => {
+                    self.num_pending.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        state
+    }
+
     /// Run a write transaction on the inner maps.
     fn with_maps<T>(&self, f: impl FnOnce(&mut Maps<Id, R>) -> T) -> T {
         let mut maps = self.maps.write();
@@ -869,5 +894,60 @@ mod tests {
         assert!(r.get(&TestId(1)).is_none());
         assert!(!r.contains_peer(&peer(2)));
         assert_counts(&r, 0, 1);
+    }
+
+    #[test]
+    fn test_disconnected_connection_removes_pending() {
+        let r = registry();
+        let p = peer(1);
+
+        r.connected_inbound(p, conn(1));
+        assert_counts(&r, 1, 0);
+
+        let state = r.disconnected_connection(conn(1)).unwrap();
+        assert!(!state.is_active());
+        assert!(!r.contains_peer(&p));
+        assert_counts(&r, 0, 0);
+    }
+
+    #[test]
+    fn test_disconnected_connection_removes_active() {
+        let r = registry();
+        let p = peer(1);
+        let id = TestId(1);
+
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        r.activate(p, conn(1), id.clone());
+        assert_counts(&r, 0, 1);
+
+        let state = r.disconnected_connection(conn(1)).unwrap();
+        assert!(state.is_active());
+        assert!(r.get(&id).is_none());
+        assert_counts(&r, 0, 0);
+    }
+
+    #[test]
+    fn test_disconnected_connection_leaves_other_connections_entry() {
+        let r = registry();
+        let p = peer(1);
+        let id = TestId(1);
+
+        // Active entry owned by conn(1).
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        r.activate(p, conn(1), id.clone());
+        assert_counts(&r, 0, 1);
+
+        // A different, unregistered connection reports failure: nothing removed.
+        assert!(r.disconnected_connection(conn(2)).is_none());
+        assert!(r.get(&id).unwrap().is_active());
+        assert_eq!(ActivePeers::active_peer_id(&r, &id), Some(p));
+        assert_counts(&r, 0, 1);
+    }
+
+    #[test]
+    fn test_disconnected_connection_unknown_returns_none() {
+        let r = registry();
+        assert!(r.disconnected_connection(conn(1)).is_none());
+        assert_counts(&r, 0, 0);
     }
 }

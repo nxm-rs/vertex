@@ -36,7 +36,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 self.on_handshake_completed(peer_id, connection_id, *info);
             }
             ProtocolEvent::Handshake(HandshakeEvent::Failed { error, .. }) => {
-                self.on_handshake_failed(peer_id, error);
+                self.on_handshake_failed(peer_id, connection_id, error);
             }
             ProtocolEvent::Hive(HiveEvent::PeersReceived { peers, .. }) => {
                 self.on_hive_peers_received(peer_id, peers);
@@ -312,6 +312,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     fn on_handshake_failed(
         &mut self,
         peer_id: PeerId,
+        connection_id: ConnectionId,
         error: vertex_swarm_net_handshake::HandshakeError,
     ) {
         warn!(%peer_id, %error, "Handshake failed");
@@ -327,9 +328,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 .update_from_handshake(peer_id, false);
         }
 
-        // Handshake failed means the peer was already registered in connection_registry.
-        // Remove it and release routing capacity.
-        let state = self.connection_registry.disconnected(&peer_id);
+        // Remove only the entry recorded for the failing connection and release
+        // its routing capacity. Scoping to the connection keeps a healthy
+        // connection's Active entry when a duplicate connection to the same peer
+        // fails, so the peer stays routable.
+        let state = self
+            .connection_registry
+            .disconnected_connection(connection_id);
         if let Some(ref s) = state {
             if s.is_active() {
                 gauge!("peer_registry_active_connections").decrement(1.0);
