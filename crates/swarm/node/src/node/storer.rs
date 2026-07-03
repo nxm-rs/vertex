@@ -279,7 +279,7 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
             .set_network_id(network_id);
         let connect = Arc::clone(&accounting);
         self.accounting_connect = Some(Arc::new(move |peer, node_type| {
-            connect.accounting().connect_peer(peer, node_type);
+            connect.accounting().connect_peer(peer, node_type)
         }));
         let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(engine, accounting));
         self.base
@@ -477,20 +477,19 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                 node_type,
                 ..
             } => {
-                // Seed the peer's serve line from its handshake node type before
-                // activating it: topology inserts the peer into routing before
-                // emitting this event, so a dispatch task may already have
-                // created the peer lazily on the client line.
-                if let Some(connect) = &self.accounting_connect {
-                    connect(overlay, node_type);
+                for command in super::peer_ready_commands(
+                    self.accounting_connect.as_ref(),
+                    peer_id,
+                    overlay,
+                    node_type,
+                ) {
+                    self.base
+                        .swarm
+                        .behaviour_mut()
+                        .storer
+                        .client
+                        .on_command(command);
                 }
-                self.base.swarm.behaviour_mut().storer.client.on_command(
-                    ClientCommand::ActivatePeer {
-                        peer_id,
-                        overlay,
-                        node_type,
-                    },
-                );
             }
             TopologyEvent::PeerDisconnected { .. } => {}
             TopologyEvent::PeerRejected { .. } => {}

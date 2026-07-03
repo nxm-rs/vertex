@@ -293,11 +293,14 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         Ok(Accounting::prepare_provide(self, peer, price)?)
     }
 
-    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) {
+    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) -> Au {
         // Mutate the serve line on the shared PeerState in place. Replacing the
-        // Arc would drop outstanding reservations that hold clones.
-        self.peer_state(peer)
-            .set_payment_threshold(self.provide_line(node_type));
+        // Arc would drop outstanding reservations that hold clones. The line is
+        // read back from the state so an announcement built on the return value
+        // carries exactly what the provide gate enforces.
+        let state = self.peer_state(peer);
+        state.set_payment_threshold(self.provide_line(node_type));
+        state.payment_threshold()
     }
 
     fn adopt_payment_threshold(&self, peer: OverlayAddress, announced: Au) {
@@ -788,8 +791,10 @@ mod tests {
         // small_config: storer line 1000, client line 200.
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
-        accounting.connect_peer(peer, SwarmNodeType::Storer);
+        let line = accounting.connect_peer(peer, SwarmNodeType::Storer);
 
+        // The returned line is the state the provide gate enforces.
+        assert_eq!(line, au(1000));
         assert!(accounting.prepare_provide(peer, au(1000)).is_ok());
         assert!(matches!(
             accounting.prepare_provide(peer, au(1001)),
@@ -802,8 +807,9 @@ mod tests {
         // small_config: client line 1000 / factor 5 = 200.
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
-        accounting.connect_peer(peer, SwarmNodeType::Client);
+        let line = accounting.connect_peer(peer, SwarmNodeType::Client);
 
+        assert_eq!(line, au(200));
         assert!(accounting.prepare_provide(peer, au(200)).is_ok());
         assert!(matches!(
             accounting.prepare_provide(peer, au(201)),
@@ -932,6 +938,17 @@ mod tests {
             Au::from_amount(2 * (DEFAULT_REFRESH_RATE / DEFAULT_CLIENT_ONLY_FACTOR));
         assert!(storer_line >= full_minimum);
         assert!(client_line >= client_minimum);
+
+        // connect_peer reports the same lines through the public seam, so the
+        // announced values on a stock client node clear the minimums too.
+        assert_eq!(
+            accounting.connect_peer(OverlayAddress::from([3u8; 32]), SwarmNodeType::Storer),
+            storer_line
+        );
+        assert_eq!(
+            accounting.connect_peer(OverlayAddress::from([4u8; 32]), SwarmNodeType::Client),
+            client_line
+        );
     }
 
     #[test]

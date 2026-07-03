@@ -203,13 +203,13 @@ pub trait SwarmAccounting: Send + Sync {
     /// Prepare to provide service to a peer (balance increases).
     fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<Self::ProvideAction>;
 
-    /// Seed or update the peer's serve line from its handshake node type.
-    /// Storer peers get the full payment threshold, client peers the
-    /// client-only-factor-scaled line. Callers invoke this at handshake
-    /// completion; a peer never connected keeps the stricter client line.
-    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) {
-        let _ = (peer, node_type);
-    }
+    /// Seed or update the peer's serve line from its handshake node type and
+    /// return the line now in force. Storer peers get the full payment
+    /// threshold, client peers the client-only-factor-scaled line; a peer never
+    /// connected keeps the stricter client line. Callers invoke this at
+    /// handshake completion and may announce the returned line to the peer, so
+    /// it must be read back from the state the provide gate enforces.
+    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) -> Au;
 
     /// Adopt the peer-announced payment threshold as its settle line, clamped by
     /// the implementation. Inbound announcements only; never widens our serve line.

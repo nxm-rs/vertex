@@ -58,11 +58,125 @@ pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 pub(crate) const CHANNEL_DRAIN_BUDGET: usize = 32;
 
 /// A handshake-completion hook seeding a peer's accounting serve line from its
-/// advertised node type. Erased as `Arc<dyn Fn>` so the node struct stays free
-/// of the accounting type parameters; wired from the accounting that
-/// `enable_forwarding` already receives.
+/// advertised node type and returning the line now in force. Erased as
+/// `Arc<dyn Fn>` so the node struct stays free of the accounting type
+/// parameters; wired from the accounting that `enable_forwarding` already
+/// receives.
 pub(crate) type AccountingConnect = std::sync::Arc<
-    dyn Fn(vertex_swarm_primitives::OverlayAddress, vertex_swarm_primitives::SwarmNodeType)
+    dyn Fn(
+            vertex_swarm_primitives::OverlayAddress,
+            vertex_swarm_primitives::SwarmNodeType,
+        ) -> vertex_swarm_api::Au
         + Send
         + Sync,
 >;
+
+/// Commands for a peer whose handshake just completed: activation, then the
+/// initial payment-threshold announcement when accounting is wired. The connect
+/// hook runs first (a dispatch task may already have created the peer lazily on
+/// the client line) and the announcement carries the serve line it returns, so
+/// the peer adopts exactly the line the provide gate enforces. One announcement
+/// per connection; the handler buffers it while still dormant.
+pub(crate) fn peer_ready_commands(
+    accounting_connect: Option<&AccountingConnect>,
+    peer_id: libp2p::PeerId,
+    overlay: vertex_swarm_primitives::OverlayAddress,
+    node_type: vertex_swarm_primitives::SwarmNodeType,
+) -> Vec<vertex_swarm_client_protocol::ClientCommand> {
+    use vertex_swarm_api::Au;
+    use vertex_swarm_client_protocol::{ClientCommand, PeerCommand};
+
+    let mut commands = vec![ClientCommand::ActivatePeer {
+        peer_id,
+        overlay,
+        node_type,
+    }];
+    if let Some(connect) = accounting_connect {
+        let serve_line = connect(overlay, node_type);
+        // Announce only a positive line: a peer rejects a zero announcement as
+        // below its minimum and disconnects, while silence is tolerated.
+        if serve_line > Au::ZERO
+            && let Ok(threshold) = alloy_primitives::U256::try_from(serve_line)
+        {
+            commands.push(ClientCommand::Peer {
+                peer: overlay,
+                command: PeerCommand::AnnouncePricing { threshold },
+            });
+        }
+    }
+    commands
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use alloy_primitives::U256;
+    use libp2p::PeerId;
+    use vertex_swarm_api::Au;
+    use vertex_swarm_client_protocol::{ClientCommand, PeerCommand};
+    use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+
+    use super::{AccountingConnect, peer_ready_commands};
+
+    fn recording_connect(line: Au, calls: Arc<AtomicUsize>) -> AccountingConnect {
+        Arc::new(move |_overlay, _node_type| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            line
+        })
+    }
+
+    #[test]
+    fn peer_ready_activates_then_announces_the_connect_seeded_line() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let connect = recording_connect(Au::from_amount(13_500_000), Arc::clone(&calls));
+        let peer_id = PeerId::random();
+        let overlay = OverlayAddress::from([7u8; 32]);
+
+        let commands = peer_ready_commands(Some(&connect), peer_id, overlay, SwarmNodeType::Storer);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            &commands[0],
+            ClientCommand::ActivatePeer { peer_id: p, overlay: o, node_type: SwarmNodeType::Storer }
+                if *p == peer_id && *o == overlay
+        ));
+        assert!(matches!(
+            &commands[1],
+            ClientCommand::Peer { peer, command: PeerCommand::AnnouncePricing { threshold } }
+                if *peer == overlay && *threshold == U256::from(13_500_000u64)
+        ));
+    }
+
+    #[test]
+    fn peer_ready_without_accounting_only_activates() {
+        let commands = peer_ready_commands(
+            None,
+            PeerId::random(),
+            OverlayAddress::from([8u8; 32]),
+            SwarmNodeType::Client,
+        );
+
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(commands[0], ClientCommand::ActivatePeer { .. }));
+    }
+
+    #[test]
+    fn peer_ready_never_announces_a_zero_line() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let connect = recording_connect(Au::ZERO, Arc::clone(&calls));
+
+        let commands = peer_ready_commands(
+            Some(&connect),
+            PeerId::random(),
+            OverlayAddress::from([9u8; 32]),
+            SwarmNodeType::Client,
+        );
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(commands[0], ClientCommand::ActivatePeer { .. }));
+    }
+}

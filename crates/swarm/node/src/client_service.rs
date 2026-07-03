@@ -434,7 +434,6 @@ impl ClientService {
         match event {
             ClientEvent::PeerActivated { peer_id, overlay } => {
                 debug!(%peer_id, %overlay, "Peer activated for client protocols");
-                // TODO: Trigger pricing announcement based on peer type
             }
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
