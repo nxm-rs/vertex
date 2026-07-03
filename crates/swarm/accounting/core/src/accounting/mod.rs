@@ -131,19 +131,19 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let state = self.peer_state(peer);
 
         let payment_threshold = state.payment_threshold();
-        // Projected debt the peer would owe us once this provide commits. The
-        // ghost balance counts too: refused deliveries were served in full and
-        // consume the same headroom, so a repeat refuser starves instead of
-        // draining relays for free.
-        let projected = state
-            .balance()
-            .saturating_add(state.shadow_reserved_balance())
-            .saturating_add(state.ghost_balance())
-            .saturating_add(price);
-        if projected > payment_threshold {
+        // Sign-safe exposure: the debt the peer owes us once this provide
+        // commits. Reasoning in `Debt` keeps the comparison sign-safe, mirroring
+        // the receive gate.
+        let exposure = Debt::exposure(
+            state.balance(),
+            state.shadow_reserved_balance(),
+            state.ghost_balance(),
+            price,
+        );
+        if exposure.exceeds(payment_threshold) {
             return Err(AccountingError::PaymentThreshold {
                 peer,
-                balance: projected,
+                balance: exposure.into(),
                 threshold: payment_threshold,
             });
         }
@@ -687,6 +687,29 @@ mod tests {
         ));
         // A smaller provide that stays under the threshold still succeeds.
         assert!(accounting.prepare_provide(peer, au(100)).is_ok());
+    }
+
+    #[test]
+    fn test_provide_negative_balance_widens_serve_headroom() {
+        // Payment threshold 1000. A peer we already owe (negative balance) can be
+        // served past the raw threshold: the debt we owe extends the headroom.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        let handle = accounting.for_peer(peer);
+
+        // Download 500 from the peer, driving our balance to -500 (we owe them).
+        handle.record(au(500), Direction::Download);
+        assert_eq!(handle.balance(), au(-500));
+
+        // Exposure = max(0, -500 + 1500) = 1000, exactly the threshold: admitted.
+        // The reservation is released on drop, so no shadow balance lingers.
+        assert!(accounting.prepare_provide(peer, au(1500)).is_ok());
+
+        // One unit more crosses the threshold and refuses.
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(1501)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
     }
 
     #[test]

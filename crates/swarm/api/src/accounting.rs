@@ -347,7 +347,7 @@ impl TryFrom<Au> for U256 {
 ///
 /// Opaque newtype over `u64` with a private field: a signed balance can never be
 /// fed in, so the sign error that compared a negative balance against a positive
-/// threshold is unrepresentable. Two named constructors because admission and
+/// threshold is unrepresentable. Three named constructors because admission and
 /// settlement measure different things; the only crossings back to [`Au`] are the
 /// total [`From<Debt>`](From) and the [`exceeds`](Self::exceeds) comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -373,6 +373,21 @@ impl Debt {
             reserved
                 .saturating_add(price)
                 .saturating_sub(balance)
+                .as_amount(),
+        )
+    }
+
+    /// Exposure debt: `max(0, balance + shadow_reserved + ghost + price)`, what
+    /// the peer owes us once this provide commits. The provide gate uses this. A
+    /// negative balance widens serve headroom; ghost debt from refused deliveries
+    /// counts, so a repeat refuser starves instead of relaying free.
+    #[must_use]
+    pub fn exposure(balance: Au, shadow_reserved: Au, ghost: Au, price: Au) -> Debt {
+        Debt(
+            balance
+                .saturating_add(shadow_reserved)
+                .saturating_add(ghost)
+                .saturating_add(price)
                 .as_amount(),
         )
     }
@@ -629,5 +644,51 @@ mod tests {
         assert!(debt.exceeds(Au::from_amount(999)));
         assert!(!debt.exceeds(Au::from_amount(1_000)));
         assert!(!Debt::ZERO.exceeds(Au::ZERO));
+    }
+
+    #[test]
+    fn debt_exposure_is_max_zero_of_the_sum() {
+        // The provide-gate sum: balance + shadow_reserved + ghost + price.
+        let exposure = Debt::exposure(
+            Au::new(200),
+            Au::from_amount(300),
+            Au::from_amount(100),
+            Au::from_amount(400),
+        );
+        assert_eq!(exposure, Debt(1_000));
+        assert_eq!(Au::from(exposure), Au::from_amount(1_000));
+    }
+
+    #[test]
+    fn debt_exposure_negative_balance_widens_headroom() {
+        // A negative balance (we owe the peer) reduces the exposure, so more can
+        // be served before the gate fires.
+        let owed = Debt::exposure(Au::new(-500), Au::ZERO, Au::ZERO, Au::from_amount(1_500));
+        assert_eq!(owed, Debt(1_000));
+        // A balance more negative than the sum floors at zero rather than
+        // underflowing.
+        let floored = Debt::exposure(Au::new(-2_000), Au::ZERO, Au::ZERO, Au::from_amount(500));
+        assert_eq!(floored, Debt::ZERO);
+    }
+
+    #[test]
+    fn debt_exposure_exceeds_is_strict() {
+        let exposure = Debt::exposure(Au::from_amount(1_000), Au::ZERO, Au::ZERO, Au::ZERO);
+        assert!(!exposure.exceeds(Au::from_amount(1_000)));
+        assert!(exposure.exceeds(Au::from_amount(999)));
+    }
+
+    #[test]
+    fn debt_exposure_saturates_at_extremes() {
+        // Extreme inputs saturate at the top rather than wrapping to a tiny
+        // exposure that would wrongly admit.
+        let exposure = Debt::exposure(
+            Au::new(i64::MAX),
+            Au::from_amount(i64::MAX as u64),
+            Au::from_amount(i64::MAX as u64),
+            Au::from_amount(i64::MAX as u64),
+        );
+        assert_eq!(exposure, Debt(i64::MAX as u64));
+        assert!(exposure.exceeds(Au::from_amount(i64::MAX as u64 - 1)));
     }
 }
