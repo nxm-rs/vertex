@@ -90,10 +90,20 @@ pub trait SwarmAccountingConfig: Send + Sync {
             .unwrap_or(Au::from_amount(u64::MAX))
     }
 
-    /// The serve line for a client peer: the payment threshold divided by the
-    /// client-only factor, floored at one AU.
-    fn client_payment_threshold(&self) -> Au {
+    /// The unscaled payment threshold the creditor serve lines derive from.
+    ///
+    /// Serve lines key on the remote's node type only; the debtor direction
+    /// (self-pacing, the receive gate) keeps the own-type-scaled
+    /// [`payment_threshold`](Self::payment_threshold). Implementations that
+    /// scale the working threshold must preserve and return the base here.
+    fn base_payment_threshold(&self) -> Au {
         self.payment_threshold()
+    }
+
+    /// The serve line for a client peer: the unscaled base threshold divided by
+    /// the client-only factor, floored at one AU.
+    fn client_payment_threshold(&self) -> Au {
+        self.base_payment_threshold()
             .scale_down(self.client_only_factor())
             .max(Au::new(1))
     }

@@ -14,6 +14,9 @@ use crate::constants::*;
 #[derive(Debug, Clone)]
 pub struct AccountingConfig<P = FixedPricingConfig> {
     payment_threshold: u64,
+    /// The unscaled threshold; [`for_client`](Self::for_client) scales only the
+    /// working values, so the creditor serve lines keep deriving from the base.
+    base_payment_threshold: u64,
     payment_tolerance_percent: u64,
     refresh_rate: u64,
     early_payment_percent: u64,
@@ -37,6 +40,7 @@ impl<P> AccountingConfig<P> {
     ) -> Self {
         Self {
             payment_threshold,
+            base_payment_threshold: payment_threshold,
             payment_tolerance_percent,
             refresh_rate,
             early_payment_percent,
@@ -49,6 +53,8 @@ impl<P> AccountingConfig<P> {
     /// `payment_threshold` and `refresh_rate` divided by `client_only_factor`,
     /// floored at one. Pacing against the unscaled storer figures would let a
     /// burst cross the storer's disconnect line before our settle engages.
+    /// Debtor direction only: `base_payment_threshold` is preserved so the
+    /// creditor serve lines stay keyed on the remote's type at full scale.
     pub fn for_client(self) -> Self {
         let factor = self.client_only_factor.max(1);
         Self {
@@ -64,6 +70,7 @@ impl From<&AccountingArgs> for AccountingConfig<FixedPricingConfig> {
     fn from(args: &AccountingArgs) -> Self {
         Self {
             payment_threshold: args.payment_threshold,
+            base_payment_threshold: args.payment_threshold,
             payment_tolerance_percent: args.payment_tolerance_percent,
             refresh_rate: args.refresh_rate,
             early_payment_percent: args.early_payment_percent,
@@ -77,6 +84,7 @@ impl Default for AccountingConfig<FixedPricingConfig> {
     fn default() -> Self {
         Self {
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
+            base_payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
             payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
@@ -92,6 +100,10 @@ where
 {
     fn payment_threshold(&self) -> Au {
         Au::from_amount(self.payment_threshold)
+    }
+
+    fn base_payment_threshold(&self) -> Au {
+        Au::from_amount(self.base_payment_threshold)
     }
 
     fn payment_tolerance_percent(&self) -> u64 {
@@ -153,6 +165,16 @@ mod tests {
             storer_threshold / factor
         );
         assert_eq!(client.refresh_rate().as_amount(), storer_refresh / factor);
+        // The unscaled base survives the scaling: creditor serve lines derive
+        // from it, so a client node still extends full-scale lines.
+        assert_eq!(
+            client.base_payment_threshold().as_amount(),
+            storer_threshold
+        );
+        assert_eq!(
+            client.client_payment_threshold().as_amount(),
+            storer_threshold / factor
+        );
         // The disconnect threshold derives from the now-scaled payment threshold,
         // so it scales down with it: we pace against the same client ceiling the
         // serving storer enforces on us.
