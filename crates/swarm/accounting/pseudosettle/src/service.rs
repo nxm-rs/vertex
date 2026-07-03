@@ -766,7 +766,6 @@ mod tests {
     #[test]
     fn missing_anchor_yields_zero_allowance() {
         let peer = test_peer();
-        let refresh_rate = Au::from_amount(4_500_000);
         let svc = service_with_large_debt(peer);
 
         // Neither anchor map holds this peer, so the zero provably comes from
@@ -933,7 +932,7 @@ mod tests {
             .await;
             let ack = drain_single_ack(&mut rx);
             assert_eq!(ack.accepted, Au::from_amount(1_000_000));
-            total = total + ack.accepted;
+            total += ack.accepted;
             assert_eq!(svc.accounting.peer_state(peer).settlement_received(), total);
         }
     }
