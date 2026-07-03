@@ -208,10 +208,16 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // and forgets a peer's in-flight slots on disconnect. The origin debit is
     // reserved and committed by the dispatch gate on the origin-gated handle, not
     // by the service.
+    // The service feeds a peer's announced payment threshold into the one shared
+    // accounting, which clamps it to the per-peer settle line.
+    let adopt = accounting.accounting().clone();
     let client_service = client_service
         .with_reporter(reporter)
         .with_inflight_limiter(Arc::clone(&inflight))
-        .with_retrieval_latency(Arc::clone(&retrieval_latency));
+        .with_retrieval_latency(Arc::clone(&retrieval_latency))
+        .with_threshold_adopter(Arc::new(move |peer, announced| {
+            adopt.adopt_payment_threshold(peer, announced)
+        }));
 
     ClientCore {
         accounting,

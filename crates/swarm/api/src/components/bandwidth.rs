@@ -200,6 +200,12 @@ pub trait SwarmAccounting: Send + Sync {
     fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) {
         let _ = (peer, node_type);
     }
+
+    /// Adopt the peer-announced payment threshold as its settle line, clamped by
+    /// the implementation. Inbound announcements only; never widens our serve line.
+    fn adopt_payment_threshold(&self, peer: OverlayAddress, announced: Au) {
+        let _ = (peer, announced);
+    }
 }
 
 /// The object-safe origin dispatch gate over one accounting instance: the
