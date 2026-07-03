@@ -256,28 +256,38 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static>
         state
     }
 
-    /// Register inbound connection in Connected state (awaiting identity).
+    /// Register an inbound connection in Connected state, or None if the peer is already tracked.
     pub fn connected_inbound(
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
-    ) -> ConnectionState<Id, R> {
-        let key = RegistryKey::Pending(peer_id);
-        let started_at = Instant::now();
+    ) -> Option<ConnectionState<Id, R>> {
+        let state = self.with_maps(|maps| {
+            if maps.peer_to_key.contains_key(&peer_id) {
+                return None;
+            }
 
-        let state = ConnectionState::Connected {
-            peer_id,
-            connection_id,
-            id: None,
-            direction: ConnectionDirection::Inbound,
-            started_at,
-            reason: R::default(),
-        };
+            let key = RegistryKey::Pending(peer_id);
+            let started_at = Instant::now();
 
-        let returned = state.clone();
-        self.with_maps(|maps| maps.insert(key, state));
-        self.num_pending.fetch_add(1, Ordering::Relaxed);
-        returned
+            let state = ConnectionState::Connected {
+                peer_id,
+                connection_id,
+                id: None,
+                direction: ConnectionDirection::Inbound,
+                started_at,
+                reason: R::default(),
+            };
+
+            let returned = state.clone();
+            maps.insert(key, state);
+            Some(returned)
+        });
+
+        if state.is_some() {
+            self.num_pending.fetch_add(1, Ordering::Relaxed);
+        }
+        state
     }
 
     /// Activate a connection: transition to Active with confirmed application-level ID.
@@ -709,7 +719,7 @@ mod tests {
         let r = registry();
         let p = peer(1);
 
-        let state = r.connected_inbound(p, conn(1));
+        let state = r.connected_inbound(p, conn(1)).unwrap();
         assert!(matches!(
             state,
             ConnectionState::Connected {
@@ -791,7 +801,7 @@ mod tests {
         struct TestReason(Option<String>);
 
         let r = PeerRegistry::<TestId, TestReason>::new();
-        let state = r.connected_inbound(peer(1), conn(1));
+        let state = r.connected_inbound(peer(1), conn(1)).unwrap();
         assert_eq!(state.reason(), &TestReason(None));
     }
 
@@ -862,6 +872,47 @@ mod tests {
         r.disconnected(&p);
         assert_eq!(ActivePeers::active_peer_id(&r, &id), None);
         assert_eq!(ActivePeers::active_id(&r, &p), None);
+    }
+
+    #[test]
+    fn test_connected_inbound_duplicate_does_not_clobber_active() {
+        let r = registry();
+        let p = peer(1);
+        let id = TestId(1);
+
+        r.connected_inbound(p, conn(1)).unwrap();
+        r.activate(p, conn(1), id.clone());
+
+        // An inbound duplicate for an already-tracked peer registers nothing.
+        assert!(r.connected_inbound(p, conn(2)).is_none());
+
+        // The Active mapping is untouched in both directions.
+        assert_eq!(ActivePeers::active_id(&r, &p), Some(id.clone()));
+        assert_eq!(ActivePeers::active_peer_id(&r, &id), Some(p));
+        assert_counts(&r, 0, 1);
+
+        // Closing the healthy connection still returns the Active state with its id.
+        let s = r.disconnected(&p).unwrap();
+        assert!(s.is_active());
+        assert_eq!(s.id(), Some(id));
+    }
+
+    #[test]
+    fn test_connected_inbound_duplicate_over_pending_registers_nothing() {
+        let r = registry();
+        let p = peer(1);
+
+        r.connected_inbound(p, conn(1)).unwrap();
+        assert!(r.connected_inbound(p, conn(2)).is_none());
+        assert_eq!(r.pending_count(), 1);
+
+        // conn(2) was never registered: removing it is a no-op.
+        assert!(r.disconnected_connection(conn(2)).is_none());
+        assert_eq!(r.pending_count(), 1);
+
+        // conn(1) still owns the sole pending entry.
+        assert!(r.disconnected_connection(conn(1)).is_some());
+        assert_counts(&r, 0, 0);
     }
 
     /// Regression: ByPeerId replacement must clean up Connected entries under the
