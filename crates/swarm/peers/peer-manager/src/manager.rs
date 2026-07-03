@@ -1347,13 +1347,15 @@ mod tests {
     #[test]
     fn test_startup_drops_over_cap_snapshot_entries() {
         let store = memory_store();
-        // Persist four bin-0 peers directly.
-        let records: Vec<PeerSnapshot> = [0x80u8, 0xc0, 0xa0, 0xb0]
+        // Persist four bin-0 peers with distinct freshness. Store them in an
+        // order that does not match freshness so the load-time sort is exercised.
+        let seeds = [(0x80u8, 1000u64), (0xc0, 4000), (0xa0, 2000), (0xb0, 3000)];
+        let records: Vec<PeerSnapshot> = seeds
             .into_iter()
-            .map(|byte| PeerSnapshot {
+            .map(|(byte, last_seen)| PeerSnapshot {
                 peer: make_swarm_peer_minimal(byte),
                 node_type: SwarmNodeType::Client,
-                last_seen: 1000,
+                last_seen,
             })
             .collect();
         store.store(&records).unwrap();
@@ -1369,7 +1371,24 @@ mod tests {
 
         assert_eq!(pm.index().len(), 2, "over-cap snapshot entries dropped");
         assert_eq!(pm.stored_count(), 2);
-        assert_eq!(pm.index().bin_size(Bin::new(0).unwrap()), 2);
+
+        let bin0 = Bin::new(0).unwrap();
+        assert_eq!(pm.index().bin_size(bin0), 2);
+
+        // The two freshest (0xc0 @ 4000, 0xb0 @ 3000) survive the per-bin cap,
+        // ordered freshest-first so the dial queue biases toward them.
+        let freshest = OverlayAddress::from(*make_swarm_peer_minimal(0xc0).overlay());
+        let next = OverlayAddress::from(*make_swarm_peer_minimal(0xb0).overlay());
+        let stale = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
+        let stalest = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
+
+        assert_eq!(
+            pm.index().peers_in_bin(bin0),
+            vec![freshest, next],
+            "freshest survivors are inserted freshest-first"
+        );
+        assert!(pm.swarm_peer(&stale).is_none(), "staler entry dropped");
+        assert!(pm.swarm_peer(&stalest).is_none(), "stalest entry dropped");
     }
 
     #[test]

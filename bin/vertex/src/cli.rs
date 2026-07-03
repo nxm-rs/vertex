@@ -64,6 +64,14 @@ pub struct SwarmRunNodeArgs {
     pub protocol: ProtocolArgs,
 }
 
+/// Whether the shared database persists by default for this node type.
+///
+/// Storers persist so a restart re-converges from the known address book;
+/// clients and bootnodes stay ephemeral.
+fn db_persist_default(node_type: SwarmNodeType) -> bool {
+    matches!(node_type, SwarmNodeType::Storer)
+}
+
 /// Run the Swarm CLI.
 pub async fn run() -> Result<()> {
     run_cli(|cli: SwarmCli| async move {
@@ -87,12 +95,13 @@ pub async fn run() -> Result<()> {
         config.apply_args(&args.infra, &args.protocol);
         config.protocol.override_node_type(node_type);
 
-        // Resolve database config from CLI args (in-memory unless persistence
-        // is opted into via --db.path or --db.persist)
-        let database_config = config
-            .infra
-            .database
-            .database_config(dirs.network.join("db").join("vertex.redb"));
+        // Resolve database config from CLI args. Storers default to persistent
+        // so a restart seeds re-convergence from the known address book; clients
+        // and bootnodes stay in-memory. --db.in-memory opts out.
+        let database_config = config.infra.database.database_config(
+            dirs.network.join("db").join("vertex.redb"),
+            db_persist_default(node_type),
+        );
 
         // Build metrics config from CLI args
         let metrics_config = args.infra.observability.metrics.metrics_config();
@@ -187,4 +196,16 @@ pub async fn run() -> Result<()> {
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_persist_default_is_storer_only() {
+        assert!(db_persist_default(SwarmNodeType::Storer));
+        assert!(!db_persist_default(SwarmNodeType::Client));
+        assert!(!db_persist_default(SwarmNodeType::Bootnode));
+    }
 }
