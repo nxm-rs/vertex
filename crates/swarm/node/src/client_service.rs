@@ -708,6 +708,9 @@ mod tests {
 
     use super::*;
 
+    /// Recorded `(peer, announced threshold)` pairs a test threshold adopter sinks.
+    type AdopterCalls = Arc<Mutex<Vec<(OverlayAddress, Au)>>>;
+
     #[derive(Default)]
     struct RecordingReporter {
         reports: Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
@@ -748,7 +751,7 @@ mod tests {
         (service, reporter)
     }
 
-    fn service_with_adopter() -> (ClientService, Arc<Mutex<Vec<(OverlayAddress, Au)>>>) {
+    fn service_with_adopter() -> (ClientService, AdopterCalls) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&calls);
         let (service, _event_tx, _handle) = ClientService::new();
