@@ -9,6 +9,7 @@ use vertex_swarm_primitives::{
 };
 
 use super::limits::LimitsSnapshot;
+use super::slot_of;
 
 /// Captured state for consistent candidate selection.
 ///
@@ -76,6 +77,7 @@ impl<'a> CandidateSelector<'a> {
     }
 
     /// Remaining capacity.
+    #[cfg(test)]
     pub(crate) fn remaining(&self) -> usize {
         self.max_candidates.saturating_sub(self.candidates.len())
     }
@@ -117,13 +119,45 @@ impl<'a> CandidateSelector<'a> {
         true
     }
 
-    /// Try to add with bin capacity enforcement.
+    /// Try to add up to the bin's dial target (`needs_more` against effective
+    /// count plus this round's selections).
     pub(crate) fn try_add_with_bin_capacity<I: SwarmIdentity>(
         &mut self,
         peer: OverlayAddress,
         bin: Bin,
         effective_count: usize,
         peer_manager: &PeerManager<I>,
+    ) -> bool {
+        self.try_add_bounded(peer, bin, effective_count, peer_manager, false)
+    }
+
+    /// Try to add a peer that fills an empty sub-prefix slot, admitting it up
+    /// to the bin's retention floor rather than its dial target.
+    ///
+    /// The floor is at or above the target, so an empty-slot filler can lift a
+    /// count-satisfied bin toward slot coverage; the floor is also the trim
+    /// floor, so the peer it adds can never be trimmed straight back out.
+    pub(crate) fn try_add_for_slot<I: SwarmIdentity>(
+        &mut self,
+        peer: OverlayAddress,
+        bin: Bin,
+        effective_count: usize,
+        peer_manager: &PeerManager<I>,
+    ) -> bool {
+        self.try_add_bounded(peer, bin, effective_count, peer_manager, true)
+    }
+
+    /// Shared admission: eligibility, dedup, and a bin-capacity bound. When
+    /// `fills_empty_slot` the bound is the retention floor; otherwise the dial
+    /// target. Bin bookkeeping is shared across both, so callers can mix the
+    /// two within a bin without double-counting.
+    fn try_add_bounded<I: SwarmIdentity>(
+        &mut self,
+        peer: OverlayAddress,
+        bin: Bin,
+        effective_count: usize,
+        peer_manager: &PeerManager<I>,
+        fills_empty_slot: bool,
     ) -> bool {
         if self.is_full() {
             return false;
@@ -141,11 +175,15 @@ impl<'a> CandidateSelector<'a> {
             return false;
         }
 
-        // Check bin capacity: effective + already_selected < target
         let already_selected = self.bin_selected(bin);
         let projected_count = effective_count + already_selected;
 
-        if !self.snapshot.limits.needs_more(bin, projected_count) {
+        let admit = if fills_empty_slot {
+            projected_count < self.snapshot.limits.retention_floor(bin)
+        } else {
+            self.snapshot.limits.needs_more(bin, projected_count)
+        };
+        if !admit {
             return false;
         }
 
@@ -218,7 +256,15 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     }
 }
 
-/// Select candidates for balanced bins (< depth) using linear tapering.
+/// Select candidates for balanced bins (< depth), spreading each bin's dials
+/// across its sub-prefix slots.
+///
+/// Within a bin a candidate that fills a slot no connected or already-selected
+/// peer covers is admitted up to the retention floor; a candidate landing on an
+/// already-covered slot only fills the count deficit toward the dial target.
+/// So a bin whose count target is met by peers clustered in one sub-trie still
+/// pulls in diverse supply, while duplicate-slot peers never dial past the
+/// target. Bins are visited proximity-order descending, as before.
 pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
     peer_manager: &PeerManager<I>,
@@ -229,55 +275,64 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         return;
     }
 
-    // Collect bin stats: (bin, effective, deficit)
-    let mut bin_stats: Vec<(Bin, usize, usize)> = Vec::new();
-
+    // A bin is in scope while it sits below its retention floor: the empty-slot
+    // pass may dial up to that floor, a superset of the deficit-against-target
+    // condition. The lazy supply iterator keeps floor-satisfied bins cheap.
+    let mut bins: Vec<(Bin, usize)> = Vec::new();
     for bin in balanced_bins(depth) {
         let effective = connected_counts(bin);
-        let already_selected = selector.bin_selected(bin);
-
-        if !selector
-            .snapshot()
-            .limits
-            .needs_more(bin, effective + already_selected)
-        {
-            continue;
-        }
-
-        let deficit = selector
-            .snapshot()
-            .limits
-            .deficit(bin, effective + already_selected);
-        if deficit > 0 {
-            bin_stats.push((bin, effective, deficit));
+        let projected = effective + selector.bin_selected(bin);
+        if projected < selector.snapshot().limits.retention_floor(bin) {
+            bins.push((bin, effective));
         }
     }
 
     // Sort by PO descending (prioritize higher bins)
-    bin_stats.sort_by_key(|b| std::cmp::Reverse(b.0));
+    bins.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     // See select_neighborhood_candidates: exclude connected peers from the
     // candidate supply or saturating bins starve their own refill.
     let connected = selector.connected_index();
 
-    for (bin, effective, deficit) in bin_stats {
+    for (bin, effective) in bins {
         if selector.is_full() {
             break;
         }
 
-        // Limit to remaining deficit for this bin
-        let to_add = deficit.min(selector.remaining());
-        let mut added = 0;
+        // Slots the connected set already covers; empty-slot fillers must miss
+        // all of these and every slot claimed earlier this round.
+        let mut covered: HashSet<u8> = connected
+            .peers_in_bin(bin)
+            .into_iter()
+            .map(|overlay| slot_of(&overlay, bin))
+            .collect();
 
+        // First pass: admit empty-slot fillers up to the retention floor,
+        // buffering duplicate-slot peers for the count-deficit pass.
+        let mut duplicates: Vec<OverlayAddress> = Vec::new();
         for peer in peer_manager
             .dialable_overlays_in_bin_excluding(bin, |overlay| connected.exists(overlay))
         {
-            if added >= to_add || selector.is_full() {
+            if selector.is_full() {
                 break;
             }
-            if selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
-                added += 1;
+            let slot = slot_of(&peer, bin);
+            if covered.contains(&slot) {
+                duplicates.push(peer);
+                continue;
             }
+            if selector.try_add_for_slot(peer, bin, effective, peer_manager) {
+                covered.insert(slot);
+            }
+        }
+
+        // Second pass: duplicate-slot peers fill only the count deficit toward
+        // the dial target (empty-slot fills may already have met it).
+        for peer in duplicates {
+            if selector.is_full() {
+                break;
+            }
+            let _ = selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager);
         }
     }
 }

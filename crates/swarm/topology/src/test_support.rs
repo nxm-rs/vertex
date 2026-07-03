@@ -10,6 +10,7 @@ use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 
 use crate::behaviour::ConnectionRegistry;
+use crate::kademlia::BIT_SUFFIX_LENGTH;
 
 pub(crate) struct TopologyTestContext {
     pub local_overlay: OverlayAddress,
@@ -43,16 +44,11 @@ impl TopologyTestContext {
     }
 }
 
-/// Byte index carrying the sub-prefix that [`overlay_in_bin_with_subprefix`]
-/// clusters on for `bin`: the byte just past the bin's differing bit, capped so
-/// it never collides with the deep uniqueness byte.
-pub(crate) fn subprefix_index(bin: u8) -> usize {
-    ((bin / 8) as usize + 1).min(30)
-}
-
 /// Build an overlay at exactly proximity order `bin` to `base`, disambiguated by
 /// `idx` in the deepest byte (below any small bin, so it does not move the
-/// proximity order). Rng-free, so address generation stays deterministic.
+/// proximity order). Rng-free, so address generation stays deterministic. Every
+/// overlay lands in slot 0, so slot-aware selection degenerates to plain
+/// count-based fill for populations built with this helper.
 pub(crate) fn overlay_in_bin(base: OverlayAddress, bin: u8, idx: u8) -> OverlayAddress {
     let mut bytes = [0u8; 32];
     bytes.copy_from_slice(base.as_slice());
@@ -63,19 +59,30 @@ pub(crate) fn overlay_in_bin(base: OverlayAddress, bin: u8, idx: u8) -> OverlayA
     OverlayAddress::from(bytes)
 }
 
-/// Like [`overlay_in_bin`] but forces a shared `suffix` byte just past the bin
-/// boundary. A family built with one `suffix` lands in `bin` yet shares a
-/// sub-prefix, collapsing into a single sub-trie (a prefix monoculture).
-pub(crate) fn overlay_in_bin_with_subprefix(
+/// Like [`overlay_in_bin`] but places the overlay in an explicit sub-prefix
+/// `slot`: the [`BIT_SUFFIX_LENGTH`] bits right after the bin's differing bit
+/// are set to `slot`, matching the production `slot_of` extraction. A family
+/// built with one `slot` lands in `bin` yet shares a sub-trie (a monoculture);
+/// distinct slots spread across the bin's sub-tries.
+pub(crate) fn overlay_in_bin_with_slot(
     base: OverlayAddress,
     bin: u8,
-    suffix: u8,
+    slot: u8,
     idx: u8,
 ) -> OverlayAddress {
     let mut bytes = [0u8; 32];
     bytes.copy_from_slice(base.as_slice());
     bytes[(bin / 8) as usize] ^= 0x80 >> (bin % 8);
-    bytes[subprefix_index(bin)] = suffix;
+    for i in 0..BIT_SUFFIX_LENGTH {
+        let pos = bin as usize + 1 + i as usize;
+        let bit = (slot >> (BIT_SUFFIX_LENGTH - 1 - i)) & 1;
+        let mask = 0x80u8 >> (pos % 8);
+        if bit == 1 {
+            bytes[pos / 8] |= mask;
+        } else {
+            bytes[pos / 8] &= !mask;
+        }
+    }
     bytes[31] = idx;
     OverlayAddress::from(bytes)
 }

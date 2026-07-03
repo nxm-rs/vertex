@@ -11,6 +11,7 @@ mod phase;
 mod routing;
 #[cfg(test)]
 mod sim;
+mod slots;
 mod task;
 
 pub(crate) use admission::kademlia_admission_control;
@@ -27,6 +28,9 @@ pub(crate) use limits::LimitsSnapshot;
 pub use phase::TopologyPhase;
 pub(crate) use phase::{PhaseTracker, PhaseTransition};
 pub(crate) use routing::KademliaRouting;
+#[cfg(test)]
+pub(crate) use slots::BIT_SUFFIX_LENGTH;
+pub(crate) use slots::slot_of;
 pub(crate) use task::{RoutingEvaluatorHandle, spawn_evaluator};
 
 use vertex_swarm_api::SwarmIdentity;
