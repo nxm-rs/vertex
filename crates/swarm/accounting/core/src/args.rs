@@ -53,10 +53,3 @@ impl Default for AccountingArgs {
         }
     }
 }
-
-impl AccountingArgs {
-    /// Build the runtime AccountingConfig from these CLI arguments.
-    pub fn accounting_config(&self) -> crate::DefaultAccountingConfig {
-        crate::AccountingConfig::from(self)
-    }
-}

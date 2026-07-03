@@ -70,11 +70,6 @@ impl<C, P> AccountingBuilder<C, P> {
         self.providers.extend(providers);
         self
     }
-
-    /// Get a reference to the config.
-    pub fn config(&self) -> &C {
-        &self.config
-    }
 }
 
 impl<C> AccountingBuilder<C, NoPricer>
@@ -105,19 +100,6 @@ impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send 
     ) -> ClientAccounting<Arc<Accounting<C, I>>, P> {
         let accounting = Accounting::with_providers(self.config, identity.clone(), self.providers);
         ClientAccounting::new(Arc::new(accounting), self.pricing)
-    }
-}
-
-/// No-op accounting builder for bootnodes.
-///
-/// Always allows transfers without balance tracking.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoAccountingBuilder;
-
-impl NoAccountingBuilder {
-    /// Create a new no-op accounting builder.
-    pub fn new() -> Self {
-        Self
     }
 }
 
