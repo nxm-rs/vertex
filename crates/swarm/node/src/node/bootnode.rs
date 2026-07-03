@@ -4,7 +4,7 @@
 //! A [`BootNode`] participates in peer discovery via handshake, hive, and
 //! ping and advertises the pricing protocol in listen-only mode so peers
 //! that disconnect on a failed pricing handshake stay connected. It does not
-//! initiate any pricing announcement of its own and does not run the other
+//! initiate any payment threshold announcement of its own and does not run the other
 //! client protocols (retrieval, pushsync, pseudosettle).
 
 use std::convert::Infallible;
@@ -39,7 +39,7 @@ use crate::protocol::{
 /// The same client behaviour composed into [`ClientNode`](super::ClientNode) is
 /// used here with [`SwarmNodeType::Bootnode`], which narrows the advertised
 /// client protocol set to pricing only. The bootnode never issues client
-/// commands (`AnnouncePricing`, `RetrieveChunk`, ...), so only the inbound
+/// commands (`AnnouncePaymentThreshold`, `RetrieveChunk`, ...), so only the inbound
 /// pricing path is ever exercised.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]

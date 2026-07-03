@@ -75,11 +75,11 @@ pub struct PeerState {
     reserved_balance: AtomicU64,
     shadow_reserved_balance: AtomicU64,
     ghost_balance: AtomicU64,
-    payment_threshold: AtomicI64,
+    serve_line: AtomicI64,
     settle_line: AtomicI64,
     disconnect_threshold: Au,
-    refresh_allowance: AtomicI64,
-    settlement_received: AtomicU64,
+    allowance_rate: AtomicI64,
+    cumulative_repayment: AtomicU64,
     /// The cumulative-repayment value the next serve-line raise triggers past.
     growth_checkpoint: AtomicI64,
 }
@@ -87,7 +87,7 @@ pub struct PeerState {
 impl PeerState {
     /// Create peer state with the given thresholds in AU.
     ///
-    /// The serve line (`payment_threshold`) is the debt we let the peer owe us
+    /// The serve line is the debt we let the peer owe us
     /// before refusing service; the settle line is the debt we let ourselves owe
     /// the peer before settling, seeded from the local payment threshold and
     /// tightened by the peer's clamped announcement. The two are distinct fields
@@ -95,22 +95,22 @@ impl PeerState {
     /// settlement rate extended to the peer, healed with the serve line once
     /// the handshake node type is known.
     pub fn new(
-        payment_threshold: Au,
+        serve_line: Au,
         settle_line: Au,
         disconnect_threshold: Au,
-        refresh_allowance: Au,
+        allowance_rate: Au,
     ) -> Self {
         Self {
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
             ghost_balance: AtomicU64::new(0),
-            payment_threshold: AtomicI64::new(payment_threshold.get()),
+            serve_line: AtomicI64::new(serve_line.get()),
             settle_line: AtomicI64::new(settle_line.get()),
             disconnect_threshold,
-            refresh_allowance: AtomicI64::new(refresh_allowance.get()),
-            settlement_received: AtomicU64::new(0),
-            growth_checkpoint: AtomicI64::new(first_checkpoint(refresh_allowance).get()),
+            allowance_rate: AtomicI64::new(allowance_rate.get()),
+            cumulative_repayment: AtomicU64::new(0),
+            growth_checkpoint: AtomicI64::new(first_checkpoint(allowance_rate).get()),
         }
     }
 
@@ -171,13 +171,13 @@ impl PeerState {
     }
 
     /// Get the payment threshold in AU.
-    pub fn payment_threshold(&self) -> Au {
-        Au::new(self.payment_threshold.load(Ordering::Relaxed))
+    pub fn serve_line(&self) -> Au {
+        Au::new(self.serve_line.load(Ordering::Relaxed))
     }
 
     /// Update the serve line; the disconnect line is fixed at creation.
-    pub fn set_payment_threshold(&self, line: Au) {
-        self.payment_threshold.store(line.get(), Ordering::Relaxed);
+    pub fn set_serve_line(&self, line: Au) {
+        self.serve_line.store(line.get(), Ordering::Relaxed);
     }
 
     /// Get the settle line in AU: the debt we let ourselves owe the peer before
@@ -197,24 +197,24 @@ impl PeerState {
     }
 
     /// Get the per-second settlement allowance rate in AU.
-    pub fn refresh_allowance(&self) -> Au {
-        Au::new(self.refresh_allowance.load(Ordering::Relaxed))
+    pub fn allowance_rate(&self) -> Au {
+        Au::new(self.allowance_rate.load(Ordering::Relaxed))
     }
 
     /// Update the allowance rate; healed with the serve line at connect.
-    pub fn set_refresh_allowance(&self, rate: Au) {
-        self.refresh_allowance.store(rate.get(), Ordering::Relaxed);
+    pub fn set_allowance_rate(&self, rate: Au) {
+        self.allowance_rate.store(rate.get(), Ordering::Relaxed);
     }
 
     /// Accumulate an accepted inbound settlement and return the new cumulative
     /// total, saturating so a lifetime of repayment can never wrap the signal
     /// threshold growth reads.
-    pub fn add_settlement_received(&self, amount: Au) -> Au {
+    pub fn add_repayment(&self, amount: Au) -> Au {
         let delta = amount.as_amount();
-        let mut current = self.settlement_received.load(Ordering::Relaxed);
+        let mut current = self.cumulative_repayment.load(Ordering::Relaxed);
         loop {
             let next = current.saturating_add(delta);
-            match self.settlement_received.compare_exchange_weak(
+            match self.cumulative_repayment.compare_exchange_weak(
                 current,
                 next,
                 Ordering::Relaxed,
@@ -227,8 +227,8 @@ impl PeerState {
     }
 
     /// Get the cumulative accepted inbound settlement in AU.
-    pub fn settlement_received(&self) -> Au {
-        Au::from_amount(self.settlement_received.load(Ordering::Relaxed))
+    pub fn cumulative_repayment(&self) -> Au {
+        Au::from_amount(self.cumulative_repayment.load(Ordering::Relaxed))
     }
 
     /// Get the growth checkpoint in AU: the cumulative repayment the next
@@ -241,7 +241,7 @@ impl PeerState {
     /// connection at the peer-keyed allowance rate: growth is earned per
     /// connection, starting one step above zero repayment.
     pub fn reset_settlement_growth(&self, rate: Au) {
-        self.settlement_received.store(0, Ordering::Relaxed);
+        self.cumulative_repayment.store(0, Ordering::Relaxed);
         self.growth_checkpoint
             .store(first_checkpoint(rate).get(), Ordering::Relaxed);
     }
@@ -263,10 +263,7 @@ impl PeerState {
         {
             return None;
         }
-        Some(Au::new(saturating_fetch_add(
-            &self.payment_threshold,
-            rate.get(),
-        )))
+        Some(Au::new(saturating_fetch_add(&self.serve_line, rate.get())))
     }
 }
 
@@ -346,17 +343,17 @@ mod tests {
     fn test_thresholds() {
         let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
 
-        assert_eq!(state.payment_threshold(), au(1000));
+        assert_eq!(state.serve_line(), au(1000));
         assert_eq!(state.disconnect_threshold(), au(10000));
     }
 
     #[test]
-    fn set_payment_threshold_updates_the_serve_line() {
+    fn set_serve_line_stores_the_new_line() {
         let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
-        assert_eq!(state.payment_threshold(), au(1000));
+        assert_eq!(state.serve_line(), au(1000));
 
-        state.set_payment_threshold(au(200));
-        assert_eq!(state.payment_threshold(), au(200));
+        state.set_serve_line(au(200));
+        assert_eq!(state.serve_line(), au(200));
         // The disconnect line is fixed at creation and never moves with it.
         assert_eq!(state.disconnect_threshold(), au(10000));
     }
@@ -372,11 +369,11 @@ mod tests {
         // Exactly at the checkpoint: no raise, checkpoint unmoved.
         assert_eq!(state.grow_serve_line(au(1_000), au(10)), None);
         assert_eq!(state.growth_checkpoint(), au(1_000));
-        assert_eq!(state.payment_threshold(), au(1_000));
+        assert_eq!(state.serve_line(), au(1_000));
 
         // One past it: the serve line rises exactly one rate step.
         assert_eq!(state.grow_serve_line(au(1_001), au(10)), Some(au(1_010)));
-        assert_eq!(state.payment_threshold(), au(1_010));
+        assert_eq!(state.serve_line(), au(1_010));
         assert_eq!(state.growth_checkpoint(), au(2_000));
     }
 
@@ -412,13 +409,13 @@ mod tests {
     #[test]
     fn reset_settlement_growth_restarts_the_schedule_at_the_given_rate() {
         let state = PeerState::new(au(1000), au(1000), au(10000), au(10));
-        state.add_settlement_received(au(5_000));
+        state.add_repayment(au(5_000));
         assert!(state.grow_serve_line(au(5_000), au(10)).is_some());
 
         // A reconnect at a different peer-keyed rate restarts both the
         // accumulator and the checkpoint from that rate's first step.
         state.reset_settlement_growth(au(20));
-        assert_eq!(state.settlement_received(), Au::ZERO);
+        assert_eq!(state.cumulative_repayment(), Au::ZERO);
         assert_eq!(state.growth_checkpoint(), au(2_000));
     }
 }

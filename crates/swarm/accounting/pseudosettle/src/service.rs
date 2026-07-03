@@ -289,13 +289,13 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
                     self.last_settlement.insert(peer, now);
 
                     // A crossed growth checkpoint raised the serve line;
-                    // re-announce it on the pricing stream so the peer paces
+                    // re-announce the raised serve line on the pricing wire protocol so the peer paces
                     // against the credit actually extended.
                     if let Some(line) = credit.raised_serve_line {
                         debug!(%peer, %line, "Re-announcing the raised payment threshold");
                         if let Err(e) = self.command_tx.send(ClientCommand::Peer {
                             peer,
-                            command: PeerCommand::AnnouncePricing {
+                            command: PeerCommand::AnnouncePaymentThreshold {
                                 threshold: wire_from_au(line),
                             },
                         }) {
@@ -374,7 +374,7 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
         };
         let elapsed = now.saturating_sub(since);
         let allowance = handle
-            .refresh_allowance()
+            .allowance_rate()
             .checked_scale(elapsed)
             .unwrap_or(Au::from_amount(u64::MAX));
 
@@ -921,14 +921,14 @@ mod tests {
 
         let state = svc.accounting.peer_state(peer);
         assert_eq!(state.balance(), owed - ack.accepted);
-        assert_eq!(state.settlement_received(), ack.accepted);
+        assert_eq!(state.cumulative_repayment(), ack.accepted);
     }
 
     #[tokio::test]
     async fn checkpoint_crossing_re_announces_the_raised_line() {
         // Default config, storer remote: rate 4_500_000, first checkpoint
         // 450_000_000, serve line 13_500_000. A refreshment carrying the
-        // accumulator past the checkpoint emits the ack AND exactly one pricing
+        // accumulator past the checkpoint emits the ack AND exactly one threshold
         // re-announcement with the line raised one rate step.
         let (svc, mut rx) = build_service_with_rx();
         let peer = test_peer();
@@ -957,7 +957,7 @@ mod tests {
                     ..
                 } => assert!(ack.replace(a).is_none(), "exactly one ack"),
                 ClientCommand::Peer {
-                    command: PeerCommand::AnnouncePricing { threshold },
+                    command: PeerCommand::AnnouncePaymentThreshold { threshold },
                     ..
                 } => assert!(announced.replace(threshold).is_none(), "one announce"),
                 other => panic!("unexpected command {other:?}"),
@@ -1003,7 +1003,10 @@ mod tests {
             let ack = drain_single_ack(&mut rx);
             assert_eq!(ack.accepted, Au::from_amount(1_000_000));
             total += ack.accepted;
-            assert_eq!(svc.accounting.peer_state(peer).settlement_received(), total);
+            assert_eq!(
+                svc.accounting.peer_state(peer).cumulative_repayment(),
+                total
+            );
         }
     }
 

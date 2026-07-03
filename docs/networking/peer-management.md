@@ -26,7 +26,7 @@ graph TD
 
     peers -->|"Arc::clone() (cheap)"| handler1["RetrievalHandler<br/>(holds Arc clone)"]
     peers -->|"Arc::clone() (cheap)"| handler2["PushSyncHandler<br/>(holds Arc clone)"]
-    peers -->|"Arc::clone() (cheap)"| handler3["PricingHandler<br/>(holds Arc clone)"]
+    peers -->|"Arc::clone() (cheap)"| handler3["ClientHandler<br/>(holds Arc clone)"]
 
     handler1 --> state
     handler2 --> state

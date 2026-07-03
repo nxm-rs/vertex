@@ -681,11 +681,11 @@ mod tests {
         fn record(&self, _amount: Au, _direction: Direction) {}
         fn settlement_received(&self, _amount: Au) -> vertex_swarm_api::SettlementCredit {
             vertex_swarm_api::SettlementCredit {
-                total: Au::ZERO,
+                cumulative_repayment: Au::ZERO,
                 raised_serve_line: None,
             }
         }
-        fn refresh_allowance(&self) -> Au {
+        fn allowance_rate(&self) -> Au {
             Au::ZERO
         }
         fn balance(&self) -> Au {

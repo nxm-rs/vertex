@@ -164,7 +164,7 @@ pub trait CommitOnWrite: Send {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettlementCredit {
     /// The peer's cumulative accepted repayment after this credit.
-    pub total: Au,
+    pub cumulative_repayment: Au,
     /// The serve line as raised by a crossed growth checkpoint, `None` when no
     /// checkpoint was crossed. Reads back the enforced per-peer state, so an
     /// announcement built on it carries exactly what the provide gate enforces.
@@ -191,7 +191,7 @@ pub trait SwarmPeerAccounting: Send + Sync {
 
     /// The per-second time-based settlement allowance extended to this peer,
     /// keyed on its handshake node type at connect.
-    fn refresh_allowance(&self) -> Au;
+    fn allowance_rate(&self) -> Au;
 
     /// Get current balance (positive = peer owes us).
     fn balance(&self) -> Au;
@@ -255,7 +255,7 @@ pub trait SwarmAccounting: Send + Sync {
 
     /// Adopt the peer-announced payment threshold as its settle line, clamped by
     /// the implementation. Inbound announcements only; never widens our serve line.
-    fn adopt_payment_threshold(&self, peer: OverlayAddress, announced: Au) {
+    fn adopt_settle_line(&self, peer: OverlayAddress, announced: Au) {
         let _ = (peer, announced);
     }
 }

@@ -219,10 +219,6 @@ pub enum SwarmNodeType {
 }
 
 impl SwarmNodeType {
-    pub fn requires_pricing(&self) -> bool {
-        !matches!(self, SwarmNodeType::Bootnode)
-    }
-
     pub fn requires_accounting(&self) -> bool {
         !matches!(self, SwarmNodeType::Bootnode)
     }
@@ -434,7 +430,6 @@ mod tests {
     #[test]
     fn bootnode_excludes_client_protocols() {
         let t = SwarmNodeType::Bootnode;
-        assert!(!t.requires_pricing());
         assert!(!t.requires_accounting());
         assert!(!t.requires_retrieval());
         assert!(!t.requires_pushsync());

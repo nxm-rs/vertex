@@ -1,4 +1,7 @@
 //! Pricing protocol for Swarm payment threshold announcement.
+//!
+//! The wire name is historical: the only payload is a payment threshold, a
+//! credit line a peer extends, not a chunk price.
 
 mod codec;
 pub use codec::AnnouncePaymentThreshold;

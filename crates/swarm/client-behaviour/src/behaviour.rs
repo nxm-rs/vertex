@@ -234,7 +234,7 @@ impl ClientBehaviour {
                 // at it.
                 let cap_exempt = matches!(
                     event,
-                    PeerEvent::ChunkReceived { .. } | PeerEvent::PricingSent
+                    PeerEvent::ChunkReceived { .. } | PeerEvent::PaymentThresholdSent
                 );
                 let to_swarm = ToSwarm::GenerateEvent(ClientEvent::Peer {
                     peer: overlay,

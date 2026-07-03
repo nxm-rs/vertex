@@ -216,7 +216,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         .with_inflight_limiter(Arc::clone(&inflight))
         .with_retrieval_latency(Arc::clone(&retrieval_latency))
         .with_threshold_adopter(Arc::new(move |peer, announced| {
-            adopt.adopt_payment_threshold(peer, announced)
+            adopt.adopt_settle_line(peer, announced)
         }));
 
     ClientCore {
