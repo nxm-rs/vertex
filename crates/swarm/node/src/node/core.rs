@@ -112,8 +112,8 @@ pub struct ClientCoreCtx {
     pub spec: Arc<Spec>,
     /// Node identity the accounting and overlay are pinned to.
     pub identity: Arc<Identity>,
-    /// Bandwidth config the accounting builder consumes.
-    pub bandwidth: DefaultAccountingConfig,
+    /// Accounting config the accounting builder consumes.
+    pub accounting: DefaultAccountingConfig,
     /// The node's topology handle.
     pub topology: TopologyHandle<Arc<Identity>>,
     /// The client service to attach the reporter and in-flight limiter to.
@@ -139,7 +139,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     let ClientCoreCtx {
         spec,
         identity,
-        bandwidth,
+        accounting: accounting_config,
         topology,
         client_service,
         client_handle,
@@ -150,7 +150,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
 
     // Pseudosettle is registered first so soft accounting forgives total debt
     // before swap settles originated debt; the order matches `settle_all`.
-    let accounting = AccountingBuilder::new(bandwidth)
+    let accounting = AccountingBuilder::new(accounting_config)
         .with_pricer_from_config(spec)
         .with_settlement(pseudosettle_provider)
         .with_settlements(extra_settlement)
@@ -637,8 +637,8 @@ pub struct ClientTailParams<'a> {
     pub spec: &'a Arc<Spec>,
     /// Node identity the accounting, overlay, and SWAP signer are pinned to.
     pub identity: &'a Arc<Identity>,
-    /// Bandwidth config driving accounting, pricing, and the self-throttle.
-    pub bandwidth: &'a DefaultAccountingConfig,
+    /// Accounting config driving the ledger, pricing, and the self-throttle.
+    pub accounting: &'a DefaultAccountingConfig,
     /// SWAP settlement configuration.
     #[cfg(feature = "swap")]
     pub swap: &'a SwapConfig,
@@ -657,7 +657,7 @@ pub struct ClientTailParams<'a> {
 pub struct ClientCoreTail {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
-    bandwidth: DefaultAccountingConfig,
+    accounting: DefaultAccountingConfig,
     pseudosettle_provider: PseudosettleProvider<DefaultAccountingConfig>,
     pseudosettle_wiring: PseudosettleWiring,
     #[cfg(feature = "swap")]
@@ -680,7 +680,7 @@ impl ClientCoreTail {
         // Pseudosettle: prepare the provider so it embeds in the accounting, and
         // the event sink so wire events route at the node build.
         let (pseudosettle_provider, pseudosettle_wiring) =
-            PseudosettleWiring::prepare(params.bandwidth);
+            PseudosettleWiring::prepare(params.accounting);
         let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
 
         // SWAP: the provider embeds in the accounting and the swap event sink
@@ -694,7 +694,7 @@ impl ClientCoreTail {
             SwapWiring::prepare(
                 params.spec,
                 params.identity,
-                params.bandwidth,
+                params.accounting,
                 params.swap,
                 swap_enabled,
             )
@@ -711,7 +711,7 @@ impl ClientCoreTail {
         let tail = Self {
             spec: Arc::clone(params.spec),
             identity: params.identity.clone(),
-            bandwidth: params.bandwidth.clone(),
+            accounting: params.accounting.clone(),
             pseudosettle_provider,
             pseudosettle_wiring,
             #[cfg(feature = "swap")]
@@ -776,7 +776,7 @@ impl ClientCoreTail {
         let core = assemble_client_core(ClientCoreCtx {
             spec: Arc::clone(&self.spec),
             identity: self.identity.clone(),
-            bandwidth: self.bandwidth.clone(),
+            accounting: self.accounting.clone(),
             topology: topology.clone(),
             client_service,
             client_handle: client_handle.clone(),
@@ -1012,7 +1012,7 @@ mod tests {
     fn prepare_leaves_swap_unwired_without_chequebook() {
         let identity = test_identity_arc();
         let spec = identity.spec().clone();
-        let bandwidth = DefaultAccountingConfig::default();
+        let accounting = DefaultAccountingConfig::default();
 
         // A default client leaves SWAP off (swap_default is off for clients).
         let swap_off = SwapConfig::default();
@@ -1021,7 +1021,7 @@ mod tests {
                 node_type: SwarmNodeType::Client,
                 spec: &spec,
                 identity: &identity,
-                bandwidth: &bandwidth,
+                accounting: &accounting,
                 swap: &swap_off,
             },
             None,
@@ -1042,7 +1042,7 @@ mod tests {
                 node_type: SwarmNodeType::Client,
                 spec: &spec,
                 identity: &identity,
-                bandwidth: &bandwidth,
+                accounting: &accounting,
                 swap: &swap_no_chequebook,
             },
             None,

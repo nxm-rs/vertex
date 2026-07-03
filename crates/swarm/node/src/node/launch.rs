@@ -68,7 +68,7 @@ use crate::inflight::PeerInflightLimiter;
 pub struct ClientLauncher {
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultAccountingConfig,
+    accounting: DefaultAccountingConfig,
     local_store: LocalStoreConfig,
     /// Caller-supplied client cache. `None` builds the default in-memory cache.
     store: Option<Arc<dyn SwarmLocalStore>>,
@@ -91,7 +91,7 @@ impl ClientLauncher {
         Self {
             identity: identity.into(),
             network: NetworkConfig::dial_only(),
-            bandwidth: DefaultAccountingConfig::default(),
+            accounting: DefaultAccountingConfig::default(),
             local_store: LocalStoreConfig::default(),
             store: None,
             peer_store: None,
@@ -136,13 +136,13 @@ impl ClientLauncher {
         self
     }
 
-    /// Set the bandwidth accounting configuration.
+    /// Set the accounting configuration.
     ///
     /// Drives the pseudosettle allowance, the per-chunk price, and the admission
     /// band thresholds. Defaults to [`DefaultAccountingConfig::default`].
     #[must_use]
-    pub fn with_bandwidth(mut self, bandwidth: DefaultAccountingConfig) -> Self {
-        self.bandwidth = bandwidth;
+    pub fn with_accounting(mut self, accounting: DefaultAccountingConfig) -> Self {
+        self.accounting = accounting;
         self
     }
 
@@ -269,13 +269,13 @@ impl ClientLauncher {
         };
 
         // The launcher always builds a client, which paces against the scaled line.
-        let bandwidth = self.bandwidth.for_client();
+        let accounting = self.accounting.for_client();
 
         let tail_params = ClientTailParams {
             node_type: SwarmNodeType::Client,
             spec: &spec,
             identity: &self.identity,
-            bandwidth: &bandwidth,
+            accounting: &accounting,
             #[cfg(feature = "swap")]
             swap: &self.swap,
         };

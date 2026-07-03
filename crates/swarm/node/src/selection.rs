@@ -89,15 +89,15 @@ pub trait SettlementTrigger: Send + Sync {
 /// the set is both the dedup and the per-peer rate limit (the next settle cannot
 /// start until the prior one clears on completion).
 pub struct AccountingSettlement<B> {
-    bandwidth: B,
+    accounting: B,
     in_flight: Arc<Mutex<InFlightSet>>,
 }
 
 impl<B> AccountingSettlement<B> {
-    /// Trigger settlement through `bandwidth`.
-    pub fn new(bandwidth: B) -> Self {
+    /// Trigger settlement through `accounting`.
+    pub fn new(accounting: B) -> Self {
         Self {
-            bandwidth,
+            accounting,
             in_flight: Arc::new(Mutex::new(InFlightSet::default())),
         }
     }
@@ -135,7 +135,7 @@ where
                 return;
             }
         }
-        let handle = self.bandwidth.for_peer(peer);
+        let handle = self.accounting.for_peer(peer);
         let guard = InFlightGuard {
             in_flight: Arc::clone(&self.in_flight),
             peer,

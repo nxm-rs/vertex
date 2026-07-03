@@ -84,12 +84,12 @@ impl BootnodeConfig {
 impl_common_config_getters!(BootnodeConfig);
 impl_builds_protocol!(BootnodeConfig, "Swarm Bootnode");
 
-/// Validated configuration for a Client node with bandwidth accounting.
+/// Validated configuration for a Client node with accounting.
 pub struct ClientConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultAccountingConfig,
+    accounting: DefaultAccountingConfig,
     local_store: LocalStoreConfig,
     chain: ChainConfig,
     swap: SwapConfig,
@@ -101,7 +101,7 @@ impl ClientConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultAccountingConfig,
+        accounting: DefaultAccountingConfig,
         local_store: LocalStoreConfig,
         chain: ChainConfig,
         swap: SwapConfig,
@@ -110,7 +110,7 @@ impl ClientConfig {
             spec,
             identity,
             network,
-            bandwidth,
+            accounting,
             local_store,
             chain,
             swap,
@@ -149,8 +149,8 @@ impl ClientConfig {
         self.cache.take()
     }
 
-    pub fn bandwidth(&self) -> &DefaultAccountingConfig {
-        &self.bandwidth
+    pub fn accounting(&self) -> &DefaultAccountingConfig {
+        &self.accounting
     }
 
     /// Cache sizing for the client's in-memory local store.

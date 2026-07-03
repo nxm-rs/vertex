@@ -18,7 +18,7 @@ use crate::{Accounting, ClientAccounting};
 /// # Example
 ///
 /// ```ignore
-/// let accounting = AccountingBuilder::new(bandwidth_config)
+/// let accounting = AccountingBuilder::new(accounting_config)
 ///     .with_pricer_from_config(spec.clone())
 ///     .with_settlement(PseudosettleProvider::new(&config))
 ///     .build(&identity);

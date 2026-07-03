@@ -24,3 +24,12 @@ fn quoted_u128_config_file_parses() {
     let config = FullNodeConfig::<ProtocolConfig>::load(Some(file.path())).unwrap();
     assert_eq!(config.protocol.swap.bounce_limit, 200_000_000u128);
 }
+
+#[test]
+fn accounting_section_deserializes() {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(file, "[accounting]\npayment_threshold = 42").unwrap();
+
+    let config = FullNodeConfig::<ProtocolConfig>::load(Some(file.path())).unwrap();
+    assert_eq!(config.protocol.accounting.payment_threshold, 42);
+}

@@ -67,7 +67,7 @@ pub struct StorerConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultAccountingConfig,
+    accounting: DefaultAccountingConfig,
     local_store: LocalStoreConfig,
     storage: StorageConfig,
     chain: ChainConfig,
@@ -85,7 +85,7 @@ impl StorerConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultAccountingConfig,
+        accounting: DefaultAccountingConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
         chain: ChainConfig,
@@ -95,7 +95,7 @@ impl StorerConfig {
             spec,
             identity,
             network,
-            bandwidth,
+            accounting,
             local_store,
             storage,
             chain,
@@ -169,8 +169,8 @@ impl StorerConfig {
         &self.network
     }
 
-    pub fn bandwidth(&self) -> &DefaultAccountingConfig {
-        &self.bandwidth
+    pub fn accounting(&self) -> &DefaultAccountingConfig {
+        &self.accounting
     }
 
     pub fn local_store(&self) -> &LocalStoreConfig {
@@ -247,7 +247,7 @@ pub(crate) async fn build_storer(
             spec: config.spec(),
             identity: config.identity(),
             network: config.network(),
-            bandwidth: config.bandwidth(),
+            accounting: config.accounting(),
             #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]

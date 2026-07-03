@@ -195,7 +195,7 @@ pub(crate) struct ClientNodeParams<'a> {
     pub(crate) spec: &'a Arc<Spec>,
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
-    pub(crate) bandwidth: &'a DefaultAccountingConfig,
+    pub(crate) accounting: &'a DefaultAccountingConfig,
     #[cfg(feature = "swap")]
     pub(crate) chain: &'a ChainConfig,
     #[cfg(feature = "swap")]
@@ -291,12 +291,12 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
 
     // A client paces against the scaled line a storer enforces on it; a storer
     // keeps the unscaled figures.
-    let scaled_bandwidth;
-    let bandwidth = if node_type.requires_storage() {
-        params.bandwidth
+    let scaled_accounting;
+    let accounting = if node_type.requires_storage() {
+        params.accounting
     } else {
-        scaled_bandwidth = params.bandwidth.clone().for_client();
-        &scaled_bandwidth
+        scaled_accounting = params.accounting.clone().for_client();
+        &scaled_accounting
     };
 
     // SWAP defaults on for storers (maximum support) and off for clients; an
@@ -334,7 +334,7 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         node_type,
         spec: params.spec,
         identity: params.identity,
-        bandwidth,
+        accounting,
         #[cfg(feature = "swap")]
         swap: params.swap,
     };
@@ -477,7 +477,7 @@ async fn build_client(
             spec: config.spec(),
             identity: config.identity(),
             network: config.network(),
-            bandwidth: config.bandwidth(),
+            accounting: config.accounting(),
             #[cfg(feature = "swap")]
             chain: config.chain(),
             #[cfg(feature = "swap")]

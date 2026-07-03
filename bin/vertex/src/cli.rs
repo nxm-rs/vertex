@@ -136,13 +136,20 @@ pub async fn run() -> Result<()> {
         // shell: build the validated config, then `with_protocol().launch()`.
         match node_type {
             SwarmNodeType::Client => {
-                let bandwidth = config.protocol.bandwidth_config();
+                let accounting = config.protocol.accounting_config();
                 let local_store = config.protocol.local_store_config();
                 let chain = config.protocol.chain_config();
                 let swap = config.protocol.swap_config();
 
-                let node_config =
-                    ClientConfig::new(spec, identity, network, bandwidth, local_store, chain, swap);
+                let node_config = ClientConfig::new(
+                    spec,
+                    identity,
+                    network,
+                    accounting,
+                    local_store,
+                    chain,
+                    swap,
+                );
 
                 let handle = builder.with_protocol(node_config).launch().await?;
                 if config.infra.api.grpc {
@@ -163,7 +170,7 @@ pub async fn run() -> Result<()> {
             }
             #[cfg(feature = "storer")]
             SwarmNodeType::Storer => {
-                let bandwidth = config.protocol.bandwidth_config();
+                let accounting = config.protocol.accounting_config();
                 let local_store = config.protocol.local_store_config();
                 let storage = config.protocol.storage_config();
                 let chain = config.protocol.chain_config();
@@ -173,7 +180,7 @@ pub async fn run() -> Result<()> {
                     spec,
                     identity,
                     network,
-                    bandwidth,
+                    accounting,
                     local_store,
                     storage,
                     chain,

@@ -43,7 +43,7 @@ This separation is intentional. Moving the validated configs into `vertex_node_c
 
 ## NodeBuildsProtocol Delegation
 
-The `NodeBuildsProtocol` trait (in `vertex_node_api`) provides a uniform interface for node-type-specific configuration. Each validated config struct implements `NodeBuildsProtocol`, which the swarm builder uses to select the correct protocol stack. The builder delegates to the config's getters (`spec()`, `identity()`, `network()`, `bandwidth()`, etc.) when constructing protocol components.
+The `NodeBuildsProtocol` trait (in `vertex_node_api`) provides a uniform interface for node-type-specific configuration. Each validated config struct implements `NodeBuildsProtocol`, which the swarm builder uses to select the correct protocol stack. The builder delegates to the config's getters (`spec()`, `identity()`, `network()`, `accounting()`, etc.) when constructing protocol components.
 
 Methods like `identity()` on validated config structs return runtime objects (`Arc<Identity>`), not configuration structs; they are not renamed to `*_config()` because they are not config builders.
 
