@@ -52,6 +52,7 @@ mod settlement;
 
 pub use accounting::{
     Accounting, AccountingError, AccountingPeerHandle, PeerState, Provide, Receive, Reservation,
+    ReservationCaps,
 };
 #[cfg(feature = "cli")]
 pub use args::AccountingArgs;

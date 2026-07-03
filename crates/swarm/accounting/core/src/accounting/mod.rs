@@ -29,6 +29,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vertex_swarm_api::{
     Au, Debt, Direction, Ledger, LedgerSnapshot, SettlementCredit, SwarmAccounting,
@@ -38,9 +39,36 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_api::SwarmSettlementProvider;
 
+use crate::constants::{DEFAULT_MAX_INFLIGHT_GLOBAL, DEFAULT_MAX_INFLIGHT_PER_PEER};
+
 /// The lower clamp on an adopted settle line, in refresh-rate units: a peer
 /// cannot drive our settle timing tighter than twice the refresh rate.
 const MIN_ANNOUNCED_REFRESH_MULTIPLES: u64 = 2;
+
+/// Caps on outstanding reservations: `per_peer` for each leg, `global` across
+/// all peers and both legs.
+///
+/// The threshold projections bound reserved AU per peer, but not the COUNT of
+/// concurrent holds or their total across peers, so a flood of cheap in-flight
+/// forwards could pin reservations and the node resources riding them without
+/// crossing any threshold. The counts are released by the same drop that
+/// releases the reserved balance.
+#[derive(Clone, Copy, Debug)]
+pub struct ReservationCaps {
+    /// Outstanding reservations allowed per peer, per leg.
+    pub per_peer: u64,
+    /// Outstanding reservations allowed across all peers and both legs.
+    pub global: u64,
+}
+
+impl Default for ReservationCaps {
+    fn default() -> Self {
+        Self {
+            per_peer: DEFAULT_MAX_INFLIGHT_PER_PEER,
+            global: DEFAULT_MAX_INFLIGHT_GLOBAL,
+        }
+    }
+}
 
 /// Per-peer accounting with pluggable settlement providers.
 ///
@@ -53,6 +81,10 @@ pub struct Accounting<C, I: SwarmIdentity> {
     // Overlay keys are uniformly random, so a fast non-DoS hasher is safe here
     // and removes SipHash from the per-candidate selection hot path.
     peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>, FxBuildHasher>>,
+    caps: ReservationCaps,
+    /// Outstanding reservations across all peers and both legs, shared into
+    /// every [`Reservation`] so the resolution drop is the single release point.
+    inflight_global: Arc<AtomicU64>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -63,6 +95,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(Vec::new()),
             peers: RwLock::new(HashMap::default()),
+            caps: ReservationCaps::default(),
+            inflight_global: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -80,7 +114,15 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(providers),
             peers: RwLock::new(HashMap::default()),
+            caps: ReservationCaps::default(),
+            inflight_global: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Override the outstanding-reservation caps.
+    pub fn with_reservation_caps(mut self, caps: ReservationCaps) -> Self {
+        self.caps = caps;
+        self
     }
 
     /// Returns the names of the active settlement providers.
@@ -114,8 +156,27 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             });
         }
 
+        // Absolute reserve bound: a positive balance widens the admission
+        // projection, so without this cap a creditor peer could pin reserved
+        // headroom well past the disconnect line. Check-then-add can overshoot
+        // under concurrency by at most the racing prices; the bound is a soft
+        // flood ceiling, not a ledger invariant.
+        let reserved = state.reserved_balance();
+        let cap = state.disconnect_threshold();
+        if reserved.saturating_add(price) > cap {
+            return Err(AccountingError::ReserveCap {
+                peer,
+                reserved,
+                cap,
+            });
+        }
+        self.acquire_inflight::<Receive>(peer, &state)?;
         state.add_reserved(price);
-        Ok(Reservation::new(state, price))
+        Ok(Reservation::new(
+            state,
+            price,
+            Arc::clone(&self.inflight_global),
+        ))
     }
 
     /// Prepare a provide action (we are providing service, balance increases).
@@ -152,8 +213,48 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             });
         }
 
+        // Absolute reserve bound: our own debt to the peer widens the
+        // exposure, so without this cap a peer we owe could pin shadow
+        // reservations well past its serve line.
+        let reserved = state.shadow_reserved_balance();
+        if reserved.saturating_add(price) > serve_line {
+            return Err(AccountingError::ReserveCap {
+                peer,
+                reserved,
+                cap: serve_line,
+            });
+        }
+        self.acquire_inflight::<Provide>(peer, &state)?;
         state.add_shadow_reserved(price);
-        Ok(Reservation::new(state, price))
+        Ok(Reservation::new(
+            state,
+            price,
+            Arc::clone(&self.inflight_global),
+        ))
+    }
+
+    /// Take one in-flight slot for the leg, or refuse at either cap; the
+    /// matching release is the reservation's resolution drop.
+    fn acquire_inflight<L: reservation::Leg>(
+        &self,
+        peer: OverlayAddress,
+        state: &PeerState,
+    ) -> Result<(), AccountingError> {
+        if self.inflight_global.fetch_add(1, Ordering::Relaxed) >= self.caps.global {
+            self.inflight_global.fetch_sub(1, Ordering::Relaxed);
+            return Err(AccountingError::GlobalInflightCap {
+                cap: self.caps.global,
+            });
+        }
+        if L::inflight(state).fetch_add(1, Ordering::Relaxed) >= self.caps.per_peer {
+            L::inflight(state).fetch_sub(1, Ordering::Relaxed);
+            self.inflight_global.fetch_sub(1, Ordering::Relaxed);
+            return Err(AccountingError::PeerInflightCap {
+                peer,
+                cap: self.caps.per_peer,
+            });
+        }
+        Ok(())
     }
 
     /// Get or create peer state (double-checked locking).
@@ -806,13 +907,24 @@ mod tests {
         handle.record(au(500), Direction::Download);
         assert_eq!(handle.balance(), au(-500));
 
-        // Exposure = max(0, -500 + 1500) = 1000, exactly the threshold: admitted.
-        // The reservation is released on drop, so no shadow balance lingers.
-        assert!(accounting.prepare_provide(peer, au(1500)).is_ok());
+        // The widening applies to committed balance: served in steps, the peer
+        // is provided 1500 in total, past the raw 1000 line, with the exposure
+        // ending exactly at the threshold. A single 1500 reservation would be
+        // refused by the absolute reserve bound instead.
+        accounting
+            .prepare_provide(peer, au(1000))
+            .expect("exposure 500 is within the line")
+            .apply();
+        assert_eq!(handle.balance(), au(500));
+        accounting
+            .prepare_provide(peer, au(500))
+            .expect("exposure lands exactly at the line")
+            .apply();
+        assert_eq!(handle.balance(), au(1000));
 
         // One unit more crosses the threshold and refuses.
         assert!(matches!(
-            accounting.prepare_provide(peer, au(1501)),
+            accounting.prepare_provide(peer, au(1)),
             Err(AccountingError::PaymentThreshold { .. })
         ));
     }
@@ -1134,6 +1246,132 @@ mod tests {
         assert_eq!(accounting.admit(&peer, au(601)), Admission::SettleAndAdmit);
         assert_eq!(accounting.admit(&peer, au(1250)), Admission::SettleAndAdmit);
         assert_eq!(accounting.admit(&peer, au(1251)), Admission::Refuse);
+    }
+
+    #[test]
+    fn receive_inflight_cap_refuses_until_a_reservation_resolves() {
+        let accounting = test_accounting().with_reservation_caps(ReservationCaps {
+            per_peer: 2,
+            global: 100,
+        });
+        let peer = test_peer();
+
+        let held = accounting
+            .prepare_receive(peer, au(10), true)
+            .expect("first slot");
+        let second = accounting
+            .prepare_receive(peer, au(10), true)
+            .expect("second slot");
+        assert!(matches!(
+            accounting.prepare_receive(peer, au(10), true),
+            Err(AccountingError::PeerInflightCap { .. })
+        ));
+
+        // A dropped reservation frees its slot; so does an applied one.
+        drop(held);
+        let third = accounting
+            .prepare_receive(peer, au(10), true)
+            .expect("slot freed by the drop");
+        second.apply();
+        assert!(accounting.prepare_receive(peer, au(10), true).is_ok());
+        drop(third);
+    }
+
+    #[test]
+    fn inflight_caps_are_per_leg() {
+        let accounting = test_accounting().with_reservation_caps(ReservationCaps {
+            per_peer: 1,
+            global: 100,
+        });
+        let peer = test_peer();
+
+        let _receive = accounting
+            .prepare_receive(peer, au(10), true)
+            .expect("receive slot");
+        // The provide leg has its own count: a full receive cap does not gate it.
+        let _provide = accounting
+            .prepare_provide(peer, au(10))
+            .expect("provide slot independent of receive");
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(10)),
+            Err(AccountingError::PeerInflightCap { .. })
+        ));
+    }
+
+    #[test]
+    fn global_inflight_cap_spans_peers_and_legs() {
+        let accounting = test_accounting().with_reservation_caps(ReservationCaps {
+            per_peer: 100,
+            global: 2,
+        });
+        let peer1 = OverlayAddress::from([1u8; 32]);
+        let peer2 = OverlayAddress::from([2u8; 32]);
+        let peer3 = OverlayAddress::from([3u8; 32]);
+
+        let held = accounting
+            .prepare_receive(peer1, au(10), true)
+            .expect("first global slot");
+        let _provide = accounting
+            .prepare_provide(peer2, au(10))
+            .expect("second global slot");
+        assert!(matches!(
+            accounting.prepare_receive(peer3, au(10), true),
+            Err(AccountingError::GlobalInflightCap { .. })
+        ));
+
+        drop(held);
+        assert!(accounting.prepare_receive(peer3, au(10), true).is_ok());
+    }
+
+    #[test]
+    fn receive_reserve_total_is_bounded_at_the_disconnect_line() {
+        // Payment 1000, disconnect 1250. The peer owes us 10_000, so the
+        // admission projection (reserved + price - balance) admits far past the
+        // disconnect line; the absolute reserve bound is what refuses.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        accounting
+            .for_peer(peer)
+            .record(au(10_000), Direction::Upload);
+
+        let _first = accounting
+            .prepare_receive(peer, au(1000), true)
+            .expect("within the reserve bound");
+        let second = accounting
+            .prepare_receive(peer, au(200), true)
+            .expect("still within the reserve bound");
+        assert!(matches!(
+            accounting.prepare_receive(peer, au(100), true),
+            Err(AccountingError::ReserveCap { .. })
+        ));
+
+        // Releasing a reservation restores reserve headroom.
+        drop(second);
+        assert!(accounting.prepare_receive(peer, au(100), true).is_ok());
+    }
+
+    #[test]
+    fn provide_reserve_total_is_bounded_at_the_serve_line() {
+        // We owe the peer 10_000, so the provide exposure (balance + shadow +
+        // price) stays far below the serve line; the absolute reserve bound is
+        // what refuses. Connect as a storer so the serve line is the full 1000.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
+        accounting
+            .for_peer(peer)
+            .record(au(10_000), Direction::Download);
+
+        let first = accounting
+            .prepare_provide(peer, au(600))
+            .expect("within the reserve bound");
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(600)),
+            Err(AccountingError::ReserveCap { .. })
+        ));
+
+        drop(first);
+        assert!(accounting.prepare_provide(peer, au(600)).is_ok());
     }
 
     #[test]

@@ -40,6 +40,34 @@ pub enum AccountingError {
     /// Channel closed (service stopped).
     #[error("channel closed")]
     ChannelClosed,
+
+    /// The peer is at its cap of outstanding reservations for the leg.
+    #[error("peer {peer} is at its in-flight reservation cap {cap}")]
+    PeerInflightCap {
+        /// The peer at its cap.
+        peer: OverlayAddress,
+        /// The per-peer outstanding-reservation cap.
+        cap: u64,
+    },
+
+    /// Outstanding reservations across all peers are at the global cap.
+    #[error("in-flight reservations are at the global cap {cap}")]
+    GlobalInflightCap {
+        /// The global outstanding-reservation cap.
+        cap: u64,
+    },
+
+    /// The reservation would push the peer's total reserved balance past the
+    /// leg's absolute cap, independent of the committed balance.
+    #[error("peer {peer} reserved {reserved} plus this price exceeds the reserve cap {cap}")]
+    ReserveCap {
+        /// The peer whose reserve total would overflow.
+        peer: OverlayAddress,
+        /// The peer's currently reserved balance for the leg.
+        reserved: Au,
+        /// The absolute reserve cap for the leg.
+        cap: Au,
+    },
 }
 
 impl AccountingError {

@@ -14,3 +14,9 @@ pub(crate) const DEFAULT_EARLY_PAYMENT_PERCENT: u64 = 50;
 
 /// Default scaling factor for client-only nodes.
 pub(crate) const DEFAULT_CLIENT_ONLY_FACTOR: u64 = 10;
+
+/// Default cap on outstanding reservations per peer, per leg.
+pub(crate) const DEFAULT_MAX_INFLIGHT_PER_PEER: u64 = 128;
+
+/// Default cap on outstanding reservations across all peers and both legs.
+pub(crate) const DEFAULT_MAX_INFLIGHT_GLOBAL: u64 = 4096;

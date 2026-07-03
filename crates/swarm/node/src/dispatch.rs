@@ -19,7 +19,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::future::Future;
+use std::pin::pin;
 
+use futures::future::{Either, select};
+use futures_timer::Delay;
 use metrics::{counter, histogram};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::OwnedSemaphorePermit;
@@ -140,6 +143,14 @@ const NEVER_STAGGER: Duration = Duration::from_secs(3600);
 
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
+
+/// Wall-clock bound on a whole relay walk.
+///
+/// The walk pins the upstream provide reservation, and one downstream receive
+/// reservation at a time, for its whole life; without a bound a stalled
+/// downstream peer pins them indefinitely. Matches the origin retrieval
+/// deadline: past the requester's own patience the relay serves no one.
+const RELAY_WALK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Report source for shallow receipts caught on the origin upload path.
 const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
@@ -520,7 +531,8 @@ where
             handle: self.client_handle.clone(),
             address,
         };
-        self.relay_walk(op, accounting, address, exclude).await
+        self.relay_walk(op, accounting, address, exclude, RELAY_WALK_DEADLINE)
+            .await
     }
 
     /// Relay an inbound pushsync delivery to a strictly-closer peer on behalf
@@ -543,7 +555,8 @@ where
             neighbourhood_credible: self.topology.neighbourhood_credible(),
             reporter: self.topology.reporter(),
         };
-        self.relay_walk(op, accounting, address, exclude).await
+        self.relay_walk(op, accounting, address, exclude, RELAY_WALK_DEADLINE)
+            .await
     }
 
     /// The relay role profile: the shared strictly-closer walk over one
@@ -567,7 +580,34 @@ where
     /// Each leg holds the shared per-peer in-flight permit best-effort: the
     /// origin race sees relay load against the same cap, but a relay is never
     /// declined for lack of a permit.
+    ///
+    /// The whole walk is bounded by `deadline`: a stalled downstream peer
+    /// cannot pin the reservations past it, because dropping the timed-out walk
+    /// releases them.
     async fn relay_walk<Op: RelayOp, A: SwarmClientAccounting>(
+        &self,
+        op: Op,
+        accounting: &A,
+        address: ChunkAddress,
+        exclude: OverlayAddress,
+        deadline: Duration,
+    ) -> Result<
+        (
+            Op::Output,
+            <A::Accounting as SwarmAccounting>::ProvideAction,
+        ),
+        ForwardError,
+    > {
+        let walk = pin!(self.walk_candidates(op, accounting, address, exclude));
+        match select(walk, pin!(Delay::new(deadline))).await {
+            Either::Left((result, _)) => result,
+            Either::Right(_) => Err(ForwardError::DeadlineExceeded),
+        }
+    }
+
+    /// The unbounded candidate walk [`Self::relay_walk`] races against its
+    /// deadline.
+    async fn walk_candidates<Op: RelayOp, A: SwarmClientAccounting>(
         &self,
         op: Op,
         accounting: &A,
@@ -1772,6 +1812,105 @@ mod tests {
                 RETRIEVE_SETTLE_DRIVES * peers.len(),
                 "each of the bounded drive rounds settles the full gated set"
             );
+        }
+    }
+
+    /// The relay walk deadline: a downstream peer that never answers must not
+    /// pin the walk's reservations past the wall-clock bound.
+    mod relay_deadline {
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+
+        use vertex_swarm_accounting::{
+            Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer,
+        };
+        use vertex_swarm_api::{
+            Au, Bin, ChunkAddress, OverlayAddress, SwarmAccounting, SwarmPeerAccounting,
+        };
+        use vertex_swarm_client_behaviour::ForwardError;
+        use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
+        use vertex_tasks::time::Duration;
+
+        use super::super::{
+            DispatchEngine, NoLatencyHint, ProximityOnly, RetrievalTopology, RetrieveRelay,
+        };
+        use crate::inflight::PeerInflightLimiter;
+        use crate::selection::SettlementTrigger;
+        use crate::{ClientCommand, ClientHandle};
+
+        struct NoSettle;
+        impl SettlementTrigger for NoSettle {
+            fn trigger_settlement(&self, _peer: OverlayAddress) {}
+        }
+
+        /// An overlay sharing exactly `leading_bits` leading bits with `address`
+        /// (the next bit is flipped), placing a peer at a controlled proximity.
+        fn overlay_at_proximity(address: &ChunkAddress, leading_bits: usize) -> OverlayAddress {
+            let mut bytes = address.0.0;
+            let byte = leading_bits / 8;
+            let bit = 7 - (leading_bits % 8);
+            if let Some(b) = bytes.get_mut(byte) {
+                *b ^= 1 << bit;
+            }
+            OverlayAddress::from(bytes)
+        }
+
+        #[tokio::test]
+        async fn relay_walk_deadline_releases_reservations() {
+            let address = ChunkAddress::new([0x42; 32]);
+            let requester = overlay_at_proximity(&address, 2);
+            let closer = overlay_at_proximity(&address, 16);
+            let local = OverlayAddress::from([0xee; 32]);
+
+            let bandwidth = Arc::new(Accounting::new(
+                DefaultAccountingConfig::default(),
+                test_identity_arc(),
+            ));
+            let acct = ClientAccounting::new(
+                Arc::clone(&bandwidth),
+                FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet()),
+            );
+
+            let topology: Arc<dyn RetrievalTopology> = Arc::new(
+                MockTopology::default()
+                    .with_closest(vec![closer])
+                    .with_overlay(local),
+            );
+            // The command receiver is held open but never answered: the
+            // downstream attempt stalls until the walk's deadline fires.
+            let (tx, rx) = tokio::sync::mpsc::channel::<ClientCommand>(4);
+            let engine = DispatchEngine::new(
+                ClientHandle::new(tx),
+                topology,
+                Bin::new(31).unwrap(),
+                ProximityOnly,
+                Arc::new(PeerInflightLimiter::new(NonZeroUsize::new(4).unwrap())),
+                NoLatencyHint,
+                Arc::new(NoSettle),
+            );
+
+            let op = RetrieveRelay {
+                handle: engine.client_handle.clone(),
+                address,
+            };
+            let result = engine
+                .relay_walk(op, &acct, address, requester, Duration::from_millis(50))
+                .await;
+            assert!(
+                matches!(result, Err(ForwardError::DeadlineExceeded)),
+                "a stalled walk resolves at the deadline"
+            );
+
+            // Dropping the timed-out walk released both legs: nothing stays
+            // reserved and nothing was committed.
+            let upstream = bandwidth.for_peer(requester);
+            assert_eq!(upstream.state().shadow_reserved_balance(), Au::ZERO);
+            assert_eq!(upstream.balance(), Au::ZERO);
+            let downstream = bandwidth.for_peer(closer);
+            assert_eq!(downstream.state().reserved_balance(), Au::ZERO);
+            assert_eq!(downstream.balance(), Au::ZERO);
+
+            drop(rx);
         }
     }
 }

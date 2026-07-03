@@ -7,7 +7,7 @@ The trait and type surface of bandwidth accounting, designed from the responsibi
 Accounting does five things and nothing else:
 
 1. Ledger. A signed per-peer balance in AU (`+` the peer owes us, `-` we owe), committed by `record`, read as a balance or as a non-negative `Debt`.
-2. Reservation. In-flight holds so our debt view matches the creditor's shadow reserve: a receive leg (we owe) and a provide leg (they owe), each reserve then apply-on-success then drop-to-release.
+2. Reservation. In-flight holds so our debt view matches the creditor's shadow reserve: a receive leg (we owe) and a provide leg (they owe), each reserve then apply-on-success then drop-to-release. Holds are bounded against reservation flooding: per-peer and global outstanding-count caps (`ReservationCaps`) and an absolute per-peer reserve total (receive at the disconnect line, provide at the serve line) are enforced at prepare time, and the node's relay walk carries a wall-clock deadline so a stalled downstream walk drops and releases its holds.
 3. Admission. The band decision over committed plus reserved against the payment and disconnect thresholds.
 4. Settlement. A composable provider fan-out (pseudosettle, then swap) that reduces committed debt, plus the single-in-flight settle per peer.
 5. Scoring. Reporting genuine peer misbehaviour, never our own debt. Scoring stays the peer manager's authority and is not part of this seam.
