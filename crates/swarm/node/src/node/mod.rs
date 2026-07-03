@@ -108,6 +108,9 @@ pub(crate) fn peer_ready_commands(
 }
 
 #[cfg(test)]
+// Asserting on positional command output reads clearest with direct indexing;
+// the CI test lint profile permits it in test code.
+#[allow(clippy::indexing_slicing)]
 mod announce_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
