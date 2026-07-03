@@ -1200,10 +1200,7 @@ mod tests {
     /// Build an overlay at exactly proximity order `bin` to base `0x00`,
     /// disambiguated by `idx` in a deep byte (does not affect proximity order).
     fn addr_in_bin(bin: u8, idx: u8) -> OverlayAddress {
-        let mut b = [0u8; 32];
-        b[(bin / 8) as usize] = 0x80 >> (bin % 8);
-        b[31] = idx;
-        OverlayAddress::from(b)
+        crate::test_support::overlay_in_bin(OverlayAddress::from([0u8; 32]), bin, idx)
     }
 
     #[test]
