@@ -8,14 +8,42 @@ use vertex_swarm_api::{Au, SwarmPeerState};
 ///
 /// Plain `fetch_add` wraps on overflow and could flip a balance's sign,
 /// inverting owed/owes; a compare-exchange loop saturates instead.
-fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) {
+fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) -> i64 {
     let mut current = atomic.load(Ordering::Relaxed);
     loop {
         let next = current.saturating_add(delta);
         match atomic.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return,
+            Ok(_) => return next,
             Err(observed) => current = observed,
         }
+    }
+}
+
+/// Growth checkpoint step and first checkpoint, in peer-keyed refresh-rate
+/// multiples: repayment past each checkpoint raises the serve line one rate.
+const GROWTH_STEP_REFRESH_MULTIPLES: u64 = 100;
+
+/// The checkpoint value, in refresh-rate multiples, at which the schedule
+/// switches from linear steps to doubling.
+const GROWTH_DOUBLING_FLOOR_REFRESH_MULTIPLES: u64 = 1800;
+
+/// The first growth checkpoint for a peer at the given allowance rate.
+fn first_checkpoint(rate: Au) -> Au {
+    rate.checked_scale(GROWTH_STEP_REFRESH_MULTIPLES)
+        .unwrap_or(Au::new(i64::MAX))
+}
+
+/// The checkpoint after `checkpoint`: linear `rate * 100` steps while below
+/// `rate * 1800`, then doubling. Saturates at the `i64` bound, where growth
+/// effectively stops.
+fn next_checkpoint(checkpoint: Au, rate: Au) -> Au {
+    let doubling_floor = rate
+        .checked_scale(GROWTH_DOUBLING_FLOOR_REFRESH_MULTIPLES)
+        .unwrap_or(Au::new(i64::MAX));
+    if checkpoint < doubling_floor {
+        checkpoint.saturating_add(first_checkpoint(rate))
+    } else {
+        checkpoint.checked_scale(2).unwrap_or(Au::new(i64::MAX))
     }
 }
 
@@ -52,6 +80,8 @@ pub struct PeerState {
     disconnect_threshold: Au,
     refresh_allowance: AtomicI64,
     settlement_received: AtomicU64,
+    /// The cumulative-repayment value the next serve-line raise triggers past.
+    growth_checkpoint: AtomicI64,
 }
 
 impl PeerState {
@@ -80,6 +110,7 @@ impl PeerState {
             disconnect_threshold,
             refresh_allowance: AtomicI64::new(refresh_allowance.get()),
             settlement_received: AtomicU64::new(0),
+            growth_checkpoint: AtomicI64::new(first_checkpoint(refresh_allowance).get()),
         }
     }
 
@@ -199,6 +230,44 @@ impl PeerState {
     pub fn settlement_received(&self) -> Au {
         Au::from_amount(self.settlement_received.load(Ordering::Relaxed))
     }
+
+    /// Get the growth checkpoint in AU: the cumulative repayment the next
+    /// serve-line raise triggers strictly past.
+    pub fn growth_checkpoint(&self) -> Au {
+        Au::new(self.growth_checkpoint.load(Ordering::Relaxed))
+    }
+
+    /// Reset the repayment accumulator and growth checkpoint for a new
+    /// connection at the peer-keyed allowance rate: growth is earned per
+    /// connection, starting one step above zero repayment.
+    pub fn reset_settlement_growth(&self, rate: Au) {
+        self.settlement_received.store(0, Ordering::Relaxed);
+        self.growth_checkpoint
+            .store(first_checkpoint(rate).get(), Ordering::Relaxed);
+    }
+
+    /// Raise the serve line one `rate` step when `total` strictly exceeds the
+    /// growth checkpoint, advancing the checkpoint one schedule step. At most
+    /// one raise per call, however far `total` overshoots; the CAS claims the
+    /// crossing so racing writers never double-raise. Returns the raised line.
+    pub fn grow_serve_line(&self, total: Au, rate: Au) -> Option<Au> {
+        let checkpoint = self.growth_checkpoint.load(Ordering::Relaxed);
+        if total.get() <= checkpoint {
+            return None;
+        }
+        let next = next_checkpoint(Au::new(checkpoint), rate);
+        if self
+            .growth_checkpoint
+            .compare_exchange(checkpoint, next.get(), Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        Some(Au::new(saturating_fetch_add(
+            &self.payment_threshold,
+            rate.get(),
+        )))
+    }
 }
 
 impl SwarmPeerState for PeerState {
@@ -290,5 +359,66 @@ mod tests {
         assert_eq!(state.payment_threshold(), au(200));
         // The disconnect line is fixed at creation and never moves with it.
         assert_eq!(state.disconnect_threshold(), au(10000));
+    }
+
+    // Growth schedule at rate 10: checkpoints 1_000, 2_000, ... 18_000 in the
+    // linear region (doubling floor 18_000), then 36_000, 72_000.
+
+    #[test]
+    fn growth_trigger_is_strictly_greater() {
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(10));
+        assert_eq!(state.growth_checkpoint(), au(1_000));
+
+        // Exactly at the checkpoint: no raise, checkpoint unmoved.
+        assert_eq!(state.grow_serve_line(au(1_000), au(10)), None);
+        assert_eq!(state.growth_checkpoint(), au(1_000));
+        assert_eq!(state.payment_threshold(), au(1_000));
+
+        // One past it: the serve line rises exactly one rate step.
+        assert_eq!(state.grow_serve_line(au(1_001), au(10)), Some(au(1_010)));
+        assert_eq!(state.payment_threshold(), au(1_010));
+        assert_eq!(state.growth_checkpoint(), au(2_000));
+    }
+
+    #[test]
+    fn growth_advances_one_step_per_event_however_far_the_total_overshoots() {
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(10));
+
+        // A total past several checkpoints still raises once per event.
+        assert_eq!(state.grow_serve_line(au(5_500), au(10)), Some(au(1_010)));
+        assert_eq!(state.growth_checkpoint(), au(2_000));
+        assert_eq!(state.grow_serve_line(au(5_500), au(10)), Some(au(1_020)));
+        assert_eq!(state.growth_checkpoint(), au(3_000));
+    }
+
+    #[test]
+    fn growth_schedule_switches_from_linear_steps_to_doubling() {
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(10));
+
+        // Walk the linear region: 17 raises take the checkpoint to 18_000.
+        for _ in 0..17 {
+            let total = state.growth_checkpoint() + au(1);
+            assert!(state.grow_serve_line(total, au(10)).is_some());
+        }
+        assert_eq!(state.growth_checkpoint(), au(18_000));
+
+        // At the doubling floor the next steps double instead of adding.
+        assert!(state.grow_serve_line(au(18_001), au(10)).is_some());
+        assert_eq!(state.growth_checkpoint(), au(36_000));
+        assert!(state.grow_serve_line(au(36_001), au(10)).is_some());
+        assert_eq!(state.growth_checkpoint(), au(72_000));
+    }
+
+    #[test]
+    fn reset_settlement_growth_restarts_the_schedule_at_the_given_rate() {
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(10));
+        state.add_settlement_received(au(5_000));
+        assert!(state.grow_serve_line(au(5_000), au(10)).is_some());
+
+        // A reconnect at a different peer-keyed rate restarts both the
+        // accumulator and the checkpoint from that rate's first step.
+        state.reset_settlement_growth(au(20));
+        assert_eq!(state.settlement_received(), Au::ZERO);
+        assert_eq!(state.growth_checkpoint(), au(2_000));
     }
 }

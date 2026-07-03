@@ -160,6 +160,17 @@ pub trait CommitOnWrite: Send {
     fn forfeit_boxed(self: Box<Self>) {}
 }
 
+/// The outcome of crediting one accepted inbound settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettlementCredit {
+    /// The peer's cumulative accepted repayment after this credit.
+    pub total: Au,
+    /// The serve line as raised by a crossed growth checkpoint, `None` when no
+    /// checkpoint was crossed. Reads back the enforced per-peer state, so an
+    /// announcement built on it carries exactly what the provide gate enforces.
+    pub raised_serve_line: Option<Au>,
+}
+
 /// Per-peer bandwidth accounting handle.
 ///
 /// Reached through the [`SwarmAccounting::Peer`] associated type
@@ -169,14 +180,14 @@ pub trait SwarmPeerAccounting: Send + Sync {
     /// Record a priced amount of bandwidth usage (lock-free, must not block).
     fn record(&self, amount: Au, direction: Direction);
 
-    /// Credit an accepted inbound settlement and accumulate it toward the
-    /// peer's cumulative repayment; returns the new cumulative total.
+    /// Credit an accepted inbound settlement, accumulate it toward the peer's
+    /// cumulative repayment, and evaluate the threshold-growth checkpoint in
+    /// the same step.
     ///
     /// Settlement-method-agnostic: every provider's validated inbound credit
-    /// lands here, and the returned total is the signal threshold growth
-    /// checkpoints against. The caller clamps `amount` before calling; this
-    /// method never validates.
-    fn settlement_received(&self, amount: Au) -> Au;
+    /// lands here and feeds one accumulator and one checkpoint schedule. The
+    /// caller clamps `amount` before calling; this method never validates.
+    fn settlement_received(&self, amount: Au) -> SettlementCredit;
 
     /// The per-second time-based settlement allowance extended to this peer,
     /// keyed on its handshake node type at connect.

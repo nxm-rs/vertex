@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccounting, SwarmAccountingConfig,
-    SwarmIdentity, SwarmNodeType, SwarmPeerAccounting, SwarmResult,
+    Au, Debt, Direction, Ledger, LedgerSnapshot, SettlementCredit, SwarmAccounting,
+    SwarmAccountingConfig, SwarmIdentity, SwarmNodeType, SwarmPeerAccounting, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -307,10 +307,14 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         // Mutate the serve line on the shared PeerState in place. Replacing the
         // Arc would drop outstanding reservations that hold clones. The line is
         // read back from the state so an announcement built on the return value
-        // carries exactly what the provide gate enforces.
+        // carries exactly what the provide gate enforces. Each connection also
+        // restarts threshold growth: the serve line returns to the node-type
+        // default and repayment toward the next raise is earned afresh.
         let state = self.peer_state(peer);
+        let rate = self.allowance_rate(node_type);
         state.set_payment_threshold(self.provide_line(node_type));
-        state.set_refresh_allowance(self.allowance_rate(node_type));
+        state.set_refresh_allowance(rate);
+        state.reset_settlement_growth(rate);
         state.payment_threshold()
     }
 
@@ -429,9 +433,16 @@ impl SwarmPeerAccounting for AccountingPeerHandle {
         }
     }
 
-    fn settlement_received(&self, amount: Au) -> Au {
+    fn settlement_received(&self, amount: Au) -> SettlementCredit {
         self.state.add_balance(-amount);
-        self.state.add_settlement_received(amount)
+        let total = self.state.add_settlement_received(amount);
+        let raised_serve_line = self
+            .state
+            .grow_serve_line(total, self.state.refresh_allowance());
+        SettlementCredit {
+            total,
+            raised_serve_line,
+        }
     }
 
     fn refresh_allowance(&self) -> Au {
@@ -1319,12 +1330,118 @@ mod tests {
         let handle = accounting.for_peer(peer);
         handle.record(au(1000), Direction::Upload);
 
-        assert_eq!(handle.settlement_received(au(300)), au(300));
+        let credit = handle.settlement_received(au(300));
+        assert_eq!(credit.total, au(300));
+        assert_eq!(credit.raised_serve_line, None);
         assert_eq!(handle.balance(), au(700));
 
-        assert_eq!(handle.settlement_received(au(200)), au(500));
+        assert_eq!(handle.settlement_received(au(200)).total, au(500));
         assert_eq!(handle.balance(), au(500));
         assert_eq!(accounting.peer_state(peer).settlement_received(), au(500));
+    }
+
+    #[test]
+    fn repayment_past_the_checkpoint_raises_the_enforced_serve_line() {
+        // small_config with a positive refresh rate: storer line 1000, rate 10,
+        // first checkpoint 1000. Repayment strictly past it raises the serve
+        // line one rate step, the raise is the line prepare_provide enforces,
+        // and the returned raised line reads back that same state.
+        let config =
+            AccountingConfig::new(1000, 25, 10, 0, 5, crate::FixedPricingConfig::default());
+        let accounting = Accounting::new(config, test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
+        let handle = accounting.for_peer(peer);
+
+        // Build up debt so repayment has something to credit against.
+        handle.record(au(1_001), Direction::Upload);
+
+        // At the checkpoint exactly: no raise.
+        assert_eq!(
+            handle.settlement_received(au(1_000)).raised_serve_line,
+            None
+        );
+        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(1_000));
+
+        // One past it: raised by one rate step and enforced by the provide gate
+        // (the balance is fully repaid, so the exposure is the price alone).
+        let credit = handle.settlement_received(au(1));
+        assert_eq!(credit.raised_serve_line, Some(au(1_010)));
+        assert_eq!(handle.balance(), Au::ZERO);
+        assert!(accounting.prepare_provide(peer, au(1_010)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(1_011)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn growth_steps_are_keyed_on_the_remote_type_rate() {
+        // Default config on a client remote: allowance rate 450_000, so the
+        // first checkpoint is 45_000_000 and a raise is one scaled step, while
+        // a storer remote grows in full-rate steps from the same node.
+        let accounting = test_accounting();
+        let client = OverlayAddress::from([1u8; 32]);
+        let storer = OverlayAddress::from([2u8; 32]);
+        accounting.connect_peer(client, SwarmNodeType::Client);
+        accounting.connect_peer(storer, SwarmNodeType::Storer);
+
+        for peer in [client, storer] {
+            accounting
+                .for_peer(peer)
+                .record(au(1_000_000_000), Direction::Upload);
+        }
+
+        let client_handle = accounting.for_peer(client);
+        assert_eq!(
+            client_handle
+                .settlement_received(au(45_000_001))
+                .raised_serve_line,
+            Some(au(1_350_000 + 450_000))
+        );
+
+        let storer_handle = accounting.for_peer(storer);
+        assert_eq!(
+            storer_handle
+                .settlement_received(au(450_000_001))
+                .raised_serve_line,
+            Some(au(13_500_000 + 4_500_000))
+        );
+    }
+
+    #[test]
+    fn reconnect_resets_the_serve_line_and_growth() {
+        // A raise earned on one connection does not survive a reconnect: the
+        // connect hook returns the serve line to the node-type default and
+        // restarts the accumulator and checkpoint, so growth is earned afresh.
+        let config =
+            AccountingConfig::new(1000, 25, 10, 0, 5, crate::FixedPricingConfig::default());
+        let accounting = Accounting::new(config, test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
+        let handle = accounting.for_peer(peer);
+
+        handle.record(au(2_000), Direction::Upload);
+        assert_eq!(
+            handle.settlement_received(au(1_001)).raised_serve_line,
+            Some(au(1_010))
+        );
+
+        // Reconnect: back to the default line, zero accumulator, first checkpoint.
+        assert_eq!(
+            accounting.connect_peer(peer, SwarmNodeType::Storer),
+            au(1_000)
+        );
+        let state = accounting.peer_state(peer);
+        assert_eq!(state.settlement_received(), Au::ZERO);
+        assert_eq!(state.growth_checkpoint(), au(1_000));
+
+        // The same crossing must be re-earned on the new connection.
+        handle.record(au(2_000), Direction::Upload);
+        assert_eq!(
+            handle.settlement_received(au(1_001)).raised_serve_line,
+            Some(au(1_010))
+        );
     }
 
     #[test]
