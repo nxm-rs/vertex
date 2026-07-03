@@ -132,6 +132,7 @@ libp2p-websocket-websys.workspace = true
 [dev-dependencies]
 nectar-postage.workspace = true
 alloy-signer-local.workspace = true
+vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
 
 # Native test harness: the multi-thread runtime, the cluster rig (which spawns
 # `!Send` node futures), the behaviour test rig, and the tracing subscriber are

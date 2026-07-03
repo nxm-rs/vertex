@@ -21,6 +21,7 @@ use vertex_swarm_localstore::{
 };
 use vertex_swarm_node::args::SwapConfig;
 use vertex_swarm_node::{ClientLauncher, SwarmNodeType};
+use vertex_swarm_peer_manager::DbPeerSnapshotStore;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
@@ -29,6 +30,12 @@ use wasm_bindgen::prelude::*;
 
 /// IndexedDB database name for the browser client cache.
 const CACHE_DB_NAME: &str = "vertex-swarm-cache";
+
+/// IndexedDB database name for the browser peer snapshot store. Separate from
+/// the cache database so its object store is created on first open.
+const PEER_DB_NAME: &str = "vertex-swarm-peers";
+/// Must match the peer-manager snapshot table name.
+const PEER_SNAPSHOT_TABLE: &str = "peer_snapshots";
 
 /// Maximum topology events buffered between UI drains.
 const EVENT_BUFFER_CAP: usize = 256;
@@ -310,6 +317,20 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         Err(e) => warn!(?e, "IndexedDB cache unavailable, using the in-memory cache"),
     }
 
+    // The IndexedDB-backed peer snapshot store lets the address book survive a
+    // reload so the node re-converges warm; a failed open falls back to the
+    // runtime-only peer set.
+    match open_peer_store().await {
+        Ok(store) => {
+            info!("using IndexedDB-backed peer snapshot store");
+            launcher = launcher.with_peer_store(store);
+        }
+        Err(e) => warn!(
+            ?e,
+            "IndexedDB peer store unavailable, peer set is runtime-only"
+        ),
+    }
+
     // SWAP cheque settlement is enabled when a chequebook address is supplied
     // through the page config; without one the client settles by pseudosettle
     // alone. Cheque exchange is chain-free unless an RPC URL is also supplied.
@@ -371,6 +392,21 @@ async fn open_indexeddb_store() -> Result<Arc<dyn SwarmLocalStore>, JsValue> {
     let backend = IndexedDbBackend::new(db.into_arc(), DEFAULT_CACHE_BUDGET_BYTES as usize);
     let store = ChunkStore::with_backend(backend, DEFAULT_SOC_CACHE_TTL_NS, SystemClock);
     Ok(Arc::new(store))
+}
+
+/// Open the IndexedDB-backed peer snapshot store.
+///
+/// Backs the address book in a database of its own so it persists across
+/// reloads and the node re-converges warm.
+async fn open_peer_store() -> Result<Arc<DbPeerSnapshotStore<IndexedDbDatabase>>, JsValue> {
+    let db = IndexedDbDatabase::open(PEER_DB_NAME, &[PEER_SNAPSHOT_TABLE])
+        .await
+        .map_err(|e| JsValue::from_str(&format!("failed to open IndexedDB peer store: {e}")))?;
+    let store = Arc::new(DbPeerSnapshotStore::new(db.into_arc()));
+    store
+        .init()
+        .map_err(|e| JsValue::from_str(&format!("failed to init peer snapshot table: {e}")))?;
+    Ok(store)
 }
 
 /// Read the optional SWAP config from the page URL query string.

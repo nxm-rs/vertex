@@ -37,6 +37,8 @@ vertex-swarm-identity = { path = "../../crates/swarm/identity" }
 vertex-swarm-spec = { path = "../../crates/swarm/spec" }
 vertex-swarm-topology = { path = "../../crates/swarm/topology" }
 vertex-swarm-primitives = { path = "../../crates/swarm/primitives" }
+# The peer snapshot store type wired into the IndexedDB-backed address book.
+vertex-swarm-peer-manager = { path = "../../crates/swarm/peers/peer-manager" }
 # The client cache: the IndexedDB-backed `ChunkStore` survives a page reload.
 vertex-swarm-localstore = { path = "../../crates/swarm/localstore", features = ["indexeddb"] }
 vertex-storage-indexeddb = { path = "../../crates/storage/indexeddb" }
