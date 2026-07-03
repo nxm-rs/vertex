@@ -1525,6 +1525,281 @@ mod tests {
         }
     }
 
+    /// The connection phase gauges are set from the registry's authoritative
+    /// counts after every mutation, so no hand-counted delta can drift them.
+    mod phase_gauges {
+        use super::*;
+
+        use std::time::Instant;
+
+        use libp2p::Multiaddr;
+        use libp2p::swarm::ConnectionId;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+        use vertex_net_peer_registry::ConnectionDirection;
+        use vertex_swarm_net_handshake::{HandshakeEvent, HandshakeInfo};
+        use vertex_swarm_test_utils::{test_overlay, test_peer_id, test_swarm_peer};
+
+        use crate::DialReason;
+        use crate::composed::ProtocolEvent;
+
+        /// Read both phase gauges from a single snapshot. A snapshot resets
+        /// gauges, so both must be read together; the sync helper writes
+        /// absolute values, so a later read after a further sync is unaffected.
+        fn phase_gauges(snapshotter: &Snapshotter) -> (f64, f64) {
+            let mut pending = 0.0;
+            let mut active = 0.0;
+            for (ck, _, _, value) in snapshotter.snapshot().into_vec() {
+                if let DebugValue::Gauge(g) = value {
+                    match ck.key().name() {
+                        "peer_registry_pending_connections" => pending = g.0,
+                        "peer_registry_active_connections" => active = g.0,
+                        _ => {}
+                    }
+                }
+            }
+            (pending, active)
+        }
+
+        /// A completed-handshake protocol event carrying `swarm_peer`. The outer
+        /// peer_id/connection_id passed to `process_protocol_event` drive the
+        /// handler; the event's own copies are unused.
+        fn completed_event(swarm_peer: vertex_swarm_peer::SwarmPeer) -> ProtocolEvent {
+            ProtocolEvent::Handshake(HandshakeEvent::Completed {
+                peer_id: PeerId::random(),
+                connection_id: ConnectionId::new_unchecked(0),
+                direction: ConnectionDirection::Inbound,
+                info: Box::new(HandshakeInfo {
+                    peer_id: PeerId::random(),
+                    swarm_peer,
+                    node_type: SwarmNodeType::Client,
+                    welcome_message: String::new(),
+                    observed_multiaddr: Multiaddr::empty(),
+                }),
+            })
+        }
+
+        /// Read the gauges once (the read resets them) and assert they equal
+        /// both the registry's authoritative counts and the expected truth.
+        fn check(
+            behaviour: &TopologyBehaviour<Identity>,
+            snapshotter: &Snapshotter,
+            expected: (f64, f64),
+        ) {
+            let got = phase_gauges(snapshotter);
+            assert_eq!(
+                got.0,
+                behaviour.connection_registry.pending_count() as f64,
+                "pending gauge must equal the registry pending count"
+            );
+            assert_eq!(
+                got.1,
+                behaviour.connection_registry.active_count() as f64,
+                "active gauge must equal the registry active count"
+            );
+            assert_eq!(got, expected, "gauges must equal the expected truth");
+        }
+
+        /// Directly setting the gauges mirrors the registry counts exactly,
+        /// whatever those counts are.
+        #[test]
+        fn sync_sets_both_gauges_to_registry_counts() {
+            let behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = test_peer_id(1);
+            behaviour
+                .connection_registry
+                .connected_inbound(peer_id, ConnectionId::new_unchecked(1));
+            behaviour.connection_registry.activate(
+                peer_id,
+                ConnectionId::new_unchecked(1),
+                overlay,
+            );
+            behaviour
+                .connection_registry
+                .connected_inbound(test_peer_id(2), ConnectionId::new_unchecked(2));
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+            assert_eq!(behaviour.connection_registry.pending_count(), 1);
+
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.sync_connection_phase_gauges();
+            });
+
+            check(&behaviour, &snapshotter, (1.0, 1.0));
+        }
+
+        /// Drift (a): activating a peer that had both an overlay-keyed pending
+        /// placeholder and its own pending entry consumes two pending entries.
+        /// The old +1/-1 delta decremented pending only once and leaked +1; the
+        /// sync sets pending to the true count of zero.
+        #[test]
+        fn two_pending_activation_does_not_leak_pending() {
+            let mut behaviour = test_behaviour();
+            let peer = test_swarm_peer(1);
+            let overlay = OverlayAddress::from(*peer.overlay());
+            let completing_peer = test_peer_id(1);
+            let placeholder_peer = test_peer_id(9);
+            let c_out = ConnectionId::new_unchecked(1);
+            let c_in = ConnectionId::new_unchecked(2);
+
+            behaviour.connection_registry.connected_outbound(
+                placeholder_peer,
+                c_out,
+                Some(overlay),
+                Instant::now(),
+                Some(DialReason::Discovery),
+            );
+            behaviour
+                .connection_registry
+                .connected_inbound(completing_peer, c_in);
+            assert_eq!(behaviour.connection_registry.pending_count(), 2);
+
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.process_protocol_event(completing_peer, c_in, completed_event(peer));
+            });
+
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
+            check(&behaviour, &snapshotter, (0.0, 1.0));
+        }
+
+        /// Drift (b): a refused duplicate registers nothing, so activating the
+        /// existing peer over the duplicate connection consumes no pending
+        /// entry. The old delta decremented pending anyway, driving it to -1;
+        /// the sync holds it at the true zero.
+        #[test]
+        fn refused_duplicate_then_success_does_not_underflow_pending() {
+            let mut behaviour = test_behaviour();
+            let peer = test_swarm_peer(1);
+            let overlay = OverlayAddress::from(*peer.overlay());
+            let peer_id = test_peer_id(1);
+            let c1 = ConnectionId::new_unchecked(1);
+            let c2 = ConnectionId::new_unchecked(2);
+
+            behaviour.connection_registry.connected_inbound(peer_id, c1);
+            behaviour.connection_registry.activate(peer_id, c1, overlay);
+            assert!(
+                behaviour
+                    .connection_registry
+                    .connected_inbound(peer_id, c2)
+                    .is_none()
+            );
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.process_protocol_event(peer_id, c2, completed_event(peer));
+            });
+
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
+            check(&behaviour, &snapshotter, (0.0, 1.0));
+        }
+
+        /// Drift (c): a racing dialer replaces an active peer under the same
+        /// overlay. The registry nets active unchanged (one removed, one added),
+        /// but the old code only decremented active for the superseded entry
+        /// and never incremented for the new one, drifting active to -1. The
+        /// sync keeps active at the true count.
+        #[test]
+        fn replacement_keeps_active_gauge_at_truth() {
+            let mut behaviour = test_behaviour();
+            let peer = test_swarm_peer(1);
+            let overlay = OverlayAddress::from(*peer.overlay());
+            let completing_peer = test_peer_id(1);
+            let incumbent_peer = test_peer_id(9);
+            let c1 = ConnectionId::new_unchecked(1);
+            let c2 = ConnectionId::new_unchecked(2);
+
+            // An incumbent peer holds the overlay's active slot.
+            behaviour
+                .connection_registry
+                .connected_inbound(incumbent_peer, c1);
+            behaviour
+                .connection_registry
+                .activate(incumbent_peer, c1, overlay);
+            // A racing dialer connects inbound and completes the handshake for
+            // the same overlay.
+            behaviour
+                .connection_registry
+                .connected_inbound(completing_peer, c2);
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.process_protocol_event(completing_peer, c2, completed_event(peer));
+            });
+
+            assert_eq!(behaviour.connection_registry.active_count(), 1);
+            check(&behaviour, &snapshotter, (0.0, 1.0));
+        }
+
+        /// A mixed sequence of registrations, activations, and closes keeps both
+        /// gauges pinned to the registry counts after every step.
+        #[test]
+        fn mixed_sequence_tracks_registry_counts() {
+            let mut behaviour = test_behaviour();
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+
+            let peer_a = test_swarm_peer(1);
+            let id_a = test_peer_id(1);
+            let c_a = ConnectionId::new_unchecked(1);
+
+            // Step 1: an inbound pending registration.
+            behaviour.connection_registry.connected_inbound(id_a, c_a);
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.sync_connection_phase_gauges();
+            });
+            check(&behaviour, &snapshotter, (1.0, 0.0));
+
+            // Step 2: activation over that pending entry.
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.process_protocol_event(id_a, c_a, completed_event(peer_a));
+            });
+            check(&behaviour, &snapshotter, (0.0, 1.0));
+
+            // Step 3: a second inbound pending registration.
+            let id_b = test_peer_id(2);
+            let c_b = ConnectionId::new_unchecked(2);
+            behaviour.connection_registry.connected_inbound(id_b, c_b);
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.sync_connection_phase_gauges();
+            });
+            check(&behaviour, &snapshotter, (1.0, 1.0));
+
+            // Step 4: the stale pending entry is garbage-collected.
+            metrics::with_local_recorder(&recorder, || {
+                behaviour
+                    .connection_registry
+                    .disconnected(&id_b)
+                    .expect("pending entry present");
+                behaviour.sync_connection_phase_gauges();
+            });
+            check(&behaviour, &snapshotter, (0.0, 1.0));
+
+            // Step 5: the active peer disconnects through the close handler.
+            let endpoint = libp2p::core::ConnectedPoint::Listener {
+                local_addr: "/ip4/127.0.0.1/tcp/1".parse().expect("valid"),
+                send_back_addr: "/ip4/127.0.0.2/tcp/2".parse().expect("valid"),
+            };
+            metrics::with_local_recorder(&recorder, || {
+                behaviour.handle_connection_closed(libp2p::swarm::behaviour::ConnectionClosed {
+                    peer_id: id_a,
+                    connection_id: c_a,
+                    endpoint: &endpoint,
+                    cause: None,
+                    remaining_established: 0,
+                });
+            });
+            check(&behaviour, &snapshotter, (0.0, 0.0));
+        }
+    }
+
     mod early_disconnect {
         use std::io;
 

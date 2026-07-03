@@ -99,6 +99,7 @@ vertex-swarm-spec.workspace = true
 tracing-subscriber.workspace = true
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 vertex-swarm-test-utils = { workspace = true }
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 criterion.workspace = true
 
 [[bench]]

@@ -4,7 +4,6 @@ use libp2p::swarm::ConnectionError;
 use metrics::gauge;
 use tracing::{debug, trace, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr};
-use vertex_net_peer_registry::ConnectionState;
 use vertex_swarm_api::{ReportSource, SwarmIdentity, SwarmScoringEvent};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_primitives::SwarmNodeType;
@@ -15,16 +14,15 @@ use crate::kademlia::{RoutingCapacity, SwarmRouting};
 
 use crate::behaviour::TopologyBehaviour;
 
-/// Decrement the appropriate connection phase gauge based on the removed state.
-fn decrement_connection_phase_gauge<Id: Clone, R>(state: &ConnectionState<Id, R>) {
-    if state.is_active() {
-        gauge!("peer_registry_active_connections").decrement(1.0);
-    } else if state.is_pending() {
-        gauge!("peer_registry_pending_connections").decrement(1.0);
-    }
-}
-
 impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
+    /// Mirror the registry's phase counts into the connection gauges.
+    pub(crate) fn sync_connection_phase_gauges(&self) {
+        gauge!("peer_registry_pending_connections")
+            .set(self.connection_registry.pending_count() as f64);
+        gauge!("peer_registry_active_connections")
+            .set(self.connection_registry.active_count() as f64);
+    }
+
     pub(crate) fn handle_connection_established(
         &mut self,
         established: libp2p::swarm::behaviour::ConnectionEstablished,
@@ -44,16 +42,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             if let Some(request) = self.dial_tracker.resolve(&established.peer_id) {
                 let overlay = request.id;
                 let reason = request.data;
-                let result = self.connection_registry.connected_outbound(
+                self.connection_registry.connected_outbound(
                     established.peer_id,
                     established.connection_id,
                     overlay,
                     request.queued_at(),
                     Some(reason),
                 );
-                if result.is_some() {
-                    gauge!("peer_registry_pending_connections").increment(1.0);
-                }
+                self.sync_connection_phase_gauges();
                 if let Some(overlay) = &overlay {
                     self.routing.dial_connected(overlay);
                 }
@@ -61,12 +57,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 trace!(peer_id = %established.peer_id, "ConnectionEstablished for untracked outbound peer");
             }
         } else {
-            let result = self
-                .connection_registry
+            self.connection_registry
                 .connected_inbound(established.peer_id, established.connection_id);
-            if result.is_some() {
-                gauge!("peer_registry_pending_connections").increment(1.0);
-            }
+            self.sync_connection_phase_gauges();
         }
     }
 
@@ -105,9 +98,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         // Remove from connection registry (sole source of truth for connections)
         let removed_state = self.connection_registry.disconnected(&closed.peer_id);
-        if let Some(ref s) = removed_state {
-            decrement_connection_phase_gauge(s);
-        }
+        self.sync_connection_phase_gauges();
         let connected_at = removed_state.as_ref().and_then(|s| s.connected_at());
         let overlay = removed_state.as_ref().and_then(|s| s.id());
 
@@ -284,7 +275,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         for peer_id in stale_peers {
             if let Some(state) = self.connection_registry.disconnected(&peer_id) {
-                decrement_connection_phase_gauge(&state);
+                self.sync_connection_phase_gauges();
 
                 let reason = *state.reason();
                 let overlay = state.id();

@@ -5,7 +5,7 @@ use std::time::Duration;
 use libp2p::PeerId;
 use libp2p::ping;
 use libp2p::swarm::{ConnectionId, ToSwarm};
-use metrics::{counter, gauge};
+use metrics::counter;
 use tracing::{debug, info, trace, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ActivateResult;
@@ -158,18 +158,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let activate_result = self
             .connection_registry
             .activate(peer_id, connection_id, overlay);
-        match &activate_result {
-            ActivateResult::Accepted => {
-                gauge!("peer_registry_pending_connections").decrement(1.0);
-                gauge!("peer_registry_active_connections").increment(1.0);
-            }
-            ActivateResult::Replaced { old_id: None, .. } => {
-                gauge!("peer_registry_pending_connections").decrement(1.0);
-            }
-            ActivateResult::Replaced {
-                old_id: Some(_), ..
-            } => {}
-        }
+        self.sync_connection_phase_gauges();
 
         // Update routing capacity tracking (transitions Handshaking->Active)
         RoutingCapacity::handshake_completed(&*self.routing, &overlay);
@@ -193,7 +182,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                     .node_type(old_overlay)
                     .unwrap_or(SwarmNodeType::Client);
                 self.metrics.decrement_connected(old_node_type);
-                gauge!("peer_registry_active_connections").decrement(1.0);
 
                 debug!(
                     %peer_id,
@@ -335,13 +323,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let state = self
             .connection_registry
             .disconnected_connection(connection_id);
-        if let Some(ref s) = state {
-            if s.is_active() {
-                gauge!("peer_registry_active_connections").decrement(1.0);
-            } else if s.is_pending() {
-                gauge!("peer_registry_pending_connections").decrement(1.0);
-            }
-        }
+        self.sync_connection_phase_gauges();
         let reason = state.as_ref().and_then(|s| *s.reason());
         let overlay = state.as_ref().and_then(|s| s.id());
 
