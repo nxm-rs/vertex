@@ -82,6 +82,19 @@ impl CandidateQueues {
         self.pending.lock().is_empty()
     }
 
+    /// Total candidates queued across all bins.
+    pub(super) fn len(&self) -> usize {
+        self.pending.lock().len()
+    }
+
+    /// Candidates queued in `bin`.
+    pub(super) fn bin_len(&self, bin: Bin) -> usize {
+        self.bins
+            .get(bin.as_index())
+            .map(|q| q.lock().len())
+            .unwrap_or(0)
+    }
+
     /// Clone the dedup set for snapshot purposes.
     pub(super) fn snapshot_queued(&self) -> HashSet<OverlayAddress> {
         self.pending.lock().clone()

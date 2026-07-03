@@ -35,6 +35,7 @@ use vertex_swarm_peer_manager::{PeerManager, PeerSnapshot, TrustLevel};
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
 
 use crate::DialReason;
+use crate::dial_state::{DialBinState, DialState};
 use vertex_net_dialer::DialTracker;
 use vertex_net_peer_registry::{ActivePeers, PeerRegistry};
 
@@ -407,6 +408,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             TopologyCommand::SavePeers => {
                 self.save_peers();
             }
+            TopologyCommand::TriggerEvaluation => {
+                self.run_evaluation_round();
+            }
+            TopologyCommand::DialState { reply } => {
+                // A dropped receiver means the querier gave up; the snapshot
+                // is a pure read so discarding it is free.
+                let _ = reply.send(self.dial_state());
+            }
         }
     }
 
@@ -521,6 +530,75 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         });
         if new_depth > old_depth {
             self.trim_overpopulated_bins();
+        }
+    }
+
+    /// Run one connection-evaluation round: publish a pending depth lowering,
+    /// notify the background evaluator, and probe for isolation.
+    ///
+    /// This is the tick body minus the stale-pending GC. The periodic tick
+    /// and the forced-evaluation command both call it, so a forced round does
+    /// exactly what a tick does. Notifying only queues candidates; every dial
+    /// still pays a token in [`Self::drain_candidate_queues`].
+    pub(crate) fn run_evaluation_round(&mut self) {
+        // Publish a pending depth lowering whose stability window has
+        // expired; connection events are the other publication path.
+        self.refresh_published_depth();
+        self.evaluator_handle.trigger_evaluation();
+        // An all-backoff empty table is otherwise a fixed point: the
+        // evaluator keeps producing empty candidate sets and no dial
+        // ever fires again.
+        self.reconnect_if_isolated();
+    }
+
+    /// Assemble a [`DialState`] snapshot from authoritative state in one poll
+    /// pass, so the behaviour-owned dial tracker and dial-rate bucket are read
+    /// consistently with the shared routing and peer-manager tables.
+    pub(crate) fn dial_state(&self) -> DialState {
+        let depth = self.routing.depth();
+        let limits = self.routing.limits();
+
+        let bins: Vec<DialBinState> = all_bins(self.routing.max_bin())
+            .map(|bin| {
+                let (connected, _known) = self.routing.bin_peer_counts(bin);
+                let (dialing, _handshaking, _active) = self.routing.bin_phase_counts(bin);
+                // Neighborhood bins connect to every peer and are not
+                // slot-balanced, so report no slot coverage there.
+                let slots_filled = if limits.target(bin, depth) == usize::MAX {
+                    None
+                } else {
+                    Some(self.routing.filled_slots(bin))
+                };
+                DialBinState {
+                    bin,
+                    connected,
+                    dialing,
+                    outbound: self.routing.outbound_count(bin),
+                    slots_filled,
+                    queued: self.routing.queued_candidates_in_bin(bin),
+                }
+            })
+            .collect();
+
+        let available_dial_tokens = self.dial_rate.available_tokens();
+        let next_dial_token_in = match self.dial_rate.try_peek() {
+            Ok(()) => None,
+            Err(RateLimitedErr::TooSoon(wait)) => Some(wait),
+            Err(RateLimitedErr::TooLarge) => None,
+        };
+
+        DialState {
+            in_flight_dials: self.dial_tracker.in_flight_count(),
+            pending_dials: self.dial_tracker.pending_count(),
+            queued_candidates: self.routing.queued_candidates_total(),
+            eligible_known_peers: self.peer_manager.eligible_count(),
+            peers_in_backoff: self.peer_manager.peers_in_backoff().len(),
+            available_dial_tokens,
+            next_dial_token_in,
+            throttled: self.dial_rate.try_peek().is_err(),
+            last_evaluation: self.routing.last_evaluation_elapsed(),
+            min_outbound: limits.min_outbound(),
+            bins,
         }
     }
 
@@ -921,14 +999,7 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         // Check for periodic dial candidate evaluation
         if self.dial_interval.poll_tick(cx).is_ready() {
             self.cleanup_stale_pending();
-            // Publish a pending depth lowering whose stability window has
-            // expired; connection events are the other publication path.
-            self.refresh_published_depth();
-            self.evaluator_handle.trigger_evaluation();
-            // An all-backoff empty table is otherwise a fixed point: the
-            // evaluator keeps producing empty candidate sets and no dial
-            // ever fires again.
-            self.reconnect_if_isolated();
+            self.run_evaluation_round();
         }
 
         // Poll composed protocols and process their events
@@ -1568,6 +1639,246 @@ mod tests {
                 ToSwarm::Dial { .. } => {}
                 other => panic!("expected deferred Dial after replenish, got {other:?}"),
             }
+        }
+    }
+
+    mod dial_surface {
+        use super::*;
+
+        use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
+
+        use crate::dial_state::DialState;
+        use crate::handle::TopologyHandle;
+        use crate::kademlia::{RoutingCapacity, SwarmRouting};
+
+        /// Build a behaviour and its handle over a fixed-overlay mock identity
+        /// so proximity bins are controllable.
+        fn mock_behaviour(
+            node_type: SwarmNodeType,
+            config: TopologyConfig,
+        ) -> (
+            TopologyBehaviour<MockIdentity>,
+            TopologyHandle<MockIdentity>,
+        ) {
+            let identity = MockIdentity::with_overlay(test_overlay(0)).with_node_type(node_type);
+            TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
+                .with_config(config)
+                .try_build()
+                .expect("build without runtime")
+        }
+
+        fn poll_once_mock(
+            behaviour: &mut TopologyBehaviour<MockIdentity>,
+        ) -> Poll<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<MockIdentity>>>> {
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            behaviour.poll(&mut cx)
+        }
+
+        /// Send a dial-state query and poll the behaviour once so the reply is
+        /// produced inside the poll, then return the snapshot.
+        async fn query_dial_state(
+            behaviour: &mut TopologyBehaviour<MockIdentity>,
+            handle: &TopologyHandle<MockIdentity>,
+        ) -> DialState {
+            let mut fut = Box::pin(handle.dial_state());
+            // First poll enqueues the command (buffered) and parks on the reply.
+            assert!(futures::poll!(fut.as_mut()).is_pending());
+            // The behaviour processes the command before it drains candidates,
+            // so the snapshot is taken against pre-drain state.
+            let _ = poll_once_mock(behaviour);
+            match futures::poll!(fut.as_mut()) {
+                Poll::Ready(Ok(state)) => state,
+                other => panic!("dial_state must resolve after one poll, got {other:?}"),
+            }
+        }
+
+        /// A forced evaluation from the handle wakes a parked behaviour and
+        /// runs the tick body (here the isolation redial) without waiting for
+        /// the hour-long dial tick, proving the command reuses the tick path.
+        #[tokio::test]
+        async fn trigger_evaluation_wakes_a_parked_behaviour_without_a_tick() {
+            let identity =
+                Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
+            let (mut behaviour, handle) =
+                TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
+                    .with_config(
+                        TopologyConfig::default().with_dial_interval(Duration::from_secs(3600)),
+                    )
+                    .try_build()
+                    .expect("build without runtime");
+
+            // A literal bootnode with a `/p2p/` component so the redial can
+            // surface its peer id. The table is drained, so a forced round's
+            // isolation probe redials it.
+            let bootnode_peer = PeerId::random();
+            let bootnode: Multiaddr = format!("/ip4/203.0.113.9/tcp/1634/p2p/{bootnode_peer}")
+                .parse()
+                .expect("valid bootnode multiaddr");
+            behaviour.bootnodes = vec![bootnode];
+
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                handle
+                    .trigger_evaluation()
+                    .await
+                    .expect("trigger evaluation");
+            });
+
+            let action = tokio::time::timeout(
+                Duration::from_secs(2),
+                std::future::poll_fn(|cx| behaviour.poll(cx)),
+            )
+            .await
+            .expect("the forced round must wake the parked behaviour");
+            match action {
+                ToSwarm::Dial { opts } => assert_eq!(opts.get_peer_id(), Some(bootnode_peer)),
+                other => panic!("expected the forced round to redial the bootnode, got {other:?}"),
+            }
+        }
+
+        /// `run_evaluation_round` runs the whole tick body: a deferred depth
+        /// lowering whose window has expired publishes through it.
+        #[tokio::test(start_paused = true)]
+        async fn run_evaluation_round_publishes_a_deferred_depth_lowering() {
+            let (mut behaviour, _handle) = mock_behaviour(
+                SwarmNodeType::Storer,
+                TopologyConfig::default().with_dial_interval(Duration::from_secs(3600)),
+            );
+
+            // Saturate bin 0 (8 peers at proximity order 0) with bins 1..=3
+            // holding the neighborhood so the depth anchors at 1.
+            for n in 0x80..0x88 {
+                SwarmRouting::connected(&*behaviour.routing, test_overlay(n));
+            }
+            for n in 0x40..0x45 {
+                SwarmRouting::connected(&*behaviour.routing, test_overlay(n));
+            }
+            for n in 0x20..0x23 {
+                SwarmRouting::connected(&*behaviour.routing, test_overlay(n));
+            }
+            SwarmRouting::connected(&*behaviour.routing, test_overlay(0x10));
+            assert_eq!(behaviour.routing.depth().get(), 1);
+
+            // Drop one bin-0 peer: a single-peer deficit defers the lowering,
+            // holding the published depth at 1 with a pending window.
+            SwarmRouting::on_peer_disconnected(&*behaviour.routing, &test_overlay(0x80));
+            assert_eq!(behaviour.routing.depth().get(), 1);
+
+            let mut events = behaviour.event_tx.subscribe();
+
+            // Past the stability window, the forced round publishes the lower
+            // depth (default window is well under this advance).
+            tokio::time::advance(Duration::from_secs(600)).await;
+            behaviour.run_evaluation_round();
+
+            let event = events.try_recv().expect("a depth change must be published");
+            match event {
+                TopologyEvent::DepthChanged {
+                    old_depth,
+                    new_depth,
+                } => {
+                    assert_eq!(old_depth, 1);
+                    assert_eq!(new_depth, 0);
+                }
+                other => panic!("expected DepthChanged, got {other:?}"),
+            }
+            assert_eq!(behaviour.routing.depth().get(), 0);
+        }
+
+        /// The snapshot reads seeded connection, backoff, queue, slot, and
+        /// bucket state from the authoritative tables, and its token counts
+        /// track the drain.
+        #[tokio::test]
+        async fn dial_state_reflects_seeded_state() {
+            use std::num::NonZeroU32;
+
+            use vertex_net_ratelimiter::Quota;
+
+            // Burst of one so the drain empties the bucket in a single dial.
+            let (mut behaviour, handle) = mock_behaviour(
+                SwarmNodeType::Storer,
+                TopologyConfig::default()
+                    .with_dial_interval(Duration::from_secs(3600))
+                    .with_dial_quota(Quota::n_every(
+                        NonZeroU32::new(1).expect("non-zero"),
+                        Duration::from_secs(600),
+                    )),
+            );
+            behaviour
+                .nat_discovery
+                .on_new_listen_addr("/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr"));
+
+            // Bin 0: one self-dialed (outbound) peer and one connected-only
+            // peer, so connected is two but only one is outbound.
+            let outbound = test_overlay(0x80);
+            SwarmRouting::connected(&*behaviour.routing, outbound);
+            assert!(
+                behaviour
+                    .routing
+                    .try_reserve_dial(&outbound, SwarmNodeType::Storer)
+            );
+            behaviour.routing.dial_connected(&outbound);
+            behaviour.routing.handshake_completed(&outbound);
+            SwarmRouting::connected(&*behaviour.routing, test_overlay(0x81));
+
+            // One known peer serving a dial backoff (bin 1).
+            let backed_off = behaviour
+                .peer_manager
+                .store_discovered_peer(test_swarm_peer(0x40));
+            behaviour.peer_manager.record_dial_failure(&backed_off);
+            assert!(behaviour.peer_manager.peer_is_in_backoff(&backed_off));
+
+            // Two dialable candidates queued in bin 0.
+            for n in [0xC0u8, 0xC1] {
+                let peer = test_swarm_peer(n);
+                let overlay = OverlayAddress::from(*peer.overlay());
+                behaviour.peer_manager.store_discovered_peer(peer);
+                behaviour.routing.requeue_candidate(overlay);
+            }
+
+            let bin0 = Bin::new(0).expect("valid bin");
+            let expected_slots = behaviour.routing.filled_slots(bin0);
+            let expected_min_outbound = behaviour.routing.limits().min_outbound();
+
+            // First snapshot: taken before the poll's drain touches the bucket.
+            let fresh = query_dial_state(&mut behaviour, &handle).await;
+            assert_eq!(fresh.queued_candidates, 2);
+            assert_eq!(fresh.peers_in_backoff, 1);
+            assert_eq!(fresh.eligible_known_peers, 3);
+            assert_eq!(fresh.available_dial_tokens, 1);
+            assert_eq!(fresh.next_dial_token_in, None);
+            assert!(!fresh.throttled);
+            assert_eq!(fresh.last_evaluation, None);
+            assert_eq!(fresh.min_outbound, expected_min_outbound);
+
+            let fresh_bin0 = fresh
+                .bins
+                .iter()
+                .find(|b| b.bin == bin0)
+                .expect("bin 0 present");
+            assert_eq!(fresh_bin0.connected, 2);
+            assert_eq!(fresh_bin0.outbound, 1);
+            assert_eq!(fresh_bin0.queued, 2);
+            // Neighborhood bins report no slot coverage; bin 0 sits below the
+            // depth-0 frontier so it carries a finite target and slot count
+            // that matches the readiness snapshot.
+            let readiness = handle.readiness();
+            let readiness_bin0 = readiness
+                .bins
+                .iter()
+                .find(|b| b.bin == bin0)
+                .expect("bin 0 present in readiness");
+            assert_eq!(fresh_bin0.slots_filled, readiness_bin0.slots_filled);
+            assert_eq!(fresh_bin0.slots_filled, Some(expected_slots));
+
+            // The first poll consumed the single token dialing one candidate;
+            // the second snapshot sees the drained bucket and shorter queue.
+            let drained = query_dial_state(&mut behaviour, &handle).await;
+            assert_eq!(drained.available_dial_tokens, 0);
+            assert!(drained.next_dial_token_in.is_some());
+            assert!(drained.throttled);
+            assert_eq!(drained.queued_candidates, 1);
         }
     }
 

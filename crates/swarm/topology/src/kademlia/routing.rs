@@ -180,6 +180,10 @@ pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     /// published depth with a saturation deficit within
     /// [`DEPTH_LOWER_DEFICIT_TOLERANCE`].
     pending_depth_lower: Mutex<Option<Instant>>,
+    /// Start of the most recent connection-evaluation round; `None` before
+    /// the first. Read by the dial-state snapshot to report evaluation
+    /// recency.
+    last_evaluation: Mutex<Option<Instant>>,
     config: KademliaConfig,
     candidate_queues: CandidateQueues,
     dialing_counts: Vec<AtomicUsize>,
@@ -229,6 +233,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             peer_manager,
             depth: AtomicU8::new(0),
             pending_depth_lower: Mutex::new(None),
+            last_evaluation: Mutex::new(None),
             config,
             candidate_queues: CandidateQueues::new(num_bins, queue_cap),
             dialing_counts: make_atomic_vec(num_bins),
@@ -292,7 +297,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
     /// Outbound (self-dialed) connections in `bin`: dialing plus
     /// outbound-tagged handshaking and active.
-    fn outbound_count(&self, bin: Bin) -> usize {
+    pub(crate) fn outbound_count(&self, bin: Bin) -> usize {
         atomic_load(&self.outbound_counts, bin)
     }
 
@@ -1067,6 +1072,22 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
         !self.candidate_queues.is_empty()
     }
 
+    /// Total dial candidates queued across all bins.
+    pub(crate) fn queued_candidates_total(&self) -> usize {
+        self.candidate_queues.len()
+    }
+
+    /// Dial candidates queued in `bin`.
+    pub(crate) fn queued_candidates_in_bin(&self, bin: Bin) -> usize {
+        self.candidate_queues.bin_len(bin)
+    }
+
+    /// Time since the last connection-evaluation round, `None` before the
+    /// first. Uses the routing clock so paused-time tests observe it.
+    pub(crate) fn last_evaluation_elapsed(&self) -> Option<Duration> {
+        self.last_evaluation.lock().map(|at| at.elapsed())
+    }
+
     /// Return a popped candidate to its bin queue, e.g. when the dial-rate
     /// bucket ran out before it could be dialed. Re-enters the dedup set so
     /// the evaluator does not select it again while it waits.
@@ -1078,6 +1099,8 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
     /// Evaluate connections and enqueue candidates into per-bin queues.
     #[tracing::instrument(skip(self), level = "debug")]
     pub(crate) fn evaluate_connections(&self) {
+        *self.last_evaluation.lock() = Some(Instant::now());
+
         // Use effective depth (max of connected and estimated) for allocation
         let connected_depth = self.depth();
         let known_bin_sizes = self.peer_manager.index().bin_sizes();

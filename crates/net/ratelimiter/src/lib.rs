@@ -161,6 +161,26 @@ impl RateLimiter {
             Err(e) => Err(e),
         }
     }
+
+    /// Check whether one token would be admitted right now without charging it.
+    ///
+    /// Returns the same [`RateLimitedErr`] a charge would, so a caller can read
+    /// the wait hint without draining the bucket.
+    pub fn try_peek(&self) -> Result<(), RateLimitedErr> {
+        let now = self.init.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        check(&self.cell, self.tat_nanos, now, 1).map(|_| ())
+    }
+
+    /// Tokens the bucket would admit right now, clamped to its burst capacity.
+    pub fn available_tokens(&self) -> u32 {
+        let now = self.init.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let headroom = now
+            .saturating_add(self.cell.tau_nanos)
+            .saturating_sub(self.tat_nanos)
+            .min(self.cell.tau_nanos);
+        let tokens = headroom / self.cell.t_nanos.max(1);
+        u32::try_from(tokens).unwrap_or(u32::MAX)
+    }
 }
 
 /// Per-key GCRA state: the theoretical arrival time plus the [`Cell`] that
@@ -348,6 +368,37 @@ mod tests {
         assert!(rl.try_consume().is_ok());
         assert!(rl.try_consume().is_ok());
         assert!(matches!(rl.try_consume(), Err(RateLimitedErr::TooSoon(_))));
+    }
+
+    #[test]
+    fn try_peek_reads_without_consuming() {
+        let mut rl = RateLimiter::new(quota_n_per(2, 60));
+        // Peeking never spends: the two real charges still both succeed.
+        assert!(rl.try_peek().is_ok());
+        assert!(rl.try_peek().is_ok());
+        assert!(rl.try_consume().is_ok());
+        assert!(rl.try_consume().is_ok());
+        // Drained: peek now reports the wait a charge would.
+        assert!(matches!(rl.try_peek(), Err(RateLimitedErr::TooSoon(_))));
+    }
+
+    #[test]
+    fn available_tokens_counts_down_and_recovers() {
+        // Four tokens over a short window so recovery is observable in a test.
+        let window = Duration::from_millis(40);
+        let mut rl = RateLimiter::new(Quota::n_every(NonZeroU32::new(4).unwrap(), window));
+        assert_eq!(rl.available_tokens(), 4);
+
+        for expected in [3, 2, 1, 0] {
+            assert!(rl.try_consume().is_ok());
+            assert_eq!(rl.available_tokens(), expected);
+        }
+        assert!(matches!(rl.try_consume(), Err(RateLimitedErr::TooSoon(_))));
+
+        // A full window replenishes the bucket; sleep past it with margin.
+        std::thread::sleep(window + Duration::from_millis(40));
+        assert!(rl.available_tokens() >= 1);
+        assert!(rl.try_consume().is_ok());
     }
 
     #[test]
