@@ -1,7 +1,5 @@
 //! No-op implementations that always allow and never settle.
 
-use std::vec::Vec;
-
 use vertex_swarm_api::{
     Au, Direction, SwarmAccounting, SwarmIdentity, SwarmPeerAccounting, SwarmResult,
 };

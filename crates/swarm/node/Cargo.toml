@@ -190,6 +190,7 @@ cli = [
     "dep:serde",
     "dep:vertex-node-api",
     "dep:vertex-swarm-accounting-pricing",
+    "vertex-swarm-accounting/cli",
     "vertex-swarm-localstore/cli",
     "vertex-swarm-primitives/serde",
     "alloy-primitives/serde",
