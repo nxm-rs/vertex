@@ -61,8 +61,19 @@ struct SimPeer {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SimPhase {
     Dialing,
-    Handshaking,
+    Handshaking(ConnectionDirection),
     Active(ConnectionDirection),
+}
+
+impl SimPhase {
+    /// Whether this phase is an outbound (self-dialed) connection: dialing is
+    /// outbound by construction, the later phases by their carried direction.
+    fn is_outbound(&self) -> bool {
+        match self {
+            SimPhase::Dialing => true,
+            SimPhase::Handshaking(dir) | SimPhase::Active(dir) => dir.is_outbound(),
+        }
+    }
 }
 
 /// Forge a gossip/handshake peer record for `overlay` stamped at `ts`.
@@ -198,10 +209,10 @@ impl SimWorld {
             .0
     }
 
-    /// `(dialing, handshaking, active)` phase counts for `bin` from the table.
-    fn bin_phase_counts(&self, bin: u8) -> (usize, usize, usize) {
+    /// Outbound (self-dialed) connections in `bin` from the routing table.
+    fn outbound_in_bin(&self, bin: u8) -> usize {
         self.routing
-            .bin_phase_counts(Bin::new(bin).unwrap_or(Bin::MAX))
+            .bin_outbound_count(Bin::new(bin).unwrap_or(Bin::MAX))
     }
 
     /// Distinct sub-prefix slots among the connected peers in `bin`, via the
@@ -275,7 +286,10 @@ impl SimWorld {
     /// connected, handshake completed, peer-manager connect, routing connect.
     fn complete_outbound(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
         self.routing.dial_connected(&overlay);
-        self.phases.insert(overlay, SimPhase::Handshaking);
+        self.phases.insert(
+            overlay,
+            SimPhase::Handshaking(ConnectionDirection::Outbound),
+        );
         self.routing.handshake_completed(&overlay);
         self.gossip_clock += 1;
         let peer = forge_peer(overlay, self.gossip_clock);
@@ -298,7 +312,8 @@ impl SimWorld {
             return false;
         }
         self.routing.reserve_inbound(&overlay);
-        self.phases.insert(overlay, SimPhase::Handshaking);
+        self.phases
+            .insert(overlay, SimPhase::Handshaking(ConnectionDirection::Inbound));
         self.routing.handshake_completed(&overlay);
         self.gossip_clock += 1;
         let peer = forge_peer(overlay, self.gossip_clock);
@@ -432,6 +447,8 @@ impl SimWorld {
 
     /// Every-tick invariants:
     /// - the table's per-bin phase counters match the shadow model;
+    /// - the table's per-bin outbound counter matches the outbound shadow
+    ///   (the counter is maintained on every lifecycle path, both directions);
     /// - every bin below the published depth has a target at or above
     ///   saturation (the allocation floor);
     /// - the published depth never sits below the instantaneous recompute
@@ -440,13 +457,19 @@ impl SimWorld {
     fn assert_invariants(&self) {
         let depth = self.depth();
 
+        // Per-bin (dialing, handshaking, active) and a separate outbound tally.
         let mut shadow: HashMap<Bin, (usize, usize, usize)> = HashMap::new();
+        let mut outbound_shadow: HashMap<Bin, usize> = HashMap::new();
         for (overlay, phase) in &self.phases {
-            let entry = shadow.entry(self.bin_for(overlay)).or_insert((0, 0, 0));
+            let bin = self.bin_for(overlay);
+            let entry = shadow.entry(bin).or_insert((0, 0, 0));
             match phase {
                 SimPhase::Dialing => entry.0 += 1,
-                SimPhase::Handshaking => entry.1 += 1,
+                SimPhase::Handshaking(_) => entry.1 += 1,
                 SimPhase::Active(_) => entry.2 += 1,
+            }
+            if phase.is_outbound() {
+                *outbound_shadow.entry(bin).or_insert(0) += 1;
             }
         }
 
@@ -457,6 +480,13 @@ impl SimWorld {
                 counts,
                 shadowed,
                 "phase counters diverged at bin {}",
+                bin.get()
+            );
+
+            assert_eq!(
+                self.routing.bin_outbound_count(bin),
+                outbound_shadow.get(&bin).copied().unwrap_or(0),
+                "outbound counter diverged at bin {}",
                 bin.get()
             );
 
