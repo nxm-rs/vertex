@@ -155,6 +155,9 @@ pub struct ClientNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, ClientNodeBehaviour<I>>,
     client_event_tx: mpsc::Sender<ClientEvent>,
     client_command_rx: mpsc::Receiver<ClientCommand>,
+    /// Seeds a peer's accounting serve line at handshake completion. `None`
+    /// until [`enable_forwarding`](Self::enable_forwarding) wires the accounting.
+    accounting_connect: Option<super::AccountingConnect>,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNode<I> {
@@ -191,6 +194,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         <G as crate::InflightLimit>::Permit: Send,
         L: crate::LatencyHint + Clone + 'static,
     {
+        use vertex_swarm_api::{SwarmAccounting, SwarmClientAccounting};
         // Network id recovers an inbound receipt's signer; set it before any
         // handler is created (handlers clone the config at connection setup).
         let network_id = engine.topology().network_id();
@@ -199,6 +203,10 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             .behaviour_mut()
             .client
             .set_network_id(network_id);
+        let connect = Arc::clone(&accounting);
+        self.accounting_connect = Some(Arc::new(move |peer, node_type| {
+            connect.accounting().connect_peer(peer, node_type);
+        }));
         let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(engine, accounting));
         self.base
             .swarm
@@ -384,6 +392,13 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                 node_type,
                 ..
             } => {
+                // Seed the peer's serve line from its handshake node type before
+                // activating it: topology inserts the peer into routing before
+                // emitting this event, so a dispatch task may already have
+                // created the peer lazily on the client line.
+                if let Some(connect) = &self.accounting_connect {
+                    connect(overlay, node_type);
+                }
                 self.base
                     .swarm
                     .behaviour_mut()
@@ -555,6 +570,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             base,
             client_event_tx: event_tx,
             client_command_rx: command_rx,
+            accounting_connect: None,
         };
 
         Ok((node, client_service, client_handle))

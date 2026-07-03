@@ -56,3 +56,13 @@ pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 /// channel at once, so admitting a burst per wake (rather than one per full
 /// select pass) keeps the single central task from serialising on wake latency.
 pub(crate) const CHANNEL_DRAIN_BUDGET: usize = 32;
+
+/// A handshake-completion hook seeding a peer's accounting serve line from its
+/// advertised node type. Erased as `Arc<dyn Fn>` so the node struct stays free
+/// of the accounting type parameters; wired from the accounting that
+/// `enable_forwarding` already receives.
+pub(crate) type AccountingConnect = std::sync::Arc<
+    dyn Fn(vertex_swarm_primitives::OverlayAddress, vertex_swarm_primitives::SwarmNodeType)
+        + Send
+        + Sync,
+>;

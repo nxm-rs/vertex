@@ -219,6 +219,19 @@ impl Au {
         }
     }
 
+    /// Divide a non-negative amount by `divisor`, flooring. The audited AU
+    /// division, for deriving the client serve line from the full line. A
+    /// negative receiver returns zero; a zero divisor divides by one.
+    #[inline]
+    #[must_use]
+    pub const fn scale_down(self, divisor: u64) -> Au {
+        if self.0 < 0 {
+            return Au::ZERO;
+        }
+        let divisor = if divisor == 0 { 1 } else { divisor };
+        Au::from_amount(self.0 as u64 / divisor)
+    }
+
     /// Convert an inbound pseudosettle wire amount (`U256`) into AU.
     ///
     /// In-spec amounts fit a `u64` of AU; an out-of-spec larger value saturates
@@ -521,6 +534,20 @@ mod tests {
         assert_eq!(Au::from_amount(u64::MAX / 2).checked_scale(u64::MAX), None);
         // Negative amounts are not scalable.
         assert_eq!(Au::new(-1).checked_scale(2), None);
+    }
+
+    #[test]
+    fn scale_down_floors_clamps_negatives_and_zero_divisor() {
+        // Exact division floors: the client serve line derives from the full
+        // line by integer division, no rounding up.
+        assert_eq!(Au::new(1000).scale_down(5), Au::new(200));
+        // A divisor larger than the amount floors to zero (the caller re-floors
+        // the serve line at one AU).
+        assert_eq!(Au::new(999).scale_down(1000), Au::ZERO);
+        // A negative receiver returns zero.
+        assert_eq!(Au::new(-10).scale_down(5), Au::ZERO);
+        // A zero divisor divides by one rather than trapping.
+        assert_eq!(Au::new(1000).scale_down(0), Au::new(1000));
     }
 
     #[test]
