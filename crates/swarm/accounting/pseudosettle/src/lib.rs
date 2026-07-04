@@ -187,7 +187,11 @@ mod tests {
         // A handle-less provider has no wire to send a pseudosettle on, so settle
         // is a no-op even with an outstanding debt.
         let provider = PseudosettleProvider::new(AccountingConfig::default());
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        let state = PeerState::new(
+            Au::from_amount(13_500_000),
+            Au::from_amount(13_500_000),
+            Au::from_amount(16_875_000),
+        );
         state.add_balance(Au::new(-10_000));
 
         let settled = provider
@@ -201,7 +205,11 @@ mod tests {
     async fn settle_is_a_noop_when_not_in_debt() {
         // A positive balance means the peer owes us; there is nothing to settle.
         let provider = PseudosettleProvider::new(AccountingConfig::default());
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        let state = PeerState::new(
+            Au::from_amount(13_500_000),
+            Au::from_amount(13_500_000),
+            Au::from_amount(16_875_000),
+        );
         state.add_balance(Au::new(1_000_000));
 
         let settled = provider

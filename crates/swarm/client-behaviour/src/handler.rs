@@ -244,6 +244,11 @@ pub struct ClientHandler {
     pending_responses: HashMap<u64, StoredResponse>,
     /// Bounded set for async pseudosettle ack sends (prevents blocking poll).
     response_sends: futures_bounded::FuturesSet<Result<(), String>>,
+    /// Latest pricing announcement received while dormant, flushed once the
+    /// handler activates. A peer announces at connect, before the overlay
+    /// round-trips through activation, so without this the connect-time
+    /// announcement is dropped and never reaches accounting.
+    pending_pricing: Option<U256>,
 }
 
 impl ClientHandler {
@@ -282,6 +287,7 @@ impl ClientHandler {
                 RESPONSE_SEND_TIMEOUT,
                 MAX_CONCURRENT_RESPONSE_SENDS,
             ),
+            pending_pricing: None,
         }
     }
 
@@ -350,6 +356,15 @@ impl ClientHandler {
                 self.state = State::Active { overlay };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
+                // Flush a pricing announcement that arrived before activation, so
+                // a peer that announces at connect still reaches accounting.
+                if let Some(threshold) = self.pending_pricing.take() {
+                    debug!(%overlay, %threshold, "Flushing buffered pricing");
+                    self.pending_events.push_back(HandlerEvent::Peer {
+                        overlay,
+                        event: PeerEvent::PricingReceived { threshold },
+                    });
+                }
             }
             State::Active { .. } => {
                 warn!("Handler already active, ignoring duplicate activation");
@@ -371,10 +386,11 @@ impl ClientHandler {
                 },
             });
         } else {
-            warn!(
+            debug!(
                 threshold = %threshold.payment_threshold,
-                "Received pricing in dormant state (peer may have cached old protocol list)"
+                "Buffering pricing received before activation"
             );
+            self.pending_pricing = Some(threshold.payment_threshold);
         }
     }
 
@@ -1107,6 +1123,72 @@ mod tests {
             .expect("valid content chunk")
             .into();
         StampedChunk::new(chunk, stamp)
+    }
+
+    struct NoopStore;
+
+    impl vertex_swarm_api::SwarmLocalStore for NoopStore {
+        fn put(
+            &self,
+            _chunk: vertex_swarm_primitives::CachedChunk,
+        ) -> vertex_swarm_api::SwarmResult<()> {
+            Ok(())
+        }
+        fn get(
+            &self,
+            _address: &nectar_primitives::ChunkAddress,
+        ) -> vertex_swarm_api::SwarmResult<Option<vertex_swarm_primitives::CachedChunk>> {
+            Ok(None)
+        }
+        fn contains(&self, _address: &nectar_primitives::ChunkAddress) -> bool {
+            false
+        }
+        fn remove(
+            &self,
+            _address: &nectar_primitives::ChunkAddress,
+        ) -> vertex_swarm_api::SwarmResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pricing_before_activation_is_buffered_and_flushed() {
+        use alloy_primitives::U256;
+        use vertex_swarm_client_protocol::PeerEvent;
+        use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+
+        use super::{ClientHandler, Config, HandlerEvent};
+        use crate::forward::StubForwarder;
+
+        let mut handler = ClientHandler::new(
+            Config::default(),
+            std::sync::Arc::new(NoopStore),
+            std::sync::Arc::new(StubForwarder),
+            None,
+        );
+
+        // A pricing announcement arriving while dormant is buffered, not dropped.
+        handler.on_pricing_received(vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(
+            U256::from(9_000_000u64),
+        ));
+        assert_eq!(handler.pending_pricing, Some(U256::from(9_000_000u64)));
+
+        // Activation emits Activated first, then flushes the buffered pricing.
+        let overlay = OverlayAddress::from([1u8; 32]);
+        handler.activate(overlay, SwarmNodeType::Storer);
+        assert_eq!(handler.pending_pricing, None);
+
+        assert!(matches!(
+            handler.pending_events.pop(),
+            Some(HandlerEvent::Activated { overlay: o }) if o == overlay
+        ));
+        assert!(matches!(
+            handler.pending_events.pop(),
+            Some(HandlerEvent::Peer {
+                event: PeerEvent::PricingReceived { threshold },
+                ..
+            }) if threshold == U256::from(9_000_000u64)
+        ));
     }
 
     #[test]

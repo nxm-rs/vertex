@@ -38,6 +38,10 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_api::SwarmSettlementProvider;
 
+/// The lower clamp on an adopted settle line, in refresh-rate units: a peer
+/// cannot drive our settle timing tighter than twice the refresh rate.
+const MIN_ANNOUNCED_REFRESH_MULTIPLES: u64 = 2;
+
 /// Per-peer accounting with pluggable settlement providers.
 ///
 /// Manages balances and delegates settlement to configured providers.
@@ -99,7 +103,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         _originated: bool,
     ) -> Result<Reservation<Receive>, AccountingError> {
         let state = self.peer_state(peer);
-        if !state_snapshot(&state, self.settle_trigger())
+        if !state_snapshot(&state, self.settle_trigger_for(&state))
             .admit(price)
             .admits()
         {
@@ -169,8 +173,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
                 // connect hook seeds the real node type, so an unknown peer must
                 // never be served on the full storer line. connect_peer heals it
                 // in place once the type is known.
+                // Seed the settle line with the full local payment threshold, not
+                // the client serve line: an un-announced peer must settle on
+                // exactly today's config-derived timing. A peer announcement
+                // tightens it later through adopt_payment_threshold.
                 Arc::new(PeerState::new(
                     self.config.client_payment_threshold(),
+                    self.config.payment_threshold(),
                     self.config.disconnect_threshold(),
                 ))
             })
@@ -194,6 +203,37 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         self.config
             .early_payment_trigger()
             .max(self.config.refresh_rate())
+    }
+
+    /// The per-peer settle trigger: the peer's settle line less the early-payment
+    /// headroom, floored at one refresh-rate unit. For an un-announced peer the
+    /// settle line equals the local payment threshold, so this is identical to
+    /// [`Accounting::settle_trigger`].
+    fn settle_trigger_for(&self, state: &PeerState) -> Au {
+        let early = self.config.early_payment_percent().min(100);
+        state
+            .settle_line()
+            .scale_percent(100 - early)
+            .max(self.config.refresh_rate())
+    }
+
+    /// Adopt a peer's announced payment threshold as its settle line, clamped to
+    /// `[2 * refresh_rate, local payment threshold]`. The lower bound floors an
+    /// adversarial tiny or zero announcement; the local payment threshold caps it
+    /// so adoption only ever tightens our settle timing, never widens it past the
+    /// config default. Writes only the settle line, never the serve line.
+    fn adopt_announced(&self, peer: OverlayAddress, announced: Au) {
+        let min = self
+            .config
+            .refresh_rate()
+            .checked_scale(MIN_ANNOUNCED_REFRESH_MULTIPLES)
+            .unwrap_or(Au::new(i64::MAX));
+        let max = self.config.payment_threshold();
+        // max-then-min, not Ord::clamp: a misconfigured 2*refresh above the
+        // threshold inverts the band, and std clamp panics on that; letting the
+        // local ceiling win keeps the settle line at the config default instead.
+        self.peer_state(peer)
+            .set_settle_line(announced.max(min).min(max));
     }
 }
 
@@ -224,7 +264,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
             state,
             providers: Arc::clone(&self.providers),
             disconnect_threshold: self.config.disconnect_threshold(),
-            payment_threshold: self.config.payment_threshold(),
         }
     }
 
@@ -259,6 +298,12 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         self.peer_state(peer)
             .set_payment_threshold(self.provide_line(node_type));
     }
+
+    fn adopt_payment_threshold(&self, peer: OverlayAddress, announced: Au) {
+        // Single-writer on the settle line, disjoint from connect_peer's serve
+        // line, so the two compose with no write-write race on shared state.
+        self.adopt_announced(peer, announced);
+    }
 }
 
 /// Per-peer ledger reads for admission.
@@ -291,28 +336,31 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
         )
     }
 
-    fn settle_trigger(&self, _peer: &OverlayAddress) -> Au {
-        // The early-payment trigger floored at one refresh-rate unit, so a settle
-        // always offers at least the minimum the peer acts on. Per-peer state
-        // carries no early-payment figure, so this reads from config.
-        Accounting::settle_trigger(self)
+    fn settle_trigger(&self, peer: &OverlayAddress) -> Au {
+        // The per-peer settle trigger derived from the peer's adopted settle line,
+        // floored at one refresh-rate unit so a settle always offers at least the
+        // minimum the peer acts on. An unknown peer (no adoption yet) falls back to
+        // the config-derived trigger, matching the lazy peer_state seed, and never
+        // inserts state.
+        self.peers.read().get(peer).map_or_else(
+            || Accounting::settle_trigger(self),
+            |state| self.settle_trigger_for(state),
+        )
     }
 
     fn snapshot(&self, peer: &OverlayAddress) -> LedgerSnapshot {
-        // One read lock and one key hash for the three per-peer fields; the
-        // settle trigger is config-derived and needs no lock. The fallback for an
-        // unknown peer matches the per-field reads (fresh zero-balance peer at the
-        // configured disconnect threshold), so a band over this snapshot is
-        // identical to one over four separate reads.
-        let settle_trigger = self.settle_trigger();
+        // One read lock and one key hash for the per-peer fields. The fallback for
+        // an unknown peer matches the per-field reads (fresh zero-balance peer at
+        // the configured disconnect threshold and config-derived settle trigger),
+        // so a band over this snapshot is identical to one over the separate reads.
         self.peers.read().get(peer).map_or_else(
             || LedgerSnapshot {
                 balance: Au::ZERO,
                 reserved: Au::ZERO,
                 disconnect_line: self.config.disconnect_threshold(),
-                settle_trigger,
+                settle_trigger: self.settle_trigger(),
             },
-            |state| state_snapshot(state, settle_trigger),
+            |state| state_snapshot(state, self.settle_trigger_for(state)),
         )
     }
 }
@@ -324,18 +372,12 @@ pub struct AccountingPeerHandle {
     state: Arc<PeerState>,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
     disconnect_threshold: Au,
-    payment_threshold: Au,
 }
 
 impl AccountingPeerHandle {
     /// Get access to the underlying peer state.
     pub fn state(&self) -> &Arc<PeerState> {
         &self.state
-    }
-
-    /// Get the payment threshold in AU.
-    pub fn payment_threshold(&self) -> Au {
-        self.payment_threshold
     }
 
     /// Get the disconnect threshold in AU.
@@ -350,11 +392,12 @@ impl AccountingPeerHandle {
         for provider in self.providers.iter() {
             total = total.saturating_add(provider.settle(self.peer, self.state.as_ref()).await?);
 
-            // Stop once the committed debt no longer exceeds the payment
-            // threshold. Reasoning in `Debt` keeps the comparison sign-safe (both
-            // sides non-negative); each provider re-reads `balance()` internally,
-            // so the fresh committed debt drives the break.
-            if !Debt::committed(self.state.balance()).exceeds(self.payment_threshold) {
+            // Stop once the committed debt no longer exceeds the settle line.
+            // Read live: an announcement may land between handle creation and this
+            // break. Reasoning in `Debt` keeps the comparison sign-safe (both sides
+            // non-negative); each provider re-reads `balance()` internally, so the
+            // fresh committed debt drives the break.
+            if !Debt::committed(self.state.balance()).exceeds(self.state.settle_line()) {
                 break;
             }
         }
@@ -1082,5 +1125,140 @@ mod tests {
         assert_eq!(direct.settle_trigger, via_ledger.settle_trigger);
 
         drop(reservation);
+    }
+
+    // Default config: refresh 4_500_000, threshold 13_500_000, early 50%, so the
+    // adopted-settle-line band is [9_000_000, 13_500_000].
+
+    #[test]
+    fn announced_threshold_within_band_is_adopted() {
+        // An announcement inside the band sets the settle line verbatim, and the
+        // derived per-peer settle trigger is its early-payment fraction floored at
+        // one refresh unit: 9_000_000 * 50% = 4_500_000.
+        let accounting = test_accounting();
+        let peer = test_peer();
+
+        accounting.adopt_payment_threshold(peer, au(9_000_000));
+
+        assert_eq!(accounting.peer_state(peer).settle_line(), au(9_000_000));
+        assert_eq!(Ledger::settle_trigger(&accounting, &peer), au(4_500_000));
+    }
+
+    #[test]
+    fn announced_threshold_below_min_clamps_to_min() {
+        // A hostile tiny announcement floors at 2 * refresh_rate = 9_000_000,
+        // never driving our settle timing tighter than the minimum.
+        let accounting = test_accounting();
+        let peer = test_peer();
+
+        accounting.adopt_payment_threshold(peer, au(1));
+
+        assert_eq!(accounting.peer_state(peer).settle_line(), au(9_000_000));
+    }
+
+    #[test]
+    fn announced_threshold_above_local_default_clamps() {
+        // An announcement above the local payment threshold caps at it, so
+        // adoption only ever tightens our settle line, never widens it.
+        let accounting = test_accounting();
+        let peer = test_peer();
+
+        accounting.adopt_payment_threshold(peer, au(100_000_000));
+
+        assert_eq!(accounting.peer_state(peer).settle_line(), au(13_500_000));
+    }
+
+    #[test]
+    fn unannounced_peer_keeps_the_config_trigger() {
+        // A peer that never announced reads the config-derived settle trigger, so
+        // adoption changes nothing until an announcement lands. Both the map-miss
+        // fallback and the lazily seeded settle line must yield it: the seed is
+        // the full local payment threshold, not the tighter client serve line.
+        let accounting = test_accounting();
+        let peer = test_peer();
+
+        let config = AccountingConfig::default();
+        let expected = config.early_payment_trigger().max(config.refresh_rate());
+        assert_eq!(Ledger::settle_trigger(&accounting, &peer), expected);
+
+        accounting.peer_state(peer);
+        assert_eq!(Ledger::settle_trigger(&accounting, &peer), expected);
+    }
+
+    #[test]
+    fn adoption_never_touches_the_serve_line() {
+        // The announcement writes only the settle line: the serve line the peer
+        // owes us by stays at connect_peer's value, and a provide past it still
+        // errs (direction-correctness). Connect as a client so the serve line
+        // (200 under small_config) differs from the clamped adopted value (1000):
+        // a cross-write onto the serve line moves an observable value here.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Client);
+        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(200));
+
+        accounting.adopt_payment_threshold(peer, au(1_000_000_000));
+
+        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(200));
+        assert!(accounting.prepare_provide(peer, au(200)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(201)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn connect_peer_reseed_does_not_clobber_adoption() {
+        // small_config: refresh 0 so the adopted band is [0, 1000]. Adopting 500
+        // and then connecting keeps the settle line (connect_peer writes only the
+        // serve line); the reverse order keeps the serve line. The adoption and
+        // connect-time serve-line writers touch disjoint fields, so they compose
+        // without a race.
+        let accounting = Accounting::new(small_config(), test_identity());
+
+        // adopt then connect: settle line survives, serve line rises to storer.
+        let a = OverlayAddress::from([1u8; 32]);
+        accounting.adopt_payment_threshold(a, au(500));
+        assert_eq!(accounting.peer_state(a).settle_line(), au(500));
+        accounting.connect_peer(a, SwarmNodeType::Storer);
+        assert_eq!(accounting.peer_state(a).settle_line(), au(500));
+        assert_eq!(accounting.peer_state(a).payment_threshold(), au(1000));
+
+        // connect then adopt: serve line survives the adoption.
+        let b = OverlayAddress::from([2u8; 32]);
+        accounting.connect_peer(b, SwarmNodeType::Storer);
+        accounting.adopt_payment_threshold(b, au(500));
+        assert_eq!(accounting.peer_state(b).settle_line(), au(500));
+        assert!(accounting.prepare_provide(b, au(1000)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(b, au(1001)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn adopted_threshold_moves_the_admission_band() {
+        // Adopting 9_000_000 lowers the settle trigger from the config 6_750_000
+        // to 4_500_000, so a projected debt of 5_000_000 that Admits on an
+        // un-announced peer becomes SettleAndAdmit on the adopted one. The serve
+        // line (and thus prepare_provide) is unchanged.
+        let accounting = test_accounting();
+        let adopted = OverlayAddress::from([1u8; 32]);
+        let control = OverlayAddress::from([2u8; 32]);
+
+        accounting.adopt_payment_threshold(adopted, au(9_000_000));
+
+        assert_eq!(accounting.admit(&control, au(5_000_000)), Admission::Admit);
+        assert_eq!(
+            accounting.admit(&adopted, au(5_000_000)),
+            Admission::SettleAndAdmit
+        );
+
+        // The client serve line (13_500_000 / 10) is untouched by adoption.
+        assert!(accounting.prepare_provide(adopted, au(1_350_000)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(adopted, au(1_350_001)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
     }
 }

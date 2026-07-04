@@ -48,18 +48,26 @@ pub struct PeerState {
     shadow_reserved_balance: AtomicU64,
     ghost_balance: AtomicU64,
     payment_threshold: AtomicI64,
+    settle_line: AtomicI64,
     disconnect_threshold: Au,
 }
 
 impl PeerState {
     /// Create peer state with the given thresholds in AU.
-    pub fn new(payment_threshold: Au, disconnect_threshold: Au) -> Self {
+    ///
+    /// The serve line (`payment_threshold`) is the debt we let the peer owe us
+    /// before refusing service; the settle line is the debt we let ourselves owe
+    /// the peer before settling, seeded from the local payment threshold and
+    /// tightened by the peer's clamped announcement. The two are distinct fields
+    /// moving in opposite directions.
+    pub fn new(payment_threshold: Au, settle_line: Au, disconnect_threshold: Au) -> Self {
         Self {
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
             ghost_balance: AtomicU64::new(0),
             payment_threshold: AtomicI64::new(payment_threshold.get()),
+            settle_line: AtomicI64::new(settle_line.get()),
             disconnect_threshold,
         }
     }
@@ -130,6 +138,17 @@ impl PeerState {
         self.payment_threshold.store(line.get(), Ordering::Relaxed);
     }
 
+    /// Get the settle line in AU: the debt we let ourselves owe the peer before
+    /// settling toward it.
+    pub fn settle_line(&self) -> Au {
+        Au::new(self.settle_line.load(Ordering::Relaxed))
+    }
+
+    /// Update the settle line from the peer's clamped announcement.
+    pub fn set_settle_line(&self, line: Au) {
+        self.settle_line.store(line.get(), Ordering::Relaxed);
+    }
+
     /// Get the disconnect threshold in AU.
     pub fn disconnect_threshold(&self) -> Au {
         self.disconnect_threshold
@@ -152,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_balance_operations() {
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
 
         assert_eq!(state.balance(), Au::ZERO);
 
@@ -167,13 +186,13 @@ mod tests {
     fn test_add_balance_saturates_instead_of_wrapping() {
         // Adding into the positive bound saturates rather than wrapping to a
         // negative balance (which would flip owed/owes).
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
         state.add_balance(Au::new(i64::MAX));
         state.add_balance(au(1000));
         assert_eq!(state.balance(), Au::new(i64::MAX));
 
         // The negative bound saturates too.
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
         state.add_balance(Au::new(i64::MIN));
         state.add_balance(au(-1000));
         assert_eq!(state.balance(), Au::new(i64::MIN));
@@ -181,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_reserved_operations() {
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
 
         assert_eq!(state.reserved_balance(), Au::ZERO);
 
@@ -194,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_sub_reserved_saturates_at_zero() {
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
 
         // Releasing more than is reserved must saturate at zero, never wrap to
         // a near-u64::MAX reserve that would read back as i64::MAX and jam the
@@ -210,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_thresholds() {
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
 
         assert_eq!(state.payment_threshold(), au(1000));
         assert_eq!(state.disconnect_threshold(), au(10000));
@@ -218,7 +237,7 @@ mod tests {
 
     #[test]
     fn set_payment_threshold_updates_the_serve_line() {
-        let state = PeerState::new(au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000));
         assert_eq!(state.payment_threshold(), au(1000));
 
         state.set_payment_threshold(au(200));

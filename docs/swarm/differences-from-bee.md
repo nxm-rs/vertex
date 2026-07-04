@@ -110,7 +110,7 @@ Vertex prices chunks and tracks per-peer balances with the same arithmetic as Be
 
 **First-contact allowance.** Bee seeds a peer's last-settlement time at the Unix epoch, so on the first pseudosettle the elapsed interval is effectively the whole epoch and the allowance is bounded only by the peer's debt: Bee accepts the full owed amount immediately. Vertex anchors the allowance clock at the moment it first accounts for a peer, so the first grant is bounded by the genuine wall-clock elapsed since first contact and ramps up over a few seconds at the configured refresh rate. This removes an unbounded first-contact grant (the only anti-free-ride brake on first contact and after a reconnect that cleared in-memory state) at the cost of a brief ramp before a fresh peer is granted its full allowance.
 
-**Peer-advertised payment threshold.** Bee lets a peer advertise its own payment threshold and the debtor settles before crossing the advertised value. Vertex currently decides when to settle against its locally configured threshold and does not yet apply a peer-advertised one. With homogeneous default thresholds the two coincide; a peer configured with a lower threshold than the local default is the gap. Honouring the advertised threshold is tracked with the open-loop client accounting work.
+**Peer-advertised payment threshold.** Bee lets a peer advertise its own payment threshold and the debtor settles before crossing the advertised value. Vertex adopts the advertised threshold as a per-peer settle line, clamped to `[2x refresh rate, local payment threshold]`, and settles our debt to that peer against it; the value drives both the per-peer settle trigger the admission band reads and the settle fan-out early break. Two residual divergences remain. Bee disconnects a peer that advertises below its minimum, while vertex clamps the value up to `2x refresh rate` and keeps the peer (a local reaction policy, not a wire change). Bee also adopts an advertised threshold above its own default, while vertex caps adoption at the local payment threshold, so an announcement only ever tightens our settle timing and never widens the debt we let ourselves carry. Vertex still does not advertise its own threshold outbound, so a bee peer paces against its local default when settling toward us.
 
 ## Summary of Key Differences
 
@@ -124,7 +124,7 @@ Vertex prices chunks and tracks per-peer balances with the same arithmetic as Be
 | Hive Gossip | Recipient-targeted composition, client recipients, periodic and depth-decrease broadcasts, inbound rate charged before crypto, no outbound bucket | Random per-bin sample, event-driven only, post-hoc inbound limit, outbound bucket |
 | Disconnect Scoring | Activity-gated early-disconnect penalty, intent-attributed closes | No disconnect penalty |
 | Pseudosettle First Contact | Allowance ramps from first-contact clock | Full debt accepted immediately |
-| Payment Threshold | Local threshold only (peer-advertised not yet applied) | Honours peer-advertised threshold |
+| Payment Threshold | Adopted, clamped to [2x refresh rate, local payment threshold]; still not advertised outbound | Honours peer-advertised threshold, advertises its own |
 
 ## See Also
 

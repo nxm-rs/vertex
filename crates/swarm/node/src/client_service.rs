@@ -27,6 +27,11 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 
 pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
+/// Type-erased hook feeding a peer's announced payment threshold into accounting,
+/// which clamps it to the per-peer settle line. The service cannot name the
+/// concrete accounting type, so it holds this instead.
+pub(crate) type ThresholdAdopter = Arc<dyn Fn(OverlayAddress, Au) + Send + Sync>;
+
 /// Handle for sending commands to the network layer.
 ///
 /// Request methods ([`Self::retrieve_chunk`], [`Self::push_chunk`]) thread a
@@ -285,6 +290,9 @@ pub struct ClientService {
     /// Per-PO retrieval-latency estimate shared with the chunk provider; a
     /// completed originated retrieval is recorded here keyed by its proximity.
     retrieval_latency: Option<Arc<RetrievalLatency>>,
+    /// Feeds a peer's announced payment threshold into accounting; absent on the
+    /// lightweight launcher, where no accounting is wired.
+    threshold_adopter: Option<ThresholdAdopter>,
 }
 
 impl ClientService {
@@ -303,6 +311,7 @@ impl ClientService {
             store: None,
             inflight: None,
             retrieval_latency: None,
+            threshold_adopter: None,
         };
 
         (service, event_tx, handle)
@@ -323,6 +332,7 @@ impl ClientService {
             store: None,
             inflight: None,
             retrieval_latency: None,
+            threshold_adopter: None,
         };
 
         (service, handle)
@@ -366,6 +376,14 @@ impl ClientService {
     #[must_use]
     pub(crate) fn with_retrieval_latency(mut self, latency: Arc<RetrievalLatency>) -> Self {
         self.retrieval_latency = Some(latency);
+        self
+    }
+
+    /// Attach the hook that feeds a peer's announced payment threshold into
+    /// accounting, which clamps it to the per-peer settle line.
+    #[must_use]
+    pub(crate) fn with_threshold_adopter(mut self, adopter: ThresholdAdopter) -> Self {
+        self.threshold_adopter = Some(adopter);
         self
     }
 
@@ -449,8 +467,12 @@ impl ClientService {
             } => match event {
                 PeerEvent::PricingReceived { threshold } => {
                     debug!(%peer_id, %peer, %threshold, "Received pricing threshold");
-                    // TODO: Validate threshold against minimum
-                    // TODO: Store peer's threshold for bandwidth accounting
+                    if let Some(adopter) = &self.threshold_adopter {
+                        // An out-of-spec value saturates to the maximum AU; the
+                        // clamp inside accounting caps it at the local threshold.
+                        let announced = Au::try_from(threshold).unwrap_or(Au::new(i64::MAX));
+                        adopter(peer, announced);
+                    }
                 }
 
                 PeerEvent::PricingSent => {
@@ -686,6 +708,9 @@ mod tests {
 
     use super::*;
 
+    /// Recorded `(peer, announced threshold)` pairs a test threshold adopter sinks.
+    type AdopterCalls = Arc<Mutex<Vec<(OverlayAddress, Au)>>>;
+
     #[derive(Default)]
     struct RecordingReporter {
         reports: Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
@@ -724,6 +749,52 @@ mod tests {
         let (service, _event_tx, _handle) = ClientService::new();
         let service = service.with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
         (service, reporter)
+    }
+
+    fn service_with_adopter() -> (ClientService, AdopterCalls) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let (service, _event_tx, _handle) = ClientService::new();
+        let service = service.with_threshold_adopter(Arc::new(move |peer, announced| {
+            sink.lock().unwrap().push((peer, announced));
+        }));
+        (service, calls)
+    }
+
+    #[test]
+    fn pricing_received_feeds_the_threshold_adopter() {
+        use alloy_primitives::U256;
+
+        let (service, calls) = service_with_adopter();
+        service.process_event(ClientEvent::Peer {
+            peer: peer(7),
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::PricingReceived {
+                threshold: U256::from(9_000_000u64),
+            },
+        });
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.as_slice(), &[(peer(7), Au::new(9_000_000))]);
+    }
+
+    #[test]
+    fn pricing_received_saturates_an_out_of_range_announcement() {
+        use alloy_primitives::U256;
+
+        // A threshold beyond i64::MAX saturates to the maximum AU here; the clamp
+        // inside accounting caps it at the local payment threshold.
+        let (service, calls) = service_with_adopter();
+        service.process_event(ClientEvent::Peer {
+            peer: peer(8),
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::PricingReceived {
+                threshold: U256::MAX,
+            },
+        });
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.as_slice(), &[(peer(8), Au::new(i64::MAX))]);
     }
 
     #[test]
