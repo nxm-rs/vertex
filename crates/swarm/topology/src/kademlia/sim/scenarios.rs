@@ -1,8 +1,10 @@
 //! Scenario suite over the deterministic sim: convergence, churn stability,
 //! partition heal, starvation truth, saturation-floor safety, sub-prefix-slot
 //! dilution of a monoculture, the minimum-outbound quota holding a bin's
-//! self-dialed share under an inbound eclipse flood, and the readiness clock
-//! surviving a boundary-peer flap.
+//! self-dialed share under an inbound eclipse flood (including an
+//! inbound-Active disconnect drained exactly), the readiness clock surviving
+//! a boundary-peer flap, and a failed handshake releasing its phase
+//! reservation.
 //!
 //! Time is paused so the tokio-driven depth-hysteresis clock is deterministic;
 //! the phase window and dial backoff run on wall clocks, so nothing here asserts
@@ -458,4 +460,93 @@ async fn outbound_quota_holds_under_inbound_flood() {
         quota,
         "the outbound share stays at the quota"
     );
+
+    // One flooded inbound peer that reached Active now disconnects. The
+    // removal drains an inbound Active entry: the connected count drops by
+    // one, the outbound tally holds, and with the count target still met and
+    // the quota intact the evaluator stays quiet, so the per-tick
+    // reconciliation runs exact over the drained state.
+    let leaver = super::overlay_in_bin(world.base(), bin, 100);
+    world.disconnect(leaver);
+    assert_eq!(
+        world.connected_in_bin(bin),
+        3 + quota,
+        "the inbound leaver drains from the connected count"
+    );
+    assert_eq!(
+        world.outbound_in_bin(bin),
+        quota,
+        "an inbound disconnect never moves the outbound tally"
+    );
+    for _ in 0..10 {
+        world.tick();
+    }
+    assert_eq!(
+        world.connected_in_bin(bin),
+        3 + quota,
+        "the drained bin holds steady: the count target is still met"
+    );
+    assert_eq!(
+        world.outbound_in_bin(bin),
+        quota,
+        "the outbound share stays at the quota after the inbound leave"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn handshake_failure_releases_the_reservation() {
+    // A dial whose transport connects but whose handshake then fails holds a
+    // handshaking phase across a tick boundary and releases it on the next.
+    // The per-tick reconciliation observes the held phase exactly, then its
+    // exact drain; the failed peer arms backoff and never counts as
+    // connected, so the bin carries no leaked counter.
+    let mut world = SimWorld::new(KademliaConfig::default(), 16, 21);
+    let sat = world.saturation();
+    world.populate_bin(0, sat, STORER, PeerScript::Honest);
+    world.populate_bin(1, 3, STORER, PeerScript::Honest);
+    let failer = super::overlay_in_bin(world.base(), 1, 200);
+    world.add_scripted(failer, STORER, PeerScript::HandshakeFail);
+
+    // Tick until the scripted dial reaches the handshake phase; the
+    // reconciliation at the end of that tick asserts the held phase exactly.
+    let mut reached_handshake = false;
+    for _ in 0..30 {
+        world.tick();
+        if world.is_handshaking(&failer) {
+            reached_handshake = true;
+            break;
+        }
+    }
+    assert!(
+        reached_handshake,
+        "the scripted dial reaches the handshake phase"
+    );
+
+    // The next tick fails the handshake: the release drains the phase entry
+    // and the end-of-tick reconciliation confirms the counters return to the
+    // honest supply alone.
+    world.tick();
+    assert!(
+        !world.is_tracked(&failer),
+        "the failed handshake releases the phase entry"
+    );
+    assert!(
+        world.in_backoff(&failer),
+        "the handshake failure arms the dial backoff"
+    );
+    assert_eq!(
+        world.connected_in_bin(1),
+        3,
+        "only the honest peers count as connected"
+    );
+
+    // The failure never leaks into later rounds: the failer stays excluded
+    // while its backoff holds and the reconciliation stays exact.
+    for _ in 0..10 {
+        world.tick();
+        assert!(
+            !world.is_tracked(&failer),
+            "the failer stays untracked under backoff"
+        );
+    }
 }

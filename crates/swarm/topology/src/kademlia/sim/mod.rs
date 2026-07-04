@@ -44,6 +44,10 @@ enum PeerScript {
     /// Connects like `Honest`, then disconnects cleanly `after_ticks` ticks
     /// later (re-dialable, no backoff).
     AcceptThenDrop { after_ticks: usize },
+    /// The dial's transport connects but the handshake fails on the next
+    /// tick, releasing the handshake-phase reservation and arming backoff.
+    /// The one-tick hold lets the reconciliation observe the held phase.
+    HandshakeFail,
     /// Reachable like `Honest`; the adversarial trait is address-space
     /// clustering, set up by the caller's forged overlays.
     Sybil,
@@ -103,6 +107,8 @@ struct SimWorld {
     phases: HashMap<OverlayAddress, SimPhase>,
     /// Tick at which a peer became active, for `AcceptThenDrop` scheduling.
     connected_tick: HashMap<OverlayAddress, usize>,
+    /// Tick at which a `HandshakeFail` peer entered the handshake phase.
+    handshaking_tick: HashMap<OverlayAddress, usize>,
     max_po: u8,
     saturation: usize,
     low_watermark: u8,
@@ -129,6 +135,7 @@ impl SimWorld {
             population: HashMap::new(),
             phases: HashMap::new(),
             connected_tick: HashMap::new(),
+            handshaking_tick: HashMap::new(),
             max_po,
             saturation,
             low_watermark,
@@ -234,6 +241,7 @@ impl SimWorld {
         self.tick_no += 1;
         self.evaluate();
         self.drain_dials();
+        self.apply_scripted_handshake_failures();
         self.apply_scripted_drops();
         self.routing.refresh_depth();
         self.assert_invariants();
@@ -280,6 +288,14 @@ impl SimWorld {
                 self.routing.release_dial(&overlay);
                 self.peer_manager.record_dial_failure(&overlay);
                 self.phases.remove(&overlay);
+            }
+            PeerScript::HandshakeFail => {
+                self.routing.dial_connected(&overlay);
+                self.phases.insert(
+                    overlay,
+                    SimPhase::Handshaking(ConnectionDirection::Outbound),
+                );
+                self.handshaking_tick.insert(overlay, self.tick_no);
             }
             PeerScript::Honest | PeerScript::Sybil | PeerScript::AcceptThenDrop { .. } => {
                 self.complete_outbound(overlay, sim.node_type);
@@ -387,6 +403,36 @@ impl SimWorld {
         }
     }
 
+    /// Fail the handshake of any `HandshakeFail` peer that entered the phase
+    /// on an earlier tick, mirroring the failure sequence the connection
+    /// handlers run: release the handshake reservation, then arm the dial
+    /// backoff. The one-tick hold means the previous tick's reconciliation
+    /// observed the held handshake phase before this release drains it.
+    fn apply_scripted_handshake_failures(&mut self) {
+        let due: Vec<OverlayAddress> = self
+            .phases
+            .iter()
+            .filter(|(overlay, phase)| {
+                matches!(phase, SimPhase::Handshaking(_))
+                    && matches!(
+                        self.population.get(overlay).map(|sim| sim.script),
+                        Some(PeerScript::HandshakeFail)
+                    )
+                    && self
+                        .handshaking_tick
+                        .get(overlay)
+                        .is_some_and(|entered| *entered < self.tick_no)
+            })
+            .map(|(overlay, _)| *overlay)
+            .collect();
+        for overlay in due {
+            self.routing.release_handshake(&overlay);
+            self.peer_manager.record_dial_failure(&overlay);
+            self.phases.remove(&overlay);
+            self.handshaking_tick.remove(&overlay);
+        }
+    }
+
     /// Fire the scheduled clean drop for any `AcceptThenDrop` peer whose window
     /// has elapsed in ticks.
     fn apply_scripted_drops(&mut self) {
@@ -411,6 +457,21 @@ impl SimWorld {
         for overlay in due {
             self.disconnect(overlay);
         }
+    }
+
+    /// Whether the shadow model holds `overlay` in the handshake phase.
+    fn is_handshaking(&self, overlay: &OverlayAddress) -> bool {
+        matches!(self.phases.get(overlay), Some(SimPhase::Handshaking(_)))
+    }
+
+    /// Whether the shadow model tracks `overlay` in any connection phase.
+    fn is_tracked(&self, overlay: &OverlayAddress) -> bool {
+        self.phases.contains_key(overlay)
+    }
+
+    /// Whether the peer manager holds `overlay` in dial backoff.
+    fn in_backoff(&self, overlay: &OverlayAddress) -> bool {
+        self.peer_manager.peer_is_in_backoff(overlay)
     }
 
     /// Instantaneous depth recomputed from the live connected-peer bin sizes,
