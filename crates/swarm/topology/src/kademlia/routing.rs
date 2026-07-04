@@ -18,7 +18,7 @@ use super::{
 use crate::metrics::{phase, record_phase_transition, record_topology_phase_change};
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::{Mutex, RwLock};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use vertex_net_peer_registry::ConnectionDirection;
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
@@ -34,7 +34,7 @@ use vertex_util_runtime::time::Instant as PhaseInstant;
 /// Connection phase for capacity tracking. `Dialing` is outbound by
 /// construction; the later phases carry the direction so the per-bin outbound
 /// counter can be maintained on every transition.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum ConnectionPhase {
     Dialing,
     Handshaking(ConnectionDirection),
@@ -931,11 +931,18 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
     fn release_dial(&self, overlay: &OverlayAddress) {
         let mut phases = self.connection_phases.write();
-        if let Some(ConnectionPhase::Dialing) = phases.remove(overlay) {
-            let bin = self.bin_for(overlay);
-            atomic_dec(&self.dialing_counts, bin);
-            atomic_dec(&self.outbound_counts, bin);
-            record_phase_transition(phase::DIALING, phase::NONE);
+        match phases.get(overlay) {
+            Some(ConnectionPhase::Dialing) => {
+                phases.remove(overlay);
+                let bin = self.bin_for(overlay);
+                atomic_dec(&self.dialing_counts, bin);
+                atomic_dec(&self.outbound_counts, bin);
+                record_phase_transition(phase::DIALING, phase::NONE);
+            }
+            Some(actual) => {
+                warn!(%overlay, phase = ?actual, "release_dial called for a non-dialing phase; leaving the entry");
+            }
+            None => {}
         }
     }
 
@@ -973,13 +980,20 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
     fn release_handshake(&self, overlay: &OverlayAddress) {
         let mut phases = self.connection_phases.write();
-        if let Some(ConnectionPhase::Handshaking(direction)) = phases.remove(overlay) {
-            let bin = self.bin_for(overlay);
-            atomic_dec(&self.handshaking_counts, bin);
-            if direction.is_outbound() {
-                atomic_dec(&self.outbound_counts, bin);
+        match phases.get(overlay) {
+            Some(&ConnectionPhase::Handshaking(direction)) => {
+                phases.remove(overlay);
+                let bin = self.bin_for(overlay);
+                atomic_dec(&self.handshaking_counts, bin);
+                if direction.is_outbound() {
+                    atomic_dec(&self.outbound_counts, bin);
+                }
+                record_phase_transition(phase::HANDSHAKING, phase::NONE);
             }
-            record_phase_transition(phase::HANDSHAKING, phase::NONE);
+            Some(actual) => {
+                warn!(%overlay, phase = ?actual, "release_handshake called for a non-handshaking phase; leaving the entry");
+            }
+            None => {}
         }
     }
 
@@ -1830,6 +1844,73 @@ mod tests {
             peer,
             ConnectionPhase::Handshaking(ConnectionDirection::Outbound),
         );
+    }
+
+    #[test]
+    fn wrong_phase_release_leaves_counters_consistent() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let config = KademliaConfig::default().with_nominal(2);
+        let (routing, _pm) = make_routing(base, config);
+
+        let has_entry = |peer: &OverlayAddress| routing.connection_phases.read().contains_key(peer);
+
+        // Case 1: a handshaking peer wrongly released as a dial stays put; the
+        // matching release_handshake then drains it.
+        let peer_a = SwarmAddress::with_first_byte(0x80); // bin 0
+        let bin_a = routing.bin_for(&peer_a);
+        force_handshaking(&routing, peer_a);
+        routing.release_dial(&peer_a);
+        assert_eq!(routing.bin_phase_counts(bin_a), (0, 1, 0));
+        assert_eq!(routing.bin_outbound_count(bin_a), 1);
+        assert!(has_entry(&peer_a));
+        routing.release_handshake(&peer_a);
+        assert_eq!(routing.bin_phase_counts(bin_a), (0, 0, 0));
+        assert_eq!(routing.bin_outbound_count(bin_a), 0);
+        assert!(!has_entry(&peer_a));
+
+        // Case 2: an active peer is untouched by either release; only the
+        // authoritative disconnected() drains it.
+        let peer_b = SwarmAddress::with_first_byte(0x40); // bin 1
+        let bin_b = routing.bin_for(&peer_b);
+        force_active(&routing, peer_b);
+        routing.release_dial(&peer_b);
+        routing.release_handshake(&peer_b);
+        assert_eq!(routing.bin_phase_counts(bin_b), (0, 0, 1));
+        assert_eq!(routing.bin_outbound_count(bin_b), 1);
+        assert!(has_entry(&peer_b));
+        RoutingCapacity::disconnected(&*routing, &peer_b);
+        assert_eq!(routing.bin_phase_counts(bin_b), (0, 0, 0));
+        assert_eq!(routing.bin_outbound_count(bin_b), 0);
+        assert!(!has_entry(&peer_b));
+
+        // Case 3: a dialing peer wrongly released as a handshake stays put; the
+        // matching release_dial then drains it.
+        let peer_c = SwarmAddress::with_first_byte(0x20); // bin 2
+        let bin_c = routing.bin_for(&peer_c);
+        assert!(routing.try_reserve_dial(&peer_c, SwarmNodeType::Storer));
+        routing.release_handshake(&peer_c);
+        assert_eq!(routing.bin_phase_counts(bin_c), (1, 0, 0));
+        assert_eq!(routing.bin_outbound_count(bin_c), 1);
+        assert!(has_entry(&peer_c));
+        routing.release_dial(&peer_c);
+        assert_eq!(routing.bin_phase_counts(bin_c), (0, 0, 0));
+        assert_eq!(routing.bin_outbound_count(bin_c), 0);
+        assert!(!has_entry(&peer_c));
+
+        // Case 4: an inbound handshaking peer (no outbound tally) wrongly
+        // released as a dial stays put; release_handshake drains handshaking
+        // only, leaving the outbound count at zero throughout.
+        let peer_d = SwarmAddress::with_first_byte(0x10); // bin 3
+        let bin_d = routing.bin_for(&peer_d);
+        routing.reserve_inbound(&peer_d);
+        routing.release_dial(&peer_d);
+        assert_eq!(routing.bin_phase_counts(bin_d), (0, 1, 0));
+        assert_eq!(routing.bin_outbound_count(bin_d), 0);
+        assert!(has_entry(&peer_d));
+        routing.release_handshake(&peer_d);
+        assert_eq!(routing.bin_phase_counts(bin_d), (0, 0, 0));
+        assert_eq!(routing.bin_outbound_count(bin_d), 0);
+        assert!(!has_entry(&peer_d));
     }
 
     #[test]
