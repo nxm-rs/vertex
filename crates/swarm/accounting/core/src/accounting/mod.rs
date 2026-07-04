@@ -187,11 +187,12 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     }
 
     /// Serve line for a peer of the given handshake node type. Selection keys on
-    /// the REMOTE's type: a storer remote gets the full line, a client remote
-    /// the client-only-factor-scaled line.
+    /// the REMOTE's type from the unscaled base, regardless of our own type: a
+    /// storer remote gets the full base line, a client remote the
+    /// client-only-factor-scaled base line.
     fn provide_line(&self, node_type: SwarmNodeType) -> Au {
         match node_type {
-            SwarmNodeType::Storer => self.config.payment_threshold(),
+            SwarmNodeType::Storer => self.config.base_payment_threshold(),
             SwarmNodeType::Client | SwarmNodeType::Bootnode => {
                 self.config.client_payment_threshold()
             }
@@ -896,6 +897,41 @@ mod tests {
             accounting.prepare_receive(client, SMALL_DISCONNECT_THRESHOLD + Au::new(1), true),
             Err(AccountingError::DisconnectThreshold { .. })
         ));
+    }
+
+    #[test]
+    fn serve_lines_on_a_client_node_derive_from_the_unscaled_base() {
+        // for_client scales only the debtor direction. The creditor serve lines
+        // keep deriving from the unscaled base, keyed on the remote's type, and
+        // clear the minimum an announced line must meet (twice the recipient's
+        // refresh rate) for both remote types.
+        use crate::constants::{
+            DEFAULT_CLIENT_ONLY_FACTOR, DEFAULT_PAYMENT_THRESHOLD, DEFAULT_REFRESH_RATE,
+        };
+
+        let config = client_config();
+        // Debtor direction stays scaled: self-pacing and the receive gate.
+        assert_eq!(
+            config.payment_threshold(),
+            Au::from_amount(DEFAULT_PAYMENT_THRESHOLD / DEFAULT_CLIENT_ONLY_FACTOR)
+        );
+        assert!(config.disconnect_threshold() < Au::from_amount(DEFAULT_PAYMENT_THRESHOLD));
+
+        let accounting = Accounting::new(config, test_identity());
+        let storer_line = accounting.provide_line(SwarmNodeType::Storer);
+        let client_line = accounting.provide_line(SwarmNodeType::Client);
+
+        assert_eq!(storer_line, Au::from_amount(DEFAULT_PAYMENT_THRESHOLD));
+        assert_eq!(
+            client_line,
+            Au::from_amount(DEFAULT_PAYMENT_THRESHOLD / DEFAULT_CLIENT_ONLY_FACTOR)
+        );
+
+        let full_minimum = Au::from_amount(2 * DEFAULT_REFRESH_RATE);
+        let client_minimum =
+            Au::from_amount(2 * (DEFAULT_REFRESH_RATE / DEFAULT_CLIENT_ONLY_FACTOR));
+        assert!(storer_line >= full_minimum);
+        assert!(client_line >= client_minimum);
     }
 
     #[test]
