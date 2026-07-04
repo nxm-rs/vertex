@@ -5,6 +5,7 @@ use std::time::Duration;
 use libp2p::{Multiaddr, PeerId};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
+use crate::dial_state::DialState;
 use crate::kademlia::TopologyPhase;
 
 pub use vertex_net_peer_registry::ConnectionDirection;
@@ -86,7 +87,11 @@ pub enum TopologyEvent {
 }
 
 /// Commands for the topology behaviour.
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`: [`TopologyCommand::DialState`] carries a
+/// [`oneshot::Sender`](tokio::sync::oneshot::Sender) reply channel. Commands
+/// are constructed and moved, never duplicated.
+#[derive(Debug)]
 pub enum TopologyCommand {
     /// Connect to bootnodes and trusted peers.
     ConnectBootnodes,
@@ -101,4 +106,11 @@ pub enum TopologyCommand {
     },
     /// Flush known peers to persistent storage.
     SavePeers,
+    /// Run a connection-evaluation round now instead of waiting for the tick.
+    TriggerEvaluation,
+    /// Reply with a point-in-time [`DialState`] snapshot assembled inside the
+    /// behaviour poll so behaviour-owned dial state is read in one pass.
+    DialState {
+        reply: tokio::sync::oneshot::Sender<DialState>,
+    },
 }

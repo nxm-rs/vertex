@@ -15,6 +15,7 @@ use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
 
 use crate::behaviour::ConnectionRegistry;
+use crate::dial_state::DialState;
 use crate::events::TopologyEvent;
 use crate::kademlia::KademliaRouting;
 use crate::readiness::{BinReadiness, ReadinessSnapshot};
@@ -321,6 +322,29 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
     pub fn agent_version_by_overlay(&self, overlay: &OverlayAddress) -> Option<String> {
         let peer_id = self.connection_registry.resolve_peer_id(overlay)?;
         self.agent_versions.read().peek(&peer_id).cloned()
+    }
+
+    /// Run a connection-evaluation round now instead of waiting for the
+    /// periodic tick. Reuses the tick body, so every queued dial still pays a
+    /// rate token; this only advances timing, never dial policy. Inherent
+    /// rather than on the command trait, matching the readiness precedent.
+    pub async fn trigger_evaluation(&self) -> Result<(), TopologyError> {
+        self.command_tx
+            .send(TopologyCommand::TriggerEvaluation)
+            .await
+            .map_err(|_| TopologyError::ServiceShutdown)
+    }
+
+    /// Snapshot the dialer's decision state. The snapshot is assembled inside
+    /// the behaviour poll and returned over a reply channel, so the answer
+    /// needs the behaviour to be polled.
+    pub async fn dial_state(&self) -> Result<DialState, TopologyError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.command_tx
+            .send(TopologyCommand::DialState { reply })
+            .await
+            .map_err(|_| TopologyError::ServiceShutdown)?;
+        rx.await.map_err(|_| TopologyError::ServiceShutdown)
     }
 }
 

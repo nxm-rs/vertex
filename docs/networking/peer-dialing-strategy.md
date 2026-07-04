@@ -103,6 +103,13 @@ In-flight dials are tracked by `DialTracker` (`vertex-net-dialer`), whose pendin
 
 Bootstrap is not a special mode of the evaluator: bootnodes and trusted peers from configuration are dialed directly at startup (with dnsaddr resolution where needed) as `DialTarget::Unknown`, since their overlay addresses are not yet known and no capacity reservation applies. Everything after that first contact flows through gossip supply and the evaluation loop above.
 
+## Handle surface: forced re-evaluation and dial state
+
+The `TopologyHandle` exposes two read-mostly introspection points over the mpsc command channel, for the gRPC operator surface, FFI, and tests. Neither changes dial policy.
+
+- `trigger_evaluation` runs one evaluation round now instead of waiting for the poll tick. It reuses the tick body exactly, minus the tick-only stale-pending sweep: it publishes a pending depth lowering whose window has expired, notifies the routing evaluator (the same 100 ms debounced trigger), and probes for isolation. The command wakes the parked behaviour through the mpsc waker; the evaluator only queues candidates, and every one of those still pays a GCRA token in the drain, so a forced round can advance timing but never dial faster than the bucket allows.
+- `dial_state` returns a `DialState` snapshot: in-flight and pending dial counts from the `DialTracker`, queued candidate counts (total and per bin) from the routing queues, eligible and backoff peer counts from the `PeerManager`, the dial-rate bucket's available-token headroom and next-token wait, time since the last evaluation round, the clamped `min_outbound`, and per-bin connected/dialing/outbound/slot coverage. The snapshot is assembled inside the behaviour poll and returned over a `oneshot` reply channel, so the behaviour-owned dial tracker and dial-rate bucket are read in one pass consistent with the shared routing and peer-manager tables. Every field is read from authoritative state, never from metrics.
+
 ## Connection profiles and dial-rate shaping
 
 How aggressively the node builds out its table is bundled into a named connection profile (`aggressive`, `balanced`, `conservative`), selected by node type (client defaults to `aggressive`, storer and bootnode to `balanced`) and overridable with `--network.connection-profile`. A profile only sets numbers on existing knobs: the evaluation cadence, the per-evaluation candidate budgets, the bootstrap fill level, the dial-concurrency cap, and the discovery dial-rate quota. No topology logic branches on the profile.

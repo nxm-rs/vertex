@@ -51,6 +51,7 @@ pub(crate) use vertex_net_utils::extract_peer_id;
 mod behaviour;
 mod builder;
 mod connection_handlers;
+mod dial_state;
 mod dialing;
 mod events;
 mod handle;
@@ -76,6 +77,7 @@ pub(crate) mod test_support;
 
 pub use behaviour::{TopologyBehaviour, TopologyConfig};
 pub use builder::TopologyBehaviourBuilder;
+pub use dial_state::{DialBinState, DialState};
 pub use error::{DialError, DisconnectReason, RejectionReason, TopologyError, TopologyResult};
 pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
 pub use gossip::GossipConfig;
