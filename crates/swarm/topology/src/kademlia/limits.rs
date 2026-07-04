@@ -218,6 +218,7 @@ impl DepthAwareLimits {
     }
 
     /// Deficit from target at specified depth.
+    #[cfg(test)]
     pub(crate) fn deficit(&self, bin: Bin, depth: NeighborhoodDepth, connected: usize) -> usize {
         let target = self.target(bin, depth);
         if target == usize::MAX {
@@ -228,21 +229,30 @@ impl DepthAwareLimits {
         }
     }
 
+    /// Per-bin retention floor: the level below which trimming never evicts
+    /// and up to which a slot-filling dial may climb.
+    ///
+    /// `max(target, oversaturation)`. Because trimming ([`Self::surplus`])
+    /// reclaims only above this floor, a balanced-bin candidate dialled to
+    /// fill an empty sub-prefix slot up to it can never be trimmed, so slot
+    /// diversity cannot oscillate against the trim. Neighborhood bins have a
+    /// `usize::MAX` target, so their floor is `usize::MAX` and they never
+    /// produce surplus.
+    pub(crate) fn retention_floor(&self, bin: Bin, depth: NeighborhoodDepth) -> usize {
+        self.target(bin, depth).max(self.oversaturation())
+    }
+
     /// Surplus eligible for trimming at the specified depth.
     ///
-    /// Trimming reclaims peers only above `max(target, oversaturation)`,
-    /// never down to the taper target itself. The taper target is a dial
-    /// goal, not an eviction bound: evicting toward it after a depth increase
-    /// cuts shallow bins below saturation, which immediately collapses depth
-    /// back to the cut bin (observed live: depth 7 -> 0 with bins trimmed to
-    /// the exact taper targets).
+    /// Trimming reclaims peers only above the retention floor
+    /// (`max(target, oversaturation)`), never down to the taper target
+    /// itself. The taper target is a dial goal, not an eviction bound:
+    /// evicting toward it after a depth increase cuts shallow bins below
+    /// saturation, which immediately collapses depth back to the cut bin
+    /// (observed live: depth 7 -> 0 with bins trimmed to the exact taper
+    /// targets).
     pub(crate) fn surplus(&self, bin: Bin, depth: NeighborhoodDepth, connected: usize) -> usize {
-        let target = self.target(bin, depth);
-        if target == usize::MAX {
-            0
-        } else {
-            connected.saturating_sub(target.max(self.oversaturation()))
-        }
+        connected.saturating_sub(self.retention_floor(bin, depth))
     }
 
     /// Maximum bin population before rejecting inbound. `usize::MAX` for
@@ -396,8 +406,10 @@ impl LimitsSnapshot {
         self.limits.needs_more(bin, self.depth, connected)
     }
 
-    pub(crate) fn deficit(&self, bin: Bin, connected: usize) -> usize {
-        self.limits.deficit(bin, self.depth, connected)
+    /// Retention floor for `bin`: the level a slot-filling dial may climb to
+    /// (`max(target, oversaturation)`), always at or above the dial target.
+    pub(crate) fn retention_floor(&self, bin: Bin) -> usize {
+        self.limits.retention_floor(bin, self.depth)
     }
 }
 

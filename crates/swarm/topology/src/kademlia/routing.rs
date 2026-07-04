@@ -13,6 +13,7 @@ use super::{
     CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
     PhaseTracker, PhaseTransition, RoutingCapacity, SwarmRouting, TopologyPhase,
     candidate_queues::CandidateQueues, select_balanced_candidates, select_neighborhood_candidates,
+    slot_of,
 };
 use crate::metrics::{phase, record_phase_transition, record_topology_phase_change};
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
@@ -279,6 +280,32 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         atomic_load(&self.dialing_counts, bin)
             + atomic_load(&self.handshaking_counts, bin)
             + atomic_load(&self.active_counts, bin)
+    }
+
+    /// Whether an outbound dial to `overlay` is admitted into `bin`.
+    ///
+    /// Mirrors balanced candidate selection: admit while the bin is below its
+    /// count target, or, once count-satisfied, admit a peer that fills a
+    /// sub-prefix slot no connected peer covers while the bin is still below
+    /// its retention floor. The slot bypass is what lets a count-satisfied bin
+    /// spread across its sub-tries; a duplicate-slot dial past the target is
+    /// refused, so it never becomes a dial storm, and the floor is the trim
+    /// floor, so a slot-filler cannot be trimmed straight back out.
+    fn dial_admits(&self, bin: Bin, effective: usize, overlay: &OverlayAddress) -> bool {
+        let depth = self.depth();
+        if self.config.limits.needs_more(bin, depth, effective) {
+            return true;
+        }
+        effective < self.config.limits.retention_floor(bin, depth)
+            && !self.bin_slot_covered(bin, slot_of(overlay, bin))
+    }
+
+    /// Whether any connected peer in `bin` already occupies `slot`.
+    fn bin_slot_covered(&self, bin: Bin, slot: u8) -> bool {
+        self.connected_peers
+            .peers_in_bin(bin)
+            .iter()
+            .any(|overlay| slot_of(overlay, bin) == slot)
     }
 
     /// Peers in a bin that eviction can actually act on (handshaking and
@@ -782,6 +809,15 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         self.connected_peers.peers_in_bin(bin)
     }
 
+    /// Distinct sub-prefix slots the connected peers in `bin` cover.
+    pub(crate) fn filled_slots(&self, bin: Bin) -> usize {
+        let mut slots: HashSet<u8> = HashSet::new();
+        for overlay in self.connected_peers.peers_in_bin(bin) {
+            slots.insert(slot_of(&overlay, bin));
+        }
+        slots.len()
+    }
+
     fn peer_connected(&self, peer: OverlayAddress) {
         let bin = self.bin_for(&peer);
 
@@ -850,8 +886,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
             return false;
         }
 
-        // Use depth-aware limits for capacity decision
-        if !self.config.limits.needs_more(bin, self.depth(), effective) {
+        if !self.dial_admits(bin, effective, overlay) {
             return false;
         }
 
@@ -1123,10 +1158,14 @@ mod tests {
         let base = SwarmAddress::with_first_byte(0x00);
         // Pin the depth-0 bootstrap target to 2 so the capacity mechanism is
         // exercised with small numbers (default bootstrap fill is generous).
+        // Pin oversaturation to the target too, so the retention floor equals
+        // the target and the count cap alone decides admission: this test is
+        // about count capacity, not the sub-prefix-slot diversity headroom.
         let config = KademliaConfig::default()
             .with_nominal(2)
             .with_bootstrap_target(2)
-            .with_saturation(2);
+            .with_saturation(2)
+            .with_oversaturation_peers(2);
         let (routing, _pm) = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80); // bin=0

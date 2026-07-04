@@ -32,7 +32,7 @@ use vertex_swarm_primitives::{
 use vertex_swarm_test_utils::MockIdentity;
 
 use super::{KademliaConfig, KademliaRouting, RoutingCapacity, SwarmRouting};
-use crate::test_support::{overlay_in_bin, overlay_in_bin_with_subprefix, subprefix_index};
+use crate::test_support::{overlay_in_bin, overlay_in_bin_with_slot};
 
 /// Scripted per-peer behaviour the dial resolver applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,19 +204,12 @@ impl SimWorld {
             .bin_phase_counts(Bin::new(bin).unwrap_or(Bin::MAX))
     }
 
-    /// Distinct sub-prefix bytes among the connected peers in `bin`. One means a
-    /// prefix monoculture: every admitted peer shares the same sub-trie.
-    fn distinct_subprefixes_in_bin(&self, bin: u8) -> usize {
-        let sub = subprefix_index(bin);
-        let mut seen: Vec<u8> = self
-            .routing
-            .connected_overlays_in_bin(Bin::new(bin).unwrap_or(Bin::MAX))
-            .into_iter()
-            .map(|overlay| overlay.as_slice()[sub])
-            .collect();
-        seen.sort_unstable();
-        seen.dedup();
-        seen.len()
+    /// Distinct sub-prefix slots among the connected peers in `bin`, via the
+    /// production `slot_of` so the observation and the selection mechanism
+    /// share one slot definition. One means a monoculture: every admitted peer
+    /// shares a sub-trie.
+    fn distinct_slots_in_bin(&self, bin: u8) -> usize {
+        self.routing.filled_slots(Bin::new(bin).unwrap_or(Bin::MAX))
     }
 
     /// Advance one tick: evaluate, drain dials, apply scripted churn, refresh

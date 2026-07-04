@@ -29,6 +29,11 @@ pub struct BinReadiness {
     /// Peers still missing before the bin reaches its target. Zero for
     /// neighborhood bins and for bins at or above target.
     pub deficit: usize,
+    /// Distinct sub-prefix slots the connected set covers, or `None` for
+    /// neighborhood bins, which are not slot-balanced. A balanced bin whose
+    /// connected count meets its target but whose slots cluster indicates a
+    /// sub-prefix monoculture.
+    pub slots_filled: Option<usize>,
 }
 
 /// A cheap, consistent-enough snapshot of the node's readiness state.

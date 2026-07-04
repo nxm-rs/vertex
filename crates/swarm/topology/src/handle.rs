@@ -93,20 +93,26 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
                     neighborhood_connected += connected;
                 }
                 let raw_target = limits.target(bin, depth);
-                let (target, deficit) = if raw_target == usize::MAX {
-                    // Neighborhood bins connect to every available peer.
-                    (None, 0)
+                let (target, deficit, slots_filled) = if raw_target == usize::MAX {
+                    // Neighborhood bins connect to every available peer and are
+                    // not slot-balanced.
+                    (None, 0, None)
                 } else {
                     if connected >= raw_target {
                         bins_at_target += 1;
                     }
-                    (Some(raw_target), raw_target.saturating_sub(connected))
+                    (
+                        Some(raw_target),
+                        raw_target.saturating_sub(connected),
+                        Some(self.routing.filled_slots(bin)),
+                    )
                 };
                 BinReadiness {
                     bin,
                     connected,
                     target,
                     deficit,
+                    slots_filled,
                 }
             })
             .collect();

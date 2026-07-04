@@ -1,6 +1,6 @@
 //! Scenario suite over the deterministic sim: convergence, churn stability,
-//! partition heal, starvation truth, saturation-floor safety, and two
-//! characterization tests pinning the current count-only balance and
+//! partition heal, starvation truth, saturation-floor safety, sub-prefix-slot
+//! dilution of a monoculture, and a characterization test pinning the current
 //! direction-blind fill behaviour.
 //!
 //! Time is paused so the tokio-driven depth-hysteresis clock is deterministic;
@@ -205,25 +205,30 @@ async fn saturation_floor_never_violated() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn eclipse_by_subprefix() {
-    // Characterization: a balanced bin is fed first by sybils sharing a single
-    // sub-prefix. The count-only balance satisfies the bin's fill target while
-    // admitting a pure prefix monoculture, and once count-satisfied the
-    // evaluator never dials the diverse peers gossiped afterwards, so the
-    // eclipse holds even with honest diverse supply available. A later
-    // sub-prefix-slot fill flips this. The bin sits below the published depth
-    // (bin 1 anchors depth 1), so the fill runs through the balanced
-    // (count-target) selection path, the one a slot-aware fill replaces.
+async fn slot_fill_dilutes_subprefix_monoculture() {
+    // A balanced bin is fed first by sybils sharing one sub-prefix slot. While
+    // they are the only supply they satisfy the bin's count target and form a
+    // monoculture. When diverse honest peers in distinct slots are gossiped
+    // afterwards, the empty-slot pass pulls them in up to the retention floor,
+    // diluting the monoculture instead of leaving the count-satisfied bin
+    // quiet. The bin sits below the published depth (bin 1 anchors depth 1), so
+    // the fill runs through the balanced (slot-aware) selection path.
+    //
+    // The retention floor is max(target, oversaturation) = max(4, 8) = 8, so
+    // the eight-peer supply (four sybils plus four honest) is exactly the
+    // floor: the fill lands every distinct slot without overshooting it.
     let config = KademliaConfig::default()
         .with_total_target(4)
         .with_bootstrap_target(4)
-        .with_saturation(4);
+        .with_saturation(4)
+        .with_oversaturation_peers(8);
     let mut world = SimWorld::new(config, 16, 11);
     let target = 4usize;
+    let retention_floor = 8usize;
     let bin = 0u8;
-    let suffix = 0xAA;
+    let sybil_slot = 5u8;
     for idx in 0..target as u8 {
-        let overlay = super::overlay_in_bin_with_subprefix(world.base(), bin, suffix, idx);
+        let overlay = super::overlay_in_bin_with_slot(world.base(), bin, sybil_slot, idx);
         world.add_scripted(overlay, STORER, PeerScript::Sybil);
     }
     world.populate_bin(1, 3, STORER, PeerScript::Honest);
@@ -232,44 +237,67 @@ async fn eclipse_by_subprefix() {
         world.tick();
     }
 
+    // Phase 1: while the sybils are the only supply they form a monoculture at
+    // the count target, one slot deep.
     assert_eq!(world.depth().get(), 1, "the anchor bin establishes depth 1");
     assert_eq!(
         world.connected_in_bin(bin),
         target,
-        "the bin reaches its count target"
+        "the bin reaches its count target from the sybils alone"
     );
     assert_eq!(
-        world.distinct_subprefixes_in_bin(bin),
+        world.distinct_slots_in_bin(bin),
         1,
-        "every admitted peer shares one sub-prefix: prefix monoculture"
+        "the sole supply shares one slot: sub-prefix monoculture"
     );
 
-    // Diverse honest peers arrive after the monoculture filled the bin. The
-    // count-satisfied bin queues no dial for them, so the monoculture is never
-    // diluted.
-    for (idx, suffix) in [0x11u8, 0x22, 0x44, 0x88].into_iter().enumerate() {
-        let overlay =
-            super::overlay_in_bin_with_subprefix(world.base(), bin, suffix, 100 + idx as u8);
+    // Diverse honest peers arrive in four distinct empty slots.
+    for (idx, slot) in (1u8..=4).enumerate() {
+        let overlay = super::overlay_in_bin_with_slot(world.base(), bin, slot, 100 + idx as u8);
         world.add_scripted(overlay, STORER, PeerScript::Honest);
     }
+
+    // The empty slots pull the diverse supply even though the count target is
+    // already met: the count-satisfied bin is no longer absorbing.
+    world.evaluate();
+    assert!(
+        world.has_queued_candidates(),
+        "empty slots pull the diverse supply"
+    );
+
     for _ in 0..10 {
         world.tick();
     }
 
-    world.evaluate();
-    assert!(
-        !world.has_queued_candidates(),
-        "the count-satisfied bin never dials the diverse supply"
-    );
     assert_eq!(
         world.connected_in_bin(bin),
-        target,
-        "the connected set is unchanged"
+        retention_floor,
+        "every distinct slot is filled up to the retention floor"
+    );
+    assert!(
+        world.connected_in_bin(bin) <= retention_floor,
+        "empty-slot fills never overshoot the retention floor"
     );
     assert_eq!(
-        world.distinct_subprefixes_in_bin(bin),
-        1,
-        "the eclipse holds against available diverse supply"
+        world.distinct_slots_in_bin(bin),
+        5,
+        "the monoculture is diluted: the sybil slot plus four honest slots"
+    );
+
+    // The filled set is stable: connected sits at the retention floor, so trim
+    // reclaims nothing and no dial-trim oscillation churns the diversity out.
+    for _ in 0..20 {
+        world.tick();
+    }
+    assert_eq!(
+        world.connected_in_bin(bin),
+        retention_floor,
+        "the diverse set holds at the retention floor without oscillation"
+    );
+    assert_eq!(
+        world.distinct_slots_in_bin(bin),
+        5,
+        "slot diversity is retained, not trimmed back to the monoculture"
     );
 }
 
