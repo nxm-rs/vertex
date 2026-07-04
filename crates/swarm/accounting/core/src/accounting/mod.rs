@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use vertex_swarm_api::{
     Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccounting, SwarmAccountingConfig,
-    SwarmIdentity, SwarmPeerAccounting, SwarmResult,
+    SwarmIdentity, SwarmNodeType, SwarmPeerAccounting, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -164,12 +164,29 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             .write()
             .entry(peer)
             .or_insert_with(|| {
+                // Default the serve line to the stricter client line: a dispatch
+                // task can reach a peer over the channel before the handshake
+                // connect hook seeds the real node type, so an unknown peer must
+                // never be served on the full storer line. connect_peer heals it
+                // in place once the type is known.
                 Arc::new(PeerState::new(
-                    self.config.payment_threshold(),
+                    self.config.client_payment_threshold(),
                     self.config.disconnect_threshold(),
                 ))
             })
             .clone()
+    }
+
+    /// Serve line for a peer of the given handshake node type. Selection keys on
+    /// the REMOTE's type: a storer remote gets the full line, a client remote
+    /// the client-only-factor-scaled line.
+    fn provide_line(&self, node_type: SwarmNodeType) -> Au {
+        match node_type {
+            SwarmNodeType::Storer => self.config.payment_threshold(),
+            SwarmNodeType::Client | SwarmNodeType::Bootnode => {
+                self.config.client_payment_threshold()
+            }
+        }
     }
 
     /// The early-payment trigger floored at one refresh-rate unit.
@@ -234,6 +251,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         price: Au,
     ) -> SwarmResult<Reservation<Provide>> {
         Ok(Accounting::prepare_provide(self, peer, price)?)
+    }
+
+    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) {
+        // Mutate the serve line on the shared PeerState in place. Replacing the
+        // Arc would drop outstanding reservations that hold clones.
+        self.peer_state(peer)
+            .set_payment_threshold(self.provide_line(node_type));
     }
 }
 
@@ -641,6 +665,7 @@ mod tests {
         // Payment threshold 1000, disconnect 1250.
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
         let handle = accounting.for_peer(peer);
 
         // Serving up to the payment threshold is allowed.
@@ -675,6 +700,7 @@ mod tests {
     fn test_provide_refusal_counts_outstanding_reservations() {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
 
         // An outstanding (un-applied) provide reserves shadow balance, so a
         // second provide that together crosses the threshold is refused.
@@ -695,6 +721,7 @@ mod tests {
         // served past the raw threshold: the debt we owe extends the headroom.
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
         let handle = accounting.for_peer(peer);
 
         // Download 500 from the peer, driving our balance to -500 (we owe them).
@@ -709,6 +736,122 @@ mod tests {
         assert!(matches!(
             accounting.prepare_provide(peer, au(1501)),
             Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn connect_peer_storer_gets_the_full_serve_line() {
+        // small_config: storer line 1000, client line 200.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
+
+        assert!(accounting.prepare_provide(peer, au(1000)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(1001)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn connect_peer_client_gets_the_scaled_serve_line() {
+        // small_config: client line 1000 / factor 5 = 200.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        accounting.connect_peer(peer, SwarmNodeType::Client);
+
+        assert!(accounting.prepare_provide(peer, au(200)).is_ok());
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(201)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn storer_and_client_peers_get_different_serve_lines_from_one_node() {
+        // The anti-divergence invariant: one node keys the serve line on the
+        // REMOTE's handshake type, never our own. A storer remote is served the
+        // full line; a client remote only the scaled line, at the same time.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let storer = OverlayAddress::from([1u8; 32]);
+        let client = OverlayAddress::from([2u8; 32]);
+
+        accounting.connect_peer(storer, SwarmNodeType::Storer);
+        accounting.connect_peer(client, SwarmNodeType::Client);
+
+        // The storer remote serves up to the full line.
+        assert!(accounting.prepare_provide(storer, au(1000)).is_ok());
+        // The client remote refuses past the scaled line but serves up to it.
+        assert!(matches!(
+            accounting.prepare_provide(client, au(201)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+        assert!(accounting.prepare_provide(client, au(200)).is_ok());
+    }
+
+    #[test]
+    fn unknown_peer_defaults_to_the_client_serve_line() {
+        // A peer never connected (no handshake node type yet) is served on the
+        // stricter client line, the load-bearing fallback for the dispatch race.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(201)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+        assert!(accounting.prepare_provide(peer, au(200)).is_ok());
+    }
+
+    #[test]
+    fn connect_peer_raises_a_lazily_created_peer_to_the_storer_line() {
+        // A dispatch task creates the peer lazily on the client line; a later
+        // connect_peer heals the same PeerState in place, without swapping the
+        // Arc, so the serve line rises to the storer line.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Force lazy creation at the client line: au(1000) is refused.
+        assert!(accounting.prepare_provide(peer, au(1000)).is_err());
+
+        accounting.connect_peer(peer, SwarmNodeType::Storer);
+
+        // The same peer is now served the full line.
+        assert!(accounting.prepare_provide(peer, au(1000)).is_ok());
+    }
+
+    #[test]
+    fn connect_peer_does_not_touch_the_debtor_disconnect_line() {
+        // connect_peer re-keys only the creditor serve line. The debtor-side
+        // receive gate (the disconnect line) is fixed at creation and unmoved by
+        // either node type.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let storer = OverlayAddress::from([3u8; 32]);
+        accounting.connect_peer(storer, SwarmNodeType::Storer);
+
+        // The receive boundary is still the disconnect line (1250), not the
+        // serve line.
+        assert!(
+            accounting
+                .prepare_receive(storer, SMALL_DISCONNECT_THRESHOLD, true)
+                .is_ok()
+        );
+        assert!(matches!(
+            accounting.prepare_receive(storer, SMALL_DISCONNECT_THRESHOLD + Au::new(1), true),
+            Err(AccountingError::DisconnectThreshold { .. })
+        ));
+
+        // A client remote leaves the receive boundary at the disconnect line too.
+        let client = OverlayAddress::from([4u8; 32]);
+        accounting.connect_peer(client, SwarmNodeType::Client);
+        assert!(
+            accounting
+                .prepare_receive(client, SMALL_DISCONNECT_THRESHOLD, true)
+                .is_ok()
+        );
+        assert!(matches!(
+            accounting.prepare_receive(client, SMALL_DISCONNECT_THRESHOLD + Au::new(1), true),
+            Err(AccountingError::DisconnectThreshold { .. })
         ));
     }
 

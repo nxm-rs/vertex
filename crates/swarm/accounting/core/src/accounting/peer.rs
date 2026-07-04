@@ -47,7 +47,7 @@ pub struct PeerState {
     reserved_balance: AtomicU64,
     shadow_reserved_balance: AtomicU64,
     ghost_balance: AtomicU64,
-    payment_threshold: Au,
+    payment_threshold: AtomicI64,
     disconnect_threshold: Au,
 }
 
@@ -59,7 +59,7 @@ impl PeerState {
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
             ghost_balance: AtomicU64::new(0),
-            payment_threshold,
+            payment_threshold: AtomicI64::new(payment_threshold.get()),
             disconnect_threshold,
         }
     }
@@ -122,7 +122,12 @@ impl PeerState {
 
     /// Get the payment threshold in AU.
     pub fn payment_threshold(&self) -> Au {
-        self.payment_threshold
+        Au::new(self.payment_threshold.load(Ordering::Relaxed))
+    }
+
+    /// Update the serve line; the disconnect line is fixed at creation.
+    pub fn set_payment_threshold(&self, line: Au) {
+        self.payment_threshold.store(line.get(), Ordering::Relaxed);
     }
 
     /// Get the disconnect threshold in AU.
@@ -208,6 +213,17 @@ mod tests {
         let state = PeerState::new(au(1000), au(10000));
 
         assert_eq!(state.payment_threshold(), au(1000));
+        assert_eq!(state.disconnect_threshold(), au(10000));
+    }
+
+    #[test]
+    fn set_payment_threshold_updates_the_serve_line() {
+        let state = PeerState::new(au(1000), au(10000));
+        assert_eq!(state.payment_threshold(), au(1000));
+
+        state.set_payment_threshold(au(200));
+        assert_eq!(state.payment_threshold(), au(200));
+        // The disconnect line is fixed at creation and never moves with it.
         assert_eq!(state.disconnect_threshold(), au(10000));
     }
 }

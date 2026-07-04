@@ -15,7 +15,9 @@ use std::vec::Vec;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::{Admission, AdmissionControl, Au, SwarmIdentity, SwarmPricing, SwarmResult};
+use crate::{
+    Admission, AdmissionControl, Au, SwarmIdentity, SwarmNodeType, SwarmPricing, SwarmResult,
+};
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,14 @@ pub trait SwarmAccountingConfig: Send + Sync {
             .checked_scale(100 - early)
             .map(|scaled| Au::from_amount(scaled.as_amount() / 100))
             .unwrap_or(Au::from_amount(u64::MAX))
+    }
+
+    /// The serve line for a client peer: the payment threshold divided by the
+    /// client-only factor, floored at one AU.
+    fn client_payment_threshold(&self) -> Au {
+        self.payment_threshold()
+            .scale_down(self.client_only_factor())
+            .max(Au::new(1))
     }
 }
 
@@ -182,6 +192,14 @@ pub trait SwarmAccounting: Send + Sync {
 
     /// Prepare to provide service to a peer (balance increases).
     fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<Self::ProvideAction>;
+
+    /// Seed or update the peer's serve line from its handshake node type.
+    /// Storer peers get the full payment threshold, client peers the
+    /// client-only-factor-scaled line. Callers invoke this at handshake
+    /// completion; a peer never connected keeps the stricter client line.
+    fn connect_peer(&self, peer: OverlayAddress, node_type: SwarmNodeType) {
+        let _ = (peer, node_type);
+    }
 }
 
 /// The object-safe origin dispatch gate over one accounting instance: the
