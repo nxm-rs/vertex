@@ -27,8 +27,9 @@ use vertex_swarm_topology::{
 };
 use vertex_tasks::GracefulShutdown;
 
-use super::base::BaseNode;
+use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
+use super::ip_limits::IpConnectionLimits;
 use super::nat::{NatBehaviour, NatEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent, StubForwarder,
@@ -48,6 +49,9 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// first so a denied connection is rejected before the other behaviours
     /// allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
+    /// Per-IP inbound cap, with the transport caps ahead of every other
+    /// behaviour.
+    pub(crate) ip_limits: IpConnectionLimits,
     pub(crate) identify: identify::Behaviour,
     /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
     /// one sub-behaviour.
@@ -64,13 +68,14 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
-        connection_limits: connection_limits::Behaviour,
+        limits: AdmissionLimits,
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         let active_peers = topology.active_peers();
         Self {
-            connection_limits,
+            connection_limits: limits.connection,
+            ip_limits: limits.ip,
             // Identify advertises addresses scoped to each peer (see
             // `addresses_for_remote`): a public peer never receives our private
             // or loopback addresses, matching the handshake's policy.
@@ -326,7 +331,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             }
         };
 
-        let connection_limits = super::base::build_connection_limits(network_config);
+        let limits = super::base::build_admission_limits(network_config);
         let base = super::builder::build_base_node(
             infra,
             network_config,
@@ -337,7 +342,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
                     pk,
                     topology,
                     nat,
-                    connection_limits,
+                    limits,
                     network_config.agent_version(),
                 )
             },

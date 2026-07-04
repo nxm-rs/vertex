@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "cli")]
 use vertex_swarm_api::{ConfigAddressKind, ConfigError};
 use vertex_swarm_api::{
-    ConnectionProfile, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+    ConnectionProfile, DEFAULT_MAX_INBOUND_PER_IP, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig,
+    SwarmRoutingConfig,
 };
 use vertex_swarm_topology::KademliaConfig;
 #[cfg(feature = "cli")]
@@ -168,6 +169,17 @@ pub struct NetworkArgs {
     #[arg(long = "network.max-peers", default_value_t = DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
 
+    /// Maximum established inbound connections per remote IP (IPv6 counted
+    /// per /64 prefix). Set to 0 to disable.
+    ///
+    /// Loopback, private, and link-local sources and the IPs of configured
+    /// trusted peers are exempt.
+    #[arg(
+        long = "network.max-inbound-per-ip",
+        default_value_t = DEFAULT_MAX_INBOUND_PER_IP
+    )]
+    pub max_inbound_per_ip: u32,
+
     /// Connection idle timeout in seconds.
     #[arg(long = "network.idle-timeout", default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
     pub idle_timeout_secs: u64,
@@ -200,6 +212,7 @@ impl Default for NetworkArgs {
             mdns: true,
             connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
+            max_inbound_per_ip: DEFAULT_MAX_INBOUND_PER_IP,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             peer: PeerArgs::default(),
             routing: RoutingArgs::default(),
@@ -258,6 +271,7 @@ pub struct NetworkConfig<R = KademliaConfig> {
     trust_local_peers: bool,
     connection_profile: Option<ConnectionProfile>,
     max_peers: usize,
+    max_inbound_per_ip: u32,
     idle_timeout: Duration,
     peer: PeerConfig,
     routing: R,
@@ -281,6 +295,12 @@ impl<R> NetworkConfig<R> {
     /// Set the transport-layer cap on established connections.
     pub fn with_max_peers(mut self, max: usize) -> Self {
         self.max_peers = max;
+        self
+    }
+
+    /// Set the per-IP inbound connection cap (0 disables).
+    pub fn with_max_inbound_per_ip(mut self, max: u32) -> Self {
+        self.max_inbound_per_ip = max;
         self
     }
 
@@ -310,6 +330,7 @@ impl<R> NetworkConfig<R> {
             trust_local_peers: self.trust_local_peers,
             connection_profile: self.connection_profile,
             max_peers: self.max_peers,
+            max_inbound_per_ip: self.max_inbound_per_ip,
             idle_timeout: self.idle_timeout,
             peer: self.peer,
             routing,
@@ -342,6 +363,7 @@ impl NetworkConfig<KademliaConfig> {
             trust_local_peers: true,
             connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
+            max_inbound_per_ip: DEFAULT_MAX_INBOUND_PER_IP,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             peer: PeerConfig::default(),
             routing: KademliaConfig::default(),
@@ -370,6 +392,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             trust_local_peers: true,
             connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
+            max_inbound_per_ip: DEFAULT_MAX_INBOUND_PER_IP,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             peer: PeerConfig::default(),
             routing: KademliaConfig::default(),
@@ -450,6 +473,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             trust_local_peers: !args.no_trust_local_peers,
             connection_profile: args.connection_profile,
             max_peers: args.max_peers,
+            max_inbound_per_ip: args.max_inbound_per_ip,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
             peer: PeerConfig::from(&args.peer),
             routing: args.routing.routing_config(),
@@ -481,6 +505,10 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
 
     fn max_peers(&self) -> usize {
         self.max_peers
+    }
+
+    fn max_inbound_per_ip(&self) -> u32 {
+        self.max_inbound_per_ip
     }
 
     fn idle_timeout(&self) -> Duration {
@@ -606,6 +634,20 @@ mod tests {
             Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
         );
         assert!(config.discovery_enabled());
+    }
+
+    #[test]
+    fn max_inbound_per_ip_defaults_and_propagates() {
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert_eq!(config.max_inbound_per_ip(), DEFAULT_MAX_INBOUND_PER_IP);
+
+        let args = NetworkArgs {
+            max_inbound_per_ip: 0,
+            ..Default::default()
+        };
+        let config = NetworkConfig::try_from(&args).expect("valid args");
+        assert_eq!(config.max_inbound_per_ip(), 0, "0 disables the cap");
     }
 
     #[test]

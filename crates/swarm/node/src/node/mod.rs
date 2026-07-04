@@ -18,6 +18,7 @@ mod builder;
 mod client;
 mod core;
 mod error;
+mod ip_limits;
 mod launch;
 // NAT traversal and LAN discovery only exist natively. The browser client
 // dials over websockets and never listens, so the wasm sibling exposes the
@@ -44,6 +45,7 @@ pub use core::{
 #[cfg(feature = "swap")]
 pub use core::{NodeChainError, SwapWiring, node_chain_provider};
 pub use error::NodeBuildError;
+pub use ip_limits::IpLimitExceeded;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};

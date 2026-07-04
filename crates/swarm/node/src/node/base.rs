@@ -36,13 +36,33 @@ const MAX_ESTABLISHED_PER_PEER: u32 = 2;
 /// and trimming. The transport cap only bounds how many connections can
 /// exist at all, so it must sit above topology's own steady-state total
 /// (see the `--network.max-peers` default rationale in the args module).
+/// The transport admission pair composed at the front of every node-type
+/// behaviour: the connection-limits caps plus the per-IP inbound cap.
+pub(crate) struct AdmissionLimits {
+    pub(crate) connection: connection_limits::Behaviour,
+    pub(crate) ip: super::ip_limits::IpConnectionLimits,
+}
+
+/// Build both transport admission behaviours from the network configuration.
+pub(crate) fn build_admission_limits(config: &impl SwarmNetworkConfig) -> AdmissionLimits {
+    AdmissionLimits {
+        connection: build_connection_limits(config),
+        ip: super::ip_limits::build_ip_connection_limits(config),
+    }
+}
+
 pub(crate) fn build_connection_limits(
     config: &impl SwarmNetworkConfig,
 ) -> connection_limits::Behaviour {
     let max_established = u32::try_from(config.max_peers()).unwrap_or(u32::MAX);
+    // A quarter of the table is reserved for our own dials: inbound alone can
+    // never exhaust the total cap, so an inbound flood cannot switch off
+    // outbound dialling at the transport layer.
+    let max_inbound = max_established.saturating_sub(max_established / 4);
     connection_limits::Behaviour::new(
         ConnectionLimits::default()
             .with_max_established(Some(max_established))
+            .with_max_established_incoming(Some(max_inbound))
             .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER))
             .with_max_pending_incoming(Some(MAX_PENDING_INCOMING))
             .with_max_pending_outgoing(Some(MAX_PENDING_OUTGOING)),
@@ -291,5 +311,62 @@ mod tests {
             .downcast::<libp2p::connection_limits::Exceeded>()
             .expect("denial cause is a connection-limits Exceeded");
         assert_eq!(exceeded.limit(), 1, "the cap comes from max_peers");
+    }
+
+    /// Inbound connections alone cannot exhaust `max_peers`: with a cap of 4
+    /// the fourth inbound connection is denied at the inbound share of 3,
+    /// and the listener can still dial outbound from the reserved quarter.
+    #[tokio::test]
+    async fn inbound_reserve_preserves_outbound_dialling() {
+        let mut listener = limits_swarm(4);
+        listener.listen().with_memory_addr_external().await;
+        let listen_addr = listener
+            .external_addresses()
+            .next()
+            .cloned()
+            .expect("listener has an external address");
+
+        for _ in 0..3 {
+            let mut dialer = limits_swarm(16);
+            dialer.connect(&mut listener).await;
+            tokio::spawn(dialer.loop_on_next());
+        }
+
+        let mut fourth = limits_swarm(16);
+        fourth.dial(listen_addr).expect("dial is initiated");
+        tokio::spawn(fourth.loop_on_next());
+
+        let denial = listener.wait(|event| match event {
+            SwarmEvent::IncomingConnectionError {
+                error: ListenError::Denied { cause },
+                ..
+            } => Some(cause),
+            _ => None,
+        });
+        let cause = vertex_tasks::time::timeout(Duration::from_secs(10), denial)
+            .await
+            .expect("listener denies the fourth inbound connection");
+        let exceeded = cause
+            .downcast::<libp2p::connection_limits::Exceeded>()
+            .expect("denial cause is a connection-limits Exceeded");
+        assert_eq!(exceeded.limit(), 3, "the inbound share is 3/4 of the cap");
+
+        let mut target = limits_swarm(16);
+        target.listen().with_memory_addr_external().await;
+        let target_addr = target
+            .external_addresses()
+            .next()
+            .cloned()
+            .expect("target has an external address");
+        tokio::spawn(target.loop_on_next());
+
+        listener.dial(target_addr).expect("dial is initiated");
+        let outbound = listener.wait(|event| match event {
+            SwarmEvent::ConnectionEstablished { endpoint, .. } if endpoint.is_dialer() => Some(()),
+            _ => None,
+        });
+        vertex_tasks::time::timeout(Duration::from_secs(10), outbound)
+            .await
+            .expect("listener dials outbound despite the filled inbound share");
     }
 }
