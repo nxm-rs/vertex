@@ -3,6 +3,7 @@
 use vertex_swarm_accounting_pricing::FixedPricingConfig;
 use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmPricingConfig};
 
+#[cfg(feature = "cli")]
 use crate::args::AccountingArgs;
 use crate::constants::*;
 
@@ -58,6 +59,7 @@ impl<P> AccountingConfig<P> {
     }
 }
 
+#[cfg(feature = "cli")]
 impl From<&AccountingArgs> for AccountingConfig<FixedPricingConfig> {
     fn from(args: &AccountingArgs) -> Self {
         Self {
@@ -124,6 +126,7 @@ where
 mod tests {
     use super::*;
 
+    #[cfg(feature = "cli")]
     #[test]
     fn from_args_carries_the_thresholds() {
         let config = AccountingConfig::from(&AccountingArgs::default());

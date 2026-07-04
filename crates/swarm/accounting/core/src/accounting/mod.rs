@@ -25,7 +25,6 @@ pub use error::AccountingError;
 pub use peer::PeerState;
 pub use reservation::{Provide, Receive, Reservation};
 
-use alloc::vec::Vec;
 use parking_lot::RwLock;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;

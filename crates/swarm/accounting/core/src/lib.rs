@@ -31,11 +31,8 @@
 //! dropped-race-loser-keeps-commit guarantee is the reason the origin books
 //! at dispatch.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-extern crate alloc;
-
 mod accounting;
+#[cfg(feature = "cli")]
 pub mod args;
 mod builder;
 mod client_accounting;
@@ -47,6 +44,7 @@ mod settlement;
 pub use accounting::{
     Accounting, AccountingError, AccountingPeerHandle, PeerState, Provide, Receive, Reservation,
 };
+#[cfg(feature = "cli")]
 pub use args::AccountingArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
 pub use client_accounting::ClientAccounting;
