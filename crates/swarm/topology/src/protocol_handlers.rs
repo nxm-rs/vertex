@@ -316,6 +316,25 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 .update_from_handshake(peer_id, false);
         }
 
+        // An extra exchange denied by the once-per-connection rule is a
+        // protocol violation on a live connection, not a failed dial: score
+        // it and drop the peer through the close choke point, leaving the
+        // registry and routing teardown to the close handler.
+        if matches!(
+            error,
+            vertex_swarm_net_handshake::HandshakeError::UnexpectedExchange
+        ) {
+            if let Some(overlay) = self.connection_registry.resolve_id(&peer_id) {
+                self.peer_manager.report_peer(
+                    &overlay,
+                    SwarmScoringEvent::ProtocolError,
+                    ReportSource::Handshake,
+                );
+            }
+            self.close_peer(peer_id, DisconnectReason::ProtocolViolation);
+            return;
+        }
+
         // Remove only the entry recorded for the failing connection and release
         // its routing capacity. Scoping to the connection keeps a healthy
         // connection's Active entry when a duplicate connection to the same peer
@@ -486,6 +505,7 @@ fn is_peer_fault(error: &vertex_swarm_net_handshake::HandshakeError) -> bool {
             | E::InvalidOverlay
             | E::InvalidObservedAddress
             | E::Protobuf(_)
+            | E::UnexpectedExchange
     )
 }
 
@@ -514,6 +534,15 @@ mod tests {
 
     const TCP: &str = "/ip4/8.8.8.8/tcp/1634";
     const WSS: &str = "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws";
+
+    #[test]
+    fn unexpected_exchange_is_a_peer_fault() {
+        use vertex_swarm_net_handshake::HandshakeError;
+        // The once-per-connection denial is solely the peer's doing; a
+        // timeout stays blameless because our own side can cause it.
+        assert!(is_peer_fault(&HandshakeError::UnexpectedExchange));
+        assert!(!is_peer_fault(&HandshakeError::Timeout));
+    }
 
     #[test]
     fn wss_only_client_rejects_tcp_only_records() {

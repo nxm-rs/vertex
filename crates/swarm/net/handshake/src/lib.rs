@@ -19,6 +19,12 @@
 //!   message fails the handshake with a validation error rather than being
 //!   truncated. Bounding it stops an untrusted peer from spending our memory on
 //!   a field that carries no protocol meaning.
+//! - The exchange runs exactly once per connection. A dialer connection
+//!   accepts no inbound exchange and a listener connection accepts only the
+//!   first; any further attempt is denied before a frame is read (no
+//!   signature-recovery work is spent on it) and fails the upgrade with
+//!   [`HandshakeError::UnexpectedExchange`], a protocol violation the topology
+//!   answers by dropping the connection.
 
 use std::time::Duration;
 

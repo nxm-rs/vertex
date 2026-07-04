@@ -80,6 +80,15 @@ pub enum HandshakeError {
     /// the handler can report it without string-matching.
     #[error("admission rejected: {0}")]
     AdmissionRejected(AdmissionRejection),
+
+    /// An extra handshake exchange was attempted on a connection.
+    ///
+    /// The exchange runs once per connection: a dialer connection accepts no
+    /// inbound exchange and a listener connection accepts only the first.
+    /// Denied before any frame is read, so no signature recovery is spent on
+    /// the violating substream.
+    #[error("unexpected handshake exchange")]
+    UnexpectedExchange,
 }
 
 impl From<Infallible> for HandshakeError {
