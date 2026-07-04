@@ -1468,17 +1468,24 @@ mod tests {
             assert_eq!(behaviour.connection_registry.active_count(), 1);
         }
 
-        /// A failed handshake removes only the failing connection's own pending
-        /// entry, leaving the peer's Active connection in place.
+        /// An inbound duplicate to an already-active peer is refused, so a later
+        /// handshake failure on it cannot clobber the identity index: the peer
+        /// stays fully routable in both directions.
         #[tokio::test]
-        async fn handshake_failure_removes_only_the_failing_pending_entry() {
+        async fn handshake_failure_on_refused_duplicate_leaves_peer_fully_routable() {
             let mut behaviour = test_behaviour();
             let overlay = test_overlay(1);
             let peer_id = activate_connection(&behaviour, overlay);
 
+            // A duplicate inbound connection to the tracked peer registers nothing.
             let c2 = ConnectionId::new_unchecked(2);
-            behaviour.connection_registry.connected_inbound(peer_id, c2);
-            assert_eq!(behaviour.connection_registry.pending_count(), 1);
+            assert!(
+                behaviour
+                    .connection_registry
+                    .connected_inbound(peer_id, c2)
+                    .is_none()
+            );
+            assert_eq!(behaviour.connection_registry.pending_count(), 0);
 
             behaviour.process_protocol_event(peer_id, c2, failed_event(peer_id, c2));
 
@@ -1488,6 +1495,14 @@ mod tests {
                     .get(&overlay)
                     .expect("active entry survives")
                     .is_active()
+            );
+            assert_eq!(
+                ActivePeers::active_peer_id(&*behaviour.connection_registry, &overlay),
+                Some(peer_id)
+            );
+            assert_eq!(
+                ActivePeers::active_id(&*behaviour.connection_registry, &peer_id),
+                Some(overlay)
             );
             assert_eq!(behaviour.connection_registry.active_count(), 1);
             assert_eq!(behaviour.connection_registry.pending_count(), 0);

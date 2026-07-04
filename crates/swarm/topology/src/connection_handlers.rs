@@ -61,9 +61,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 trace!(peer_id = %established.peer_id, "ConnectionEstablished for untracked outbound peer");
             }
         } else {
-            self.connection_registry
+            let result = self
+                .connection_registry
                 .connected_inbound(established.peer_id, established.connection_id);
-            gauge!("peer_registry_pending_connections").increment(1.0);
+            if result.is_some() {
+                gauge!("peer_registry_pending_connections").increment(1.0);
+            }
         }
     }
 
