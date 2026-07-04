@@ -38,8 +38,13 @@ permissions:
 #
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
+# Deviation from `dist generate` (covered by allow-dirty in dist-workspace.toml):
+# the pull_request trigger is replaced by workflow_dispatch, so PRs no longer
+# build the release matrix automatically. Dispatch the workflow on a branch to
+# get the old PR behaviour: plan, build, and upload throwaway artefacts without
+# publishing anything.
 on:
-  pull_request:
+  workflow_dispatch:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
@@ -50,9 +55,9 @@ jobs:
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request }}
+      tag: ${{ github.event_name == 'push' && github.ref_name || '' }}
+      tag-flag: ${{ github.event_name == 'push' && format('--tag={0}', github.ref_name) || '' }}
+      publishing: ${{ github.event_name == 'push' }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -77,7 +82,7 @@ jobs:
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          dist ${{ (github.event_name == 'push' && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"

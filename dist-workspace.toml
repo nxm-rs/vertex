@@ -1,5 +1,8 @@
-# NOTE: after `dist generate`, re-pin the action `uses:` in .github/workflows/release.yml to
-# commit SHAs (repo convention; dist regenerates them as version tags).
+# NOTE: after `dist generate`, re-apply the hand edits in .github/workflows/release.yml:
+# re-pin the action `uses:` to commit SHAs (repo convention; dist regenerates them as
+# version tags), and restore the workflow_dispatch trigger block plus the
+# `github.event_name == 'push'` publishing conditions (dist regenerates a pull_request
+# trigger keyed on `!github.event.pull_request`).
 [workspace]
 members = ["cargo:."]
 
@@ -9,8 +12,9 @@ members = ["cargo:."]
 # ships the bare client and nothing else.
 [dist]
 cargo-dist-version = "0.32.0"
-# The generated release.yml has its action uses hand-pinned to commit SHAs (repo
-# convention), so it deviates from what `dist generate` produces; allow that.
+# The generated release.yml deviates from what `dist generate` produces: action uses
+# are hand-pinned to commit SHAs (repo convention), and the pull_request trigger is
+# replaced by workflow_dispatch so PRs stop building the release matrix automatically.
 allow-dirty = ["ci"]
 # The installers fetch the matching prebuilt archive for the host.
 installers = ["shell", "powershell"]
@@ -22,8 +26,9 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 ci = ["github"]
-# Per-PR runs upload throwaway artefacts so reviewers can smoke-test a build
-# without cutting a release.
+# With the pull_request trigger removed from release.yml this only affects manual
+# workflow_dispatch runs, which upload throwaway artefacts so a build can be
+# smoke-tested without cutting a release.
 pr-run-mode = "upload"
 install-path = "CARGO_HOME"
 
