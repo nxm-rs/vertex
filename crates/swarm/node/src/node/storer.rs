@@ -105,7 +105,7 @@ pub(crate) struct StorerNodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal and LAN discovery, native only.
     pub(crate) nat: NatBehaviour,
     /// Client protocols plus pullsync, served from the reserve. Before topology:
-    /// its client tier reads the identity view at connection close while the
+    /// its client tier reads the active-peers view at connection close while the
     /// registry entry is live.
     pub(crate) storer: StorerBehaviour,
     pub(crate) topology: TopologyBehaviour<I>,
@@ -126,7 +126,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
             ClientBehaviourConfig::default(),
             store,
             Arc::new(StubForwarder),
-            topology.identity_view(),
+            topology.active_peers(),
         );
         Self {
             connection_limits,

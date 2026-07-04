@@ -52,7 +52,7 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
     /// one sub-behaviour.
     pub(crate) nat: NatBehaviour,
-    /// Before topology: reads the identity view at connection close while the
+    /// Before topology: reads the active-peers view at connection close while the
     /// registry entry is live.
     pub(crate) client: ClientBehaviour,
     pub(crate) topology: TopologyBehaviour<I>,
@@ -68,7 +68,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
-        let identity = topology.identity_view();
+        let active_peers = topology.active_peers();
         Self {
             connection_limits,
             // Identify advertises addresses scoped to each peer (see
@@ -86,7 +86,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode),
                 Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(0, 0)),
                 Arc::new(StubForwarder),
-                identity,
+                active_peers,
             ),
             topology,
         }

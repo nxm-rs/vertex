@@ -81,7 +81,7 @@ pub struct ClientBehaviour {
     /// Read-only view of the topology connection registry: the single writer is
     /// topology, so command routing and connection-close resolution consult this
     /// rather than mirroring the overlay-to-PeerId map here.
-    identity: Arc<dyn ActivePeers<OverlayAddress>>,
+    active_peers: Arc<dyn ActivePeers<OverlayAddress>>,
     pending_events: VecDeque<ToSwarm<ClientEvent, HandlerCommand>>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     #[cfg(feature = "swap")]
@@ -93,14 +93,14 @@ impl ClientBehaviour {
         config: Config,
         store: Arc<dyn SwarmLocalStore>,
         forward: Arc<dyn Forwarder>,
-        identity: Arc<dyn ActivePeers<OverlayAddress>>,
+        active_peers: Arc<dyn ActivePeers<OverlayAddress>>,
     ) -> Self {
         Self {
             config,
             store,
             forward,
             storer: None,
-            identity,
+            active_peers,
             pending_events: VecDeque::new(),
             pseudosettle_event_tx: None,
             #[cfg(feature = "swap")]
@@ -208,7 +208,7 @@ impl ClientBehaviour {
                 if command.is_request() && self.at_capacity() {
                     metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
                     command.refuse(ChunkTransferError::Overloaded);
-                } else if let Some(peer_id) = self.identity.active_peer_id(&peer) {
+                } else if let Some(peer_id) = self.active_peers.active_peer_id(&peer) {
                     self.push_command(peer_id, HandlerCommand::Peer(command));
                 } else {
                     command.refuse(ChunkTransferError::NotConnected);
@@ -410,7 +410,7 @@ impl NetworkBehaviour for ClientBehaviour {
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
         if let FromSwarm::ConnectionClosed(info) = event
             && info.remaining_established == 0
-            && let Some(overlay) = self.identity.active_id(&info.peer_id)
+            && let Some(overlay) = self.active_peers.active_id(&info.peer_id)
         {
             debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
             // A full disconnect may never surface as a substream error, so
@@ -517,17 +517,17 @@ mod tests {
         }
     }
 
-    fn behaviour_with_identity(identity: TestRegistry) -> ClientBehaviour {
+    fn behaviour_with_active_peers(active_peers: TestRegistry) -> ClientBehaviour {
         ClientBehaviour::new(
             Config::default(),
             Arc::new(NoopStore),
             Arc::new(StubForwarder),
-            identity,
+            active_peers,
         )
     }
 
     fn build_behaviour() -> ClientBehaviour {
-        behaviour_with_identity(Arc::new(PeerRegistry::new()))
+        behaviour_with_active_peers(Arc::new(PeerRegistry::new()))
     }
 
     /// A behaviour whose event queue is permanently at capacity.
@@ -536,12 +536,12 @@ mod tests {
             max_pending_events: 0,
             ..Config::default()
         };
-        let identity: TestRegistry = Arc::new(PeerRegistry::new());
+        let active_peers: TestRegistry = Arc::new(PeerRegistry::new());
         ClientBehaviour::new(
             config,
             Arc::new(NoopStore),
             Arc::new(StubForwarder),
-            identity,
+            active_peers,
         )
     }
 
@@ -695,7 +695,7 @@ mod tests {
         let overlay = OverlayAddress::from([1u8; 32]);
         let peer_id = PeerId::random();
         activate(&registry, peer_id, overlay);
-        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+        let mut behaviour = behaviour_with_active_peers(Arc::clone(&registry));
 
         // Active peer: the request enqueues a handler command and leaves the
         // responder for the handler to resolve.
@@ -758,7 +758,7 @@ mod tests {
         let overlay = test_peer();
         let peer_id = PeerId::random();
         activate(&registry, peer_id, overlay);
-        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+        let mut behaviour = behaviour_with_active_peers(Arc::clone(&registry));
         let (tx, mut rx) = mpsc::unbounded_channel();
         behaviour.route_pseudosettle_events(tx);
 
@@ -792,7 +792,7 @@ mod tests {
         registry.connected_inbound(p2, ConnectionId::new_unchecked(1));
         registry.activate(p2, ConnectionId::new_unchecked(1), overlay);
 
-        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+        let mut behaviour = behaviour_with_active_peers(Arc::clone(&registry));
         let (tx, mut rx) = mpsc::unbounded_channel();
         behaviour.route_pseudosettle_events(tx);
 
