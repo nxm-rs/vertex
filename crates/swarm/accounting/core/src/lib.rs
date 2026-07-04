@@ -16,6 +16,16 @@
 //! (from `vertex-swarm-api`), so peer selection and pacing can consume accounting
 //! state without depending on this crate's internals.
 //!
+//! # Construction
+//!
+//! Construction is two-phase: [`AccountingBuilder::build`] produces a
+//! [`ClientAccounting`] with the ledger, pricer, and settlement providers
+//! embedded; node assembly (`assemble_client_core` in the node crate) then
+//! wires the selector, origin gate, settlement trigger, and settlement
+//! services around it. The invariant is a single shared instance: every
+//! consumer must read the same per-peer balances, so assembly shares one
+//! `Arc` of the one build rather than building twice.
+//!
 //! # Commit points
 //!
 //! One [`Reservation`] contract, two commit points, coupled to the dispatch

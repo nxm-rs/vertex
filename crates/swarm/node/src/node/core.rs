@@ -107,6 +107,10 @@ pub struct ClientCore {
 /// Carries the prepared pseudosettle provider plus any native-only providers
 /// (swap) in `extra_settlement`; pseudosettle is registered first so soft
 /// accounting forgives total debt before swap settles originated debt.
+///
+/// Second phase of the two-phase construction stated at the
+/// [`vertex_swarm_accounting`] crate root: the one accounting built from these
+/// inputs is shared across the selector, gate, forwarder, and services.
 pub struct ClientCoreCtx {
     /// Network spec for the config pricer.
     pub spec: Arc<Spec>,
