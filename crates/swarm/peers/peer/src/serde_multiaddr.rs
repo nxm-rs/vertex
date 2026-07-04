@@ -21,8 +21,9 @@ const MULTIADDR_LIST_PREFIX: u8 = 0x99;
 /// carrying more is rejected whole, so a peer cannot inflate resident table
 /// memory or amplify dial fan-out by flooding fabricated addresses. Matches the
 /// reference wire cap, so a conformant peer (which advertises a handful) is
-/// never rejected.
-pub(crate) const MAX_MULTIADDRS_PER_PEER: usize = 20;
+/// never rejected. Outbound record producers must bound their advertised set to
+/// this cap or their own record is rejected by every conformant peer.
+pub const MAX_MULTIADDRS_PER_PEER: usize = 20;
 
 /// Serialize multiaddrs to bytes.
 ///

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 use parking_lot::Mutex;
+use strum::IntoEnumIterator;
 use tracing::{debug, info, warn};
 use vertex_net_local::{
     AddressScope, IpCapability, LocalCapabilities, advertise_filter, classify_multiaddr,
@@ -21,6 +22,28 @@ fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
     addr.iter()
         .filter(|p| !matches!(p, Protocol::P2p(_)))
         .collect()
+}
+
+/// Total order within a trust tier: IPv6 before IPv4, then byte order. The
+/// byte tie-break keeps the advertised list stable across restarts regardless
+/// of set iteration order, so an unchanged node re-signs an unchanged record.
+fn tier_order(a: &Multiaddr, b: &Multiaddr) -> std::cmp::Ordering {
+    family_order(a, b).then_with(|| a.cmp(b))
+}
+
+/// Trust tier of a locally advertised address. Variant order is advertisement
+/// priority: higher tiers lead the signed record, and because the handshake
+/// bounds the set by prefix truncation before signing, they also survive
+/// bounding longest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
+pub(crate) enum AddressTrust {
+    /// Operator-configured static address; explicit intent outranks any
+    /// machine-derived signal.
+    Configured,
+    /// Confirmed reachable by AutoNAT v2 dial-back or a UPnP port mapping.
+    Verified,
+    /// Public-scope listen address, assumed reachable but unverified.
+    AssumedPublic,
 }
 
 /// Manages local addresses for advertisement during handshake.
@@ -214,60 +237,65 @@ impl LocalAddressManager {
     }
 
     /// Select addresses to advertise to peer during handshake, filtered by peer
-    /// scope and ordered by likely reachability.
+    /// scope and ordered by trust tier.
     ///
     /// Does NOT include observed addresses. The handshake signs this set as-is
     /// into a cacheable, peer-independent record and only falls back to the
     /// peer-observed address when this set is empty.
     ///
-    /// The advertised list is built in reachability tiers and then ordered:
-    /// 1. verified-reachable addresses (AutoNAT v2 / UPnP confirmed external),
-    /// 2. public listen addresses,
-    /// 3. static NAT addresses,
-    ///
-    /// and within each tier IPv6 leads IPv4. A peer reads this order as a hint
-    /// only; its own dial preference may reorder families, so leading with
-    /// verified-reachable IPv6 helps without removing any address a peer could
-    /// otherwise use.
+    /// The advertised list is built in [`AddressTrust`] order (configured
+    /// static, then verified external, then public listen), and within each
+    /// tier IPv6 leads IPv4. A peer reads this order as a hint only; its own
+    /// dial preference may reorder families. The order also decides which
+    /// addresses survive the handshake's pre-encoding bound, so the
+    /// operator-configured tier is never truncated in favour of an assumed one.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
-        // Tier 1: verified external addresses (public-scope by construction).
-        // Scope-filter consistently with the rest so they never leak to a
-        // loopback/private peer they do not apply to.
-        let confirmed = self.confirmed_external_addrs.lock();
-        let mut verified = advertise_filter(confirmed.iter(), peer_scope, Some(peer_addr));
-        drop(confirmed);
-
-        // Tier 2: public (or scope-appropriate) listen addresses.
-        let mut listen_addrs = self.local.addresses_for_scope(peer_scope, Some(peer_addr));
-
-        // Tier 3: static NAT addresses for non-loopback peers.
-        let mut nat_addrs: Vec<Multiaddr> = self
-            .nat_addrs
-            .iter()
-            .filter(|_| peer_scope != AddressScope::Loopback)
-            .cloned()
-            .collect();
-
-        // Tier is the primary key; family (IPv6 before IPv4) is the secondary
-        // key within a tier. Stable-sort each tier independently, then chain in
-        // tier order, so a global family sort never reorders across tiers.
-        verified.sort_by(family_order);
-        listen_addrs.sort_by(family_order);
-        nat_addrs.sort_by(family_order);
-
+        // Trust tier is the primary key; family (IPv6 before IPv4) then byte
+        // order is the key within a tier. Sort each tier independently, then
+        // chain in tier order, so a global sort never reorders across tiers.
         // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
-        let addrs: Vec<Multiaddr> = verified
-            .into_iter()
-            .chain(listen_addrs)
-            .chain(nat_addrs)
+        let addrs: Vec<Multiaddr> = AddressTrust::iter()
+            .flat_map(|trust| {
+                let mut addrs = self.tier_addresses(trust, peer_scope, peer_addr);
+                addrs.sort_by(tier_order);
+                addrs
+            })
             .filter(|addr| seen.insert(addr.clone()))
             .collect();
 
         // Append /p2p/{local_peer_id} to all addresses
         self.with_peer_id(addrs)
+    }
+
+    /// Addresses in one trust tier, scope-filtered for the peer.
+    fn tier_addresses(
+        &self,
+        trust: AddressTrust,
+        peer_scope: AddressScope,
+        peer_addr: &Multiaddr,
+    ) -> Vec<Multiaddr> {
+        match trust {
+            // Static addresses are for non-loopback peers.
+            AddressTrust::Configured => self
+                .nat_addrs
+                .iter()
+                .filter(|_| peer_scope != AddressScope::Loopback)
+                .cloned()
+                .collect(),
+            // Verified external addresses are public-scope by construction.
+            // Scope-filter consistently with the rest so they never leak to a
+            // loopback/private peer they do not apply to.
+            AddressTrust::Verified => {
+                let confirmed = self.confirmed_external_addrs.lock();
+                advertise_filter(confirmed.iter(), peer_scope, Some(peer_addr))
+            }
+            AddressTrust::AssumedPublic => {
+                self.local.addresses_for_scope(peer_scope, Some(peer_addr))
+            }
+        }
     }
 
     /// Append /p2p/{local_peer_id} to addresses if local PeerId is set.
@@ -283,32 +311,29 @@ impl LocalAddressManager {
             .collect()
     }
 
-    /// All known addresses, ordered by likely reachability.
+    /// All known addresses, ordered by trust tier.
     ///
-    /// Tiers mirror [`Self::addresses_for_peer`]: verified external addresses,
-    /// then listen addresses, then static NAT addresses, with IPv6 leading IPv4
-    /// within each tier. No peer-scope filter is applied here; this is the full
-    /// local view.
+    /// Tiers mirror [`Self::addresses_for_peer`]: [`AddressTrust`] order with
+    /// IPv6 leading IPv4 within each tier. No peer-scope filter is applied
+    /// here; this is the full local view.
     pub fn all_addresses(&self) -> Vec<Multiaddr> {
-        let mut verified: Vec<Multiaddr> = self
-            .confirmed_external_addrs
-            .lock()
-            .iter()
-            .cloned()
-            .collect();
-        let mut listen_addrs = self.local.listen_addrs();
-        let mut nat_addrs = self.nat_addrs.clone();
-
-        verified.sort_by(family_order);
-        listen_addrs.sort_by(family_order);
-        nat_addrs.sort_by(family_order);
-
         // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
-        verified
-            .into_iter()
-            .chain(listen_addrs)
-            .chain(nat_addrs)
+        AddressTrust::iter()
+            .flat_map(|trust| {
+                let mut addrs = match trust {
+                    AddressTrust::Configured => self.nat_addrs.clone(),
+                    AddressTrust::Verified => self
+                        .confirmed_external_addrs
+                        .lock()
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    AddressTrust::AssumedPublic => self.local.listen_addrs(),
+                };
+                addrs.sort_by(tier_order);
+                addrs
+            })
             .filter(|addr| seen.insert(addr.clone()))
             .collect()
     }
@@ -431,38 +456,38 @@ mod tests {
     }
 
     #[test]
-    fn test_addresses_for_peer_verified_first_then_ipv6_within_tier() {
+    fn test_addresses_for_peer_trust_order_then_ipv6_within_tier() {
         let local = Arc::new(LocalCapabilities::new());
-        // Public listen addresses, both families.
+        // Public listen addresses (assumed-public tier), both families.
         local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
         local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
 
-        // Static NAT address (tier 3).
+        // Configured static address (highest tier).
         let nat = parse_addr("/ip4/198.51.100.9/tcp/1634");
         let manager = LocalAddressManager::new(local, vec![nat]);
 
-        // Verified external addresses (tier 1), both families.
+        // Verified external addresses (middle tier), both families.
         manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
         manager.on_external_addr_confirmed(&parse_addr("/ip6/2001:db8::7/tcp/1634"));
 
         let public_peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
         let addrs = manager.addresses_for_peer(&public_peer);
 
-        // Tier ordering: verified before listen before NAT.
+        // Trust ordering: configured before verified before assumed-public.
+        let configured_v4 = position_of(&addrs, "198.51.100.9").unwrap();
         let verified_v6 = position_of(&addrs, "2001:db8::7").unwrap();
         let verified_v4 = position_of(&addrs, "203.0.113.7").unwrap();
         let listen_v6 = position_of(&addrs, "2606:4700:4700::1111").unwrap();
         let listen_v4 = position_of(&addrs, "8.8.4.4").unwrap();
-        let nat_v4 = position_of(&addrs, "198.51.100.9").unwrap();
 
-        // Within tier 1: IPv6 before IPv4.
+        // Configured tier entirely before verified.
+        assert!(configured_v4 < verified_v6);
+        // Within the verified tier: IPv6 before IPv4.
         assert!(verified_v6 < verified_v4);
-        // Tier 1 entirely before tier 2.
+        // Verified tier entirely before assumed-public.
         assert!(verified_v4 < listen_v6);
-        // Within tier 2: IPv6 before IPv4.
+        // Within the assumed-public tier: IPv6 before IPv4.
         assert!(listen_v6 < listen_v4);
-        // Tier 2 entirely before tier 3.
-        assert!(listen_v4 < nat_v4);
     }
 
     #[test]
@@ -514,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_addresses_orders_verified_first_then_ipv6() {
+    fn test_all_addresses_orders_by_trust_then_ipv6() {
         let local = Arc::new(LocalCapabilities::new());
         local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
         local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
@@ -526,15 +551,42 @@ mod tests {
 
         let all = manager.all_addresses();
 
+        let configured_v4 = position_of(&all, "198.51.100.9").unwrap();
         let verified_v6 = position_of(&all, "2001:db8::7").unwrap();
         let listen_v6 = position_of(&all, "2606:4700:4700::1111").unwrap();
         let listen_v4 = position_of(&all, "8.8.4.4").unwrap();
-        let nat_v4 = position_of(&all, "198.51.100.9").unwrap();
 
-        // Verified tier first, listen tier IPv6-before-IPv4, NAT tier last.
+        // Configured tier first, then verified, then the assumed-public
+        // listen tier IPv6-before-IPv4.
+        assert!(configured_v4 < verified_v6);
         assert!(verified_v6 < listen_v6);
         assert!(listen_v6 < listen_v4);
-        assert!(listen_v4 < nat_v4);
+    }
+
+    #[test]
+    fn test_within_tier_order_is_deterministic() {
+        // Verified addresses live in a set with randomized iteration order;
+        // the byte tie-break makes the advertised order independent of it, so
+        // an unchanged node advertises a stable list.
+        let build = || {
+            let manager = create_manager(vec![]);
+            for i in [7, 3, 9, 1] {
+                manager.on_external_addr_confirmed(&parse_addr(&format!(
+                    "/ip4/203.0.113.{i}/tcp/1634"
+                )));
+            }
+            manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"))
+        };
+
+        let addrs = build();
+        assert_eq!(addrs, build());
+
+        // Within the tier the order is byte order.
+        let positions: Vec<usize> = [1, 3, 7, 9]
+            .iter()
+            .map(|i| position_of(&addrs, &format!("203.0.113.{i}")).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]

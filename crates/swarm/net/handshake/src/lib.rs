@@ -25,6 +25,14 @@
 //!   signature-recovery work is spent on it) and fails the upgrade with
 //!   [`HandshakeError::UnexpectedExchange`], a protocol violation the topology
 //!   answers by dropping the connection.
+//! - The advertised multiaddr set is bounded before the self record is signed
+//!   (see `bound_advertised`): at most `MAX_MULTIADDRS_PER_PEER` entries, and a
+//!   serialized block small enough that the whole frame fits a conformant
+//!   peer's decode buffer. The frame limit is enforced on decode by both sides,
+//!   so an unbounded local set (accumulated listen or verified-external
+//!   addresses) would produce a record every peer silently rejects. Bounding is
+//!   deterministic prefix truncation of the trust-ordered set, never an encode
+//!   error.
 
 use std::time::Duration;
 
@@ -70,6 +78,11 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// Enforced on decode in the codec; an over-long message fails the handshake.
 const MAX_WELCOME_MESSAGE_CHARS: usize = 140;
+
+/// Maximum size for handshake message buffers, enforced on decode by the
+/// framed codec. The advertised-address bound is derived from it so an
+/// outbound frame always fits a conformant peer's buffer.
+pub(crate) const MAX_HANDSHAKE_BUFFER_SIZE: usize = 1024;
 
 /// Information from a completed handshake.
 #[derive(Clone, Debug)]

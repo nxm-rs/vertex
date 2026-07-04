@@ -49,12 +49,17 @@ Uses the `netdev` crate supporting Linux, macOS, Windows, Android, iOS, and BSDs
 
 Manages address selection for the Swarm handshake protocol. Located in `vertex-swarm-topology::nat_discovery`.
 
-### Address Sources
+### Address Sources and Trust Tiers
 
-| Source | Priority | Description |
-|--------|----------|-------------|
-| NAT | Highest | Static addresses configured via `--nat-addr` |
-| Listen | Normal | Addresses from libp2p we're listening on |
+Advertised addresses are ordered by the `AddressTrust` tier of their source, highest first. Within a tier the order is IPv6 before IPv4, then byte order, so an unchanged node advertises a stable list (and re-signs an unchanged record) across restarts.
+
+| Trust tier | Source | Description |
+|------------|--------|-------------|
+| `Configured` | Static addresses from `--network.nat-addr` | Explicit operator intent; leads the record and is never truncated in favour of a lower tier |
+| `Verified` | AutoNAT v2 dial-back / UPnP confirmed external | Machine-proven reachable, reversible on expiry |
+| `AssumedPublic` | Public-scope libp2p listen addresses | Assumed reachable, unverified |
+
+The tier order also decides what survives the handshake's pre-encoding bound (see "What we put in our signed record" below): bounding truncates from the low-trust tail.
 
 ### Scope-Based Selection
 
@@ -127,7 +132,7 @@ Two hard boundaries keep this safe:
 NAT-mapped addresses contain ephemeral ports that are connection-specific. Each inbound connection gets a different port assignment from the NAT, so the port reported by peer A only works for the A-to-us connection. If we advertise it to peer C via hive gossip, peer C cannot use it because the NAT mapping does not exist for C. Storing and advertising these addresses causes:
 
 1. **Unbounded growth** - each new connection adds another ephemeral port variant
-2. **Handshake encoding overflow** - too many multiaddrs exceed the 2048-byte protobuf buffer
+2. **Handshake frame overflow** - too many multiaddrs push the frame past the 1024-byte handshake buffer, which conformant peers enforce on decode (along with a 20-multiaddr record cap), so the record would be rejected whole
 3. **Network pollution** - hive gossip propagates unreachable addresses to all peers
 
 ### What Bee Does
@@ -144,11 +149,12 @@ This is what makes the NAT'd outbound-only case clean: such a node runs as a `Cl
 
 ### What we put in our signed record
 
-The record we sign during the handshake is what a full-node peer stores and gossips, so it must be both non-empty (for bee) and free of unreachable junk (to avoid polluting hive). We build it from our scope-filtered advertised addresses (the shared `advertise_filter` rule in `vertex-net-local`, also used by identify) and append the peer-observed address only when it is trustworthy:
+The record we sign during the handshake is what a full-node peer stores and gossips, so it must be both non-empty (for bee) and free of unreachable junk (to avoid polluting hive). We build it from our scope-filtered advertised addresses (the shared `advertise_filter` rule in `vertex-net-local`, also used by identify), ordered by trust tier. The peer-observed address never enters a non-empty record - it stays peer-independent so the signed record can be cached and reused byte-identically across handshakes:
 
-- **Inbound** connection: the peer dialed our actual listen address and reached it, so the observed address is genuinely reachable (this is how a port-forwarded node learns its public address without static config). We append it.
-- **Outbound** connection: the observed address is our ephemeral NAT source port, connection-specific and useless to other peers. We do not append it.
-- **Last resort**: a NAT'd, outbound-only node with no real address still needs one entry to satisfy bee. It includes the observed address. For a `Client` this is harmless (the record is never gossiped). For a `Storer` it means the node is unreachable and would advertise an undialable address, so the handshake logs an operator warning; the entry is transient and is superseded once AutoNAT v2 / UPnP / a static NAT address provides a real one (the newer-timestamp record wins, see the gossip conflict-resolution path).
+- **Last resort only**: a NAT'd, outbound-only node with no real address still needs one entry to satisfy bee, so it signs a record over just the peer-observed address. For a `Client` this is harmless (the record is never gossiped). For a `Storer` it means the node is unreachable and would advertise an undialable address, so the handshake logs an operator warning; the entry is transient and is superseded once AutoNAT v2 / UPnP / a static NAT address provides a real one (the newer-timestamp record wins, see the gossip conflict-resolution path).
+- The NAT-discovery role the inbound observed address used to serve (a port-forwarded node learning its public address) is covered by AutoNAT v2 plus advertising confirmed-external addresses.
+
+**Pre-encoding bound**: before signing, the advertised set is bounded (`bound_advertised` in `vertex-swarm-net-handshake`) to at most 20 multiaddrs (the record cap conformant peers enforce on decode) and to a serialized size that keeps the whole frame inside the 1024-byte handshake buffer after the fixed fields and the welcome message. Bounding is deterministic prefix truncation of the trust-ordered set - the low-trust tail is dropped first, a non-empty set never bounds to empty, and encoding never errors. Without this, a node that accumulated many public-scope addresses (rotating IPv6 privacy addresses, multihoming, long-lived verified externals) would sign a record every conformant peer silently rejects.
 
 ### IPv6 vs IPv4
 
