@@ -17,6 +17,7 @@ mod chunks;
 mod client_service;
 mod dispatch;
 mod inflight;
+pub mod metrics;
 mod node;
 mod protocol;
 mod retrieval_latency;

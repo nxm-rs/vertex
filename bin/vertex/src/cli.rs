@@ -97,14 +97,9 @@ pub async fn run() -> Result<()> {
         // Build metrics config from CLI args
         let metrics_config = args.infra.observability.metrics.metrics_config();
 
-        // Collect histogram bucket configs from protocol crates
+        // Aggregated histogram bucket configs from the launch path
         let histogram_buckets = vertex_observability::HistogramRegistry::new()
-            .register_all(vertex_swarm_net_headers::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_topology::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_net_handshake::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_net_hive::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_net_identify::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_storage_redb::metrics::HISTOGRAM_BUCKETS)
+            .register_all(&vertex_swarm_builder::histogram_buckets())
             .build();
 
         // Build the launch context once and install metrics before any subsystem

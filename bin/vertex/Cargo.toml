@@ -51,23 +51,15 @@ vertex-node-commands.workspace = true
 vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
-# vertex - storage
-vertex-storage-redb.workspace = true
-
 # vertex - swarm protocol
 vertex-swarm-api.workspace = true
 vertex-swarm-accounting.workspace = true
 vertex-swarm-builder.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
-vertex-swarm-net-handshake.workspace = true
-vertex-swarm-net-headers.workspace = true
-vertex-swarm-net-hive.workspace = true
-vertex-swarm-net-identify.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
-vertex-swarm-topology.workspace = true
 
 # alloy
 alloy-primitives.workspace = true

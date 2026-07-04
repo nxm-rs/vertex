@@ -19,6 +19,9 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
+vertex-swarm-net-handshake.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-hive.workspace = true
 vertex-swarm-net-identify.workspace = true
 vertex-swarm-net-pricing.workspace = true
 
@@ -83,6 +86,7 @@ tokio = { workspace = true, features = ["sync"] }
 
 ## observability
 metrics.workspace = true
+vertex-metrics.workspace = true
 vertex-net-peer-store.workspace = true
 
 ## misc

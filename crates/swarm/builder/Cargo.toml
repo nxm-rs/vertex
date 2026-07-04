@@ -105,6 +105,7 @@ async-trait.workspace = true
 bytes.workspace = true
 hex.workspace = true
 strum.workspace = true
+vertex-metrics.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

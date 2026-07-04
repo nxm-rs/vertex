@@ -346,7 +346,7 @@ Hive emits only peer-count and validation families; its exchange metrics are the
 
 ## Histogram Bucket Configuration
 
-Histograms only render as Prometheus histograms (with `_bucket` series) when a bucket configuration is registered for their name suffix. `bin/vertex` builds a `HistogramRegistry` from six crates and installs it with the Prometheus recorder (`bin/vertex/src/cli.rs`): `vertex-swarm-net-headers`, `vertex-swarm-topology`, `vertex-swarm-net-handshake`, `vertex-swarm-net-hive`, `vertex-swarm-net-identify`, and `vertex-storage-redb`. Each crate declares its suffixes as a `HISTOGRAM_BUCKETS` const next to its metrics.
+Histograms only render as Prometheus histograms (with `_bucket` series) when a bucket configuration is registered for their name suffix. The requirements aggregate in two steps: `vertex-swarm-node` exposes the protocol-cone const `metrics::HISTOGRAM_BUCKETS` (the `vertex-swarm-net-headers`, `vertex-swarm-topology`, `vertex-swarm-net-handshake`, `vertex-swarm-net-hive`, and `vertex-swarm-net-identify` groups), and `vertex-swarm-builder::histogram_buckets()` extends it with the `vertex-storage-redb` backend group. `bin/vertex` installs that aggregate through a `HistogramRegistry` with the Prometheus recorder (`bin/vertex/src/cli.rs`). Each crate declares its suffixes as a `HISTOGRAM_BUCKETS` const next to its metrics.
 
 The six reusable bucket presets (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`) live in `vertex_metrics::buckets` and are re-exported from `vertex-observability`. A crate may also inline a bespoke bucket list when no preset fits.
 
@@ -371,7 +371,7 @@ Registered histogram suffixes (a registration matches any metric name ending in 
 | `db_tx_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
 | `db_tx_commit_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
 
-A histogram whose name matches no registered suffix is not given buckets, so the Prometheus exporter renders it as a summary (quantile series), not a default-bucket histogram. There is no implicit "0.005s to 10s default histogram" fallback for unregistered families. When adding a histogram that should produce `_bucket` series, register its suffix in the owning crate's `HISTOGRAM_BUCKETS` and wire the crate into the registry in `bin/vertex/src/cli.rs`.
+A histogram whose name matches no registered suffix is not given buckets, so the Prometheus exporter renders it as a summary (quantile series), not a default-bucket histogram. There is no implicit "0.005s to 10s default histogram" fallback for unregistered families. When adding a histogram that should produce `_bucket` series, register its suffix in the owning crate's `HISTOGRAM_BUCKETS` and add the crate's const to the protocol aggregate in `vertex-swarm-node` (backend crates join in `vertex-swarm-builder`).
 
 ## Troubleshooting
 
