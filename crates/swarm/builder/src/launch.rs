@@ -13,6 +13,7 @@ use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, SwarmLaunchConfig, SwarmNodeType, construct,
 };
 use vertex_swarm_identity::Identity;
+use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{
     BootNode, ClientNode, ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts,
@@ -33,7 +34,7 @@ use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
 use vertex_swarm_node::args::SwapConfig;
 #[cfg(feature = "swap")]
-use vertex_swarm_node::{ClientSwapParams, NodeChainError, node_chain_provider};
+use vertex_swarm_node::{NodeChainError, node_chain_provider};
 
 pub(crate) type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
@@ -178,11 +179,10 @@ pub(crate) type CacheFactory = Box<
 pub(crate) fn resolve_cache(
     cache: Option<CacheSeam>,
     db: Option<Arc<RedbDatabase>>,
-    cache_budget_bytes: u64,
-    soc_cache_ttl: u64,
+    local_store: &LocalStoreConfig,
 ) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError> {
     match cache {
-        None => Ok(default_cache(cache_budget_bytes, soc_cache_ttl)),
+        None => Ok(default_cache(local_store)),
         Some(CacheSeam::Ready(cache)) => Ok(cache),
         Some(CacheSeam::Factory(factory)) => factory(db),
     }
@@ -244,21 +244,12 @@ pub(crate) trait NodeAssembly: Send {
 /// The default client assembly: a bare [`ClientNode`] over an in-memory cache.
 pub(crate) struct ClientAssembly {
     cache: Option<CacheSeam>,
-    cache_budget_bytes: u64,
-    soc_cache_ttl: u64,
+    local_store: LocalStoreConfig,
 }
 
 impl ClientAssembly {
-    pub(crate) fn new(
-        cache: Option<CacheSeam>,
-        cache_budget_bytes: u64,
-        soc_cache_ttl: u64,
-    ) -> Self {
-        Self {
-            cache,
-            cache_budget_bytes,
-            soc_cache_ttl,
-        }
+    pub(crate) fn new(cache: Option<CacheSeam>, local_store: LocalStoreConfig) -> Self {
+        Self { cache, local_store }
     }
 }
 
@@ -273,12 +264,7 @@ impl NodeAssembly for ClientAssembly {
         _ctx: &dyn InfrastructureContext,
         inputs: AssemblyInputs<'_>,
     ) -> Result<(NodeRunParts, Self::ProviderStore), SwarmNodeError> {
-        let node_store = resolve_cache(
-            self.cache,
-            inputs.db,
-            self.cache_budget_bytes,
-            self.soc_cache_ttl,
-        )?;
+        let node_store = resolve_cache(self.cache, inputs.db, &self.local_store)?;
         let parts = assemble_client_node(
             inputs.identity,
             inputs.network,
@@ -355,13 +341,7 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         identity: params.identity,
         bandwidth,
         #[cfg(feature = "swap")]
-        swap: ClientSwapParams {
-            enable: params.swap.enable,
-            chequebook: params.swap.chequebook,
-            beneficiary: params.swap.beneficiary,
-            deploy: params.swap.deploy,
-            bounce_limit: params.swap.bounce_limit,
-        },
+        swap: params.swap,
     };
 
     let parts = build_client_core_tail(
@@ -501,8 +481,6 @@ async fn build_client(
     SwarmNodeError,
 > {
     let cache = config.take_cache();
-    let cache_budget = config.local_store().cache_budget_bytes();
-    let soc_ttl = config.local_store().soc_cache_ttl();
     let parts = build_client_backed_node(
         ctx,
         ClientNodeParams {
@@ -515,7 +493,7 @@ async fn build_client(
             #[cfg(feature = "swap")]
             swap: config.swap(),
         },
-        ClientAssembly::new(cache, cache_budget, soc_ttl),
+        ClientAssembly::new(cache, config.local_store().clone()),
     )
     .await?;
 
@@ -531,13 +509,10 @@ async fn build_client(
 }
 
 /// The default client cache: a byte-bounded in-memory LRU sized from the config.
-fn default_cache(
-    cache_budget_bytes: u64,
-    soc_cache_ttl: u64,
-) -> Arc<dyn vertex_swarm_api::SwarmLocalStore> {
+fn default_cache(local_store: &LocalStoreConfig) -> Arc<dyn vertex_swarm_api::SwarmLocalStore> {
     Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
-        cache_budget_bytes as usize,
-        soc_cache_ttl,
+        local_store.cache_budget_bytes() as usize,
+        local_store.soc_cache_ttl(),
     ))
 }
 
@@ -799,8 +774,12 @@ mod tests {
         use nectar_primitives::{AnyChunk, ContentChunk};
         use vertex_swarm_primitives::CachedChunk;
 
-        let store = resolve_cache(None, None, 1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST)
-            .expect("default cache builds");
+        let store = resolve_cache(
+            None,
+            None,
+            &LocalStoreConfig::new(1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST),
+        )
+        .expect("default cache builds");
 
         let chunk: AnyChunk = ContentChunk::new(b"cached content".to_vec())
             .expect("valid content chunk")
@@ -820,8 +799,12 @@ mod tests {
         let cache: Arc<dyn vertex_swarm_api::SwarmLocalStore> = Arc::new(
             vertex_swarm_localstore::ChunkStore::with_budget(4096, DEFAULT_SOC_CACHE_TTL_NS_TEST),
         );
-        let store = resolve_cache(Some(CacheSeam::Ready(Arc::clone(&cache))), None, 0, 0)
-            .expect("seam cache is used");
+        let store = resolve_cache(
+            Some(CacheSeam::Ready(Arc::clone(&cache))),
+            None,
+            &LocalStoreConfig::new(0, 0),
+        )
+        .expect("seam cache is used");
         assert!(
             Arc::ptr_eq(&cache, &store),
             "the supplied cache must reach the node store unchanged"
@@ -853,7 +836,8 @@ mod tests {
             vertex_swarm_localstore::ChunkStore::with_budget(4096, DEFAULT_SOC_CACHE_TTL_NS_TEST),
         );
         let mut config = test_client_config().with_cache(Arc::clone(&cache));
-        let store = resolve_cache(config.take_cache(), None, 0, 0).expect("seam cache is used");
+        let store = resolve_cache(config.take_cache(), None, &LocalStoreConfig::new(0, 0))
+            .expect("seam cache is used");
         assert!(
             Arc::ptr_eq(&cache, &store),
             "the config cache seam must reach the node store unchanged"
@@ -869,7 +853,8 @@ mod tests {
         );
         let handed = Arc::clone(&built);
         let mut config = test_client_config().with_cache_factory(move |_db| Ok(handed));
-        let store = resolve_cache(config.take_cache(), None, 0, 0).expect("factory cache is used");
+        let store = resolve_cache(config.take_cache(), None, &LocalStoreConfig::new(0, 0))
+            .expect("factory cache is used");
         assert!(
             Arc::ptr_eq(&built, &store),
             "the factory-built cache must reach the node store"

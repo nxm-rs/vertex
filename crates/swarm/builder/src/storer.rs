@@ -237,8 +237,6 @@ pub(crate) async fn build_storer(
     let _redistribution_enabled = config.storage().redistribution_enabled();
     let capacity = config.spec().reserve_capacity;
     let identity = config.identity().clone();
-    let cache_budget = config.local_store().cache_budget_bytes();
-    let soc_ttl = config.local_store().soc_cache_ttl();
 
     let parts = build_client_backed_node(
         ctx,
@@ -252,7 +250,13 @@ pub(crate) async fn build_storer(
             #[cfg(feature = "swap")]
             swap: config.swap(),
         },
-        StorerAssembly::new(cache, reserve, identity, capacity, cache_budget, soc_ttl),
+        StorerAssembly::new(
+            cache,
+            reserve,
+            identity,
+            capacity,
+            config.local_store().clone(),
+        ),
     )
     .await?;
 
@@ -276,8 +280,7 @@ struct StorerAssembly {
     reserve_seam: Option<ReserveSeam>,
     identity: Arc<Identity>,
     capacity: u64,
-    cache_budget_bytes: u64,
-    soc_cache_ttl: u64,
+    local_store: LocalStoreConfig,
 }
 
 impl StorerAssembly {
@@ -286,16 +289,14 @@ impl StorerAssembly {
         reserve_seam: Option<ReserveSeam>,
         identity: Arc<Identity>,
         capacity: u64,
-        cache_budget_bytes: u64,
-        soc_cache_ttl: u64,
+        local_store: LocalStoreConfig,
     ) -> Self {
         Self {
             cache,
             reserve_seam,
             identity,
             capacity,
-            cache_budget_bytes,
-            soc_cache_ttl,
+            local_store,
         }
     }
 }
@@ -317,8 +318,7 @@ impl NodeAssembly for StorerAssembly {
             inputs.db.clone(),
             &self.identity,
             self.capacity,
-            self.cache_budget_bytes,
-            self.soc_cache_ttl,
+            &self.local_store,
         )?;
         let provider_store = (Arc::clone(&serve.local), Arc::clone(&serve.reserve));
         let capable = assemble_storer_node(
@@ -361,8 +361,7 @@ fn build_serve_store(
     db: Option<Arc<RedbDatabase>>,
     identity: &Arc<Identity>,
     capacity: u64,
-    cache_budget_bytes: u64,
-    soc_cache_ttl: u64,
+    local_store: &LocalStoreConfig,
 ) -> Result<StorerServeStore, SwarmNodeError> {
     let (reserve, pullsync, batches) = match reserve_seam {
         None => {
@@ -372,7 +371,7 @@ fn build_serve_store(
         Some(ReserveSeam::Ready(reserve)) => (reserve, None, None),
         Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None, None),
     };
-    let cache = resolve_cache(cache, db, cache_budget_bytes, soc_cache_ttl)?;
+    let cache = resolve_cache(cache, db, local_store)?;
     // The reserve upcasts to the local-store read side; writes land in the cache.
     let local: Arc<dyn SwarmLocalStore> = Arc::new(composite::CacheThenReserve::new(
         cache,
@@ -680,8 +679,7 @@ mod tests {
             None,
             &identity,
             1 << 12,
-            1 << 20,
-            DEFAULT_SOC_CACHE_TTL_NS_TEST,
+            &LocalStoreConfig::new(1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST),
         )
         .expect("seam reserve is used");
         assert!(
@@ -708,8 +706,7 @@ mod tests {
             None,
             &identity,
             1 << 12,
-            1 << 20,
-            DEFAULT_SOC_CACHE_TTL_NS_TEST,
+            &LocalStoreConfig::new(1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST),
         )
         .expect("seam reserve is used");
         assert!(
@@ -750,8 +747,7 @@ mod tests {
             None,
             &identity,
             1 << 12,
-            1 << 20,
-            DEFAULT_SOC_CACHE_TTL_NS_TEST,
+            &LocalStoreConfig::new(1 << 20, DEFAULT_SOC_CACHE_TTL_NS_TEST),
         )
         .expect("default storer store builds");
 

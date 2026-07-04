@@ -32,6 +32,8 @@ use vertex_tasks::TaskExecutor;
 use crate::chunks::NetworkChunkProvider;
 
 #[cfg(feature = "swap")]
+use crate::args::SwapConfig;
+#[cfg(feature = "swap")]
 use alloy_chains::NamedChain;
 #[cfg(feature = "swap")]
 use alloy_primitives::Address;
@@ -329,15 +331,11 @@ impl SwapWiring {
     /// Ethereum address when `None`: the only payout address a cheque sent to us
     /// may name. The returned provider is registered with the accounting builder;
     /// the returned wiring is later handed to [`SwapWiring::spawn`].
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare<C>(
         spec: &Arc<Spec>,
         identity: &Arc<Identity>,
         config: &C,
-        chequebook: Option<Address>,
-        beneficiary: Option<Address>,
-        deploy: bool,
-        bounce_limit: u128,
+        swap: &SwapConfig,
         swap_enabled: bool,
     ) -> Option<(SwapProvider<C>, Self)>
     where
@@ -347,13 +345,13 @@ impl SwapWiring {
             return None;
         }
 
-        let Some(chequebook) = chequebook else {
+        let Some(chequebook) = swap.chequebook else {
             warn!(
                 "SWAP enabled but no chequebook configured; settlement not wired (chequebook deploy not yet supported)"
             );
             return None;
         };
-        if deploy {
+        if swap.deploy {
             warn!(
                 "chequebook deploy is not yet supported; using the configured chequebook address"
             );
@@ -368,7 +366,9 @@ impl SwapWiring {
 
         // The beneficiary defaults to the node Ethereum address: the only payout
         // address a cheque sent to us may name.
-        let beneficiary = beneficiary.unwrap_or_else(|| identity.ethereum_address());
+        let beneficiary = swap
+            .beneficiary
+            .unwrap_or_else(|| identity.ethereum_address());
 
         let (swap_event_tx, swap_event_rx) = mpsc::unbounded_channel();
         // The handle backs the provider; its command channel is drained by the
@@ -388,7 +388,7 @@ impl SwapWiring {
             chequebook,
             beneficiary,
             chain,
-            bounce_limit,
+            bounce_limit: swap.bounce_limit,
         };
 
         Some((provider, wiring))
@@ -620,22 +620,6 @@ pub struct SettlementEventSenders {
     pub swap: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
-/// Resolved SWAP parameters shared by both client entry points.
-#[cfg(feature = "swap")]
-#[derive(Clone)]
-pub struct ClientSwapParams {
-    /// `--swap` override; `None` defers to the node type's default.
-    pub enable: Option<bool>,
-    /// Our chequebook contract address, named in the cheques we issue.
-    pub chequebook: Option<Address>,
-    /// Payout address received cheques may name; defaults to the identity address.
-    pub beneficiary: Option<Address>,
-    /// Deploy a new chequebook on startup instead of using an existing one.
-    pub deploy: bool,
-    /// Per-peer cap on uncashed cheque exposure.
-    pub bounce_limit: u128,
-}
-
 /// Borrowed, wasm-clean inputs to [`build_client_core_tail`].
 pub struct ClientTailParams<'a> {
     /// The runtime node type, which selects the SWAP default and chain need.
@@ -646,9 +630,9 @@ pub struct ClientTailParams<'a> {
     pub identity: &'a Arc<Identity>,
     /// Bandwidth config driving accounting, pricing, and the self-throttle.
     pub bandwidth: &'a DefaultAccountingConfig,
-    /// SWAP settlement parameters.
+    /// SWAP settlement configuration.
     #[cfg(feature = "swap")]
-    pub swap: ClientSwapParams,
+    pub swap: &'a SwapConfig,
 }
 
 /// Shared client launch tail for the client- and storer-backed node types.
@@ -693,10 +677,7 @@ where
             params.spec,
             params.identity,
             params.bandwidth,
-            params.swap.chequebook,
-            params.swap.beneficiary,
-            params.swap.deploy,
-            params.swap.bounce_limit,
+            params.swap,
             swap_enabled,
         )
         .unzip()
@@ -950,17 +931,15 @@ mod tests {
         let spec = identity.spec().clone();
 
         let (pseudosettle_provider, _) = PseudosettleWiring::prepare(&config);
-        let (swap_provider, _) = SwapWiring::prepare(
-            &spec,
-            &identity,
-            &config,
-            Some(Address::repeat_byte(0xab)),
-            None,
-            false,
-            0,
-            true,
-        )
-        .expect("swap wiring is prepared for a chequebook on a named chain");
+        let swap_config = SwapConfig {
+            enable: Some(true),
+            chequebook: Some(Address::repeat_byte(0xab)),
+            beneficiary: None,
+            deploy: false,
+            bounce_limit: 0,
+        };
+        let (swap_provider, _) = SwapWiring::prepare(&spec, &identity, &config, &swap_config, true)
+            .expect("swap wiring is prepared for a chequebook on a named chain");
 
         // Compose the accounting exactly as the launch tail does: pseudosettle
         // registered first, swap pushed in through the same extra-settlement seam.

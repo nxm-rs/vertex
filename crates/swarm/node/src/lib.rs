@@ -5,7 +5,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "cli")]
 pub mod args;
 #[cfg(feature = "cli")]
 mod config;
@@ -34,9 +33,7 @@ pub use node::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder};
 #[cfg(feature = "swap")]
-pub use node::{
-    ClientSwapParams, LauncherSwapConfig, NodeChainError, SwapWiring, node_chain_provider,
-};
+pub use node::{LauncherSwapConfig, NodeChainError, SwapWiring, node_chain_provider};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storer"))]
 pub use node::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 /// The shared chain provider handle, re-exported so client entry points and the
