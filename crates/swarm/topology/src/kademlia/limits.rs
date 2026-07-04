@@ -84,6 +84,9 @@ pub(crate) struct DepthAwareLimits {
     /// Floors every balanced-bin allocation target so bins can reach the
     /// depth frontier.
     saturation: usize,
+    /// Minimum outbound (self-dialed) connections held in every finite-target
+    /// bin. `None` derives it from saturation (see [`Self::min_outbound`]).
+    min_outbound_peers: Option<usize>,
 }
 
 impl Default for DepthAwareLimits {
@@ -102,6 +105,7 @@ impl DepthAwareLimits {
             bootstrap_target: DEFAULT_BOOTSTRAP_TARGET,
             oversaturation_peers: DEFAULT_OVERSATURATION_PEERS,
             saturation: DEFAULT_SATURATION_PEERS as usize,
+            min_outbound_peers: None,
         }
     }
 
@@ -119,6 +123,15 @@ impl DepthAwareLimits {
     /// combination with `bootstrap_target` can deadlock depth.
     pub(crate) fn with_saturation(mut self, saturation: usize) -> Self {
         self.saturation = saturation;
+        self
+    }
+
+    /// Set the minimum outbound (self-dialed) connections held per
+    /// finite-target bin. Clamped to saturation at read time
+    /// ([`Self::min_outbound`]).
+    #[cfg(test)]
+    pub(crate) fn with_min_outbound_peers(mut self, min_outbound: usize) -> Self {
+        self.min_outbound_peers = Some(min_outbound);
         self
     }
 
@@ -149,6 +162,18 @@ impl DepthAwareLimits {
     /// floors derive from this single value.
     pub(crate) fn saturation(&self) -> usize {
         self.saturation
+    }
+
+    /// Minimum outbound (self-dialed) connections a finite-target bin holds
+    /// even when inbound alone meets the count target.
+    ///
+    /// Defaults to half the saturation threshold (rounded up); clamped to
+    /// saturation at read time so `min_outbound <= saturation` for any
+    /// builder order, keeping the quota within the retention-floor ceiling.
+    pub(crate) fn min_outbound(&self) -> usize {
+        self.min_outbound_peers
+            .unwrap_or_else(|| self.saturation.div_ceil(2))
+            .min(self.saturation)
     }
 
     /// Effective per-bin oversaturation level: the trim floor in
@@ -411,6 +436,12 @@ impl LimitsSnapshot {
     pub(crate) fn retention_floor(&self, bin: Bin) -> usize {
         self.limits.retention_floor(bin, self.depth)
     }
+
+    /// Minimum outbound connections held per finite-target bin (bounded by
+    /// the retention floor via the saturation clamp).
+    pub(crate) fn min_outbound(&self) -> usize {
+        self.limits.min_outbound()
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +681,40 @@ mod tests {
             .with_bootstrap_target(8)
             .with_oversaturation_peers(0);
         assert_trim_preserves_depth(&limits);
+    }
+
+    #[test]
+    fn test_min_outbound_derives_and_clamps() {
+        // Derived default: half the saturation threshold, rounded up.
+        assert_eq!(
+            DepthAwareLimits::new(160, 3)
+                .with_saturation(4)
+                .min_outbound(),
+            2
+        );
+        assert_eq!(
+            DepthAwareLimits::new(160, 3)
+                .with_saturation(9)
+                .min_outbound(),
+            5
+        );
+
+        // An explicit quota is honoured but clamped to saturation at read time,
+        // regardless of builder order, so the quota never exceeds the floor.
+        assert_eq!(
+            DepthAwareLimits::new(160, 3)
+                .with_min_outbound_peers(3)
+                .with_saturation(8)
+                .min_outbound(),
+            3
+        );
+        assert_eq!(
+            DepthAwareLimits::new(160, 3)
+                .with_min_outbound_peers(20)
+                .with_saturation(8)
+                .min_outbound(),
+            8
+        );
     }
 
     #[test]

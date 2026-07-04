@@ -19,6 +19,7 @@ use crate::metrics::{phase, record_phase_transition, record_topology_phase_chang
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace};
+use vertex_net_peer_registry::ConnectionDirection;
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
 use vertex_swarm_primitives::{
@@ -30,12 +31,14 @@ use vertex_swarm_primitives::{
 use vertex_tasks::time::Instant;
 use vertex_util_runtime::time::Instant as PhaseInstant;
 
-/// Connection phase for capacity tracking.
+/// Connection phase for capacity tracking. `Dialing` is outbound by
+/// construction; the later phases carry the direction so the per-bin outbound
+/// counter can be maintained on every transition.
 #[derive(PartialEq, Eq)]
 enum ConnectionPhase {
     Dialing,
-    Handshaking,
-    Active,
+    Handshaking(ConnectionDirection),
+    Active(ConnectionDirection),
 }
 
 /// Phase of a connection being considered for eviction.
@@ -182,6 +185,10 @@ pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     dialing_counts: Vec<AtomicUsize>,
     handshaking_counts: Vec<AtomicUsize>,
     active_counts: Vec<AtomicUsize>,
+    /// Outbound (self-dialed) share per bin: dialing plus outbound-tagged
+    /// handshaking and active. Drives the minimum-outbound dial quota so an
+    /// inbound flood cannot switch off honest outbound dialling.
+    outbound_counts: Vec<AtomicUsize>,
     connection_phases: RwLock<HashMap<OverlayAddress, ConnectionPhase>>,
     /// Stability clock for the saturated neighborhood; `None` while the
     /// neighborhood is below saturation. Updated on every routing-table
@@ -227,6 +234,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             dialing_counts: make_atomic_vec(num_bins),
             handshaking_counts: make_atomic_vec(num_bins),
             active_counts: make_atomic_vec(num_bins),
+            outbound_counts: make_atomic_vec(num_bins),
             connection_phases: RwLock::new(HashMap::new()),
             neighborhood_stability: Mutex::new(None),
             topology_phase,
@@ -282,22 +290,34 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             + atomic_load(&self.active_counts, bin)
     }
 
+    /// Outbound (self-dialed) connections in `bin`: dialing plus
+    /// outbound-tagged handshaking and active.
+    fn outbound_count(&self, bin: Bin) -> usize {
+        atomic_load(&self.outbound_counts, bin)
+    }
+
     /// Whether an outbound dial to `overlay` is admitted into `bin`.
     ///
     /// Mirrors balanced candidate selection: admit while the bin is below its
     /// count target, or, once count-satisfied, admit a peer that fills a
-    /// sub-prefix slot no connected peer covers while the bin is still below
-    /// its retention floor. The slot bypass is what lets a count-satisfied bin
-    /// spread across its sub-tries; a duplicate-slot dial past the target is
-    /// refused, so it never becomes a dial storm, and the floor is the trim
-    /// floor, so a slot-filler cannot be trimmed straight back out.
+    /// sub-prefix slot no connected peer covers, or admit an outbound dial
+    /// while the bin holds fewer than the minimum-outbound quota. Every reason
+    /// past the count deficit is bounded by the retention floor, so the total
+    /// outbound population per bin never exceeds it (the quota clamps to
+    /// saturation, itself at or below the floor). The slot bypass spreads a
+    /// count-satisfied bin across its sub-tries; the quota holds a self-dialed
+    /// minimum so an inbound flood to the count target cannot leave every route
+    /// attacker-created. Both are duplicate-slot-safe against a dial storm.
     fn dial_admits(&self, bin: Bin, effective: usize, overlay: &OverlayAddress) -> bool {
         let depth = self.depth();
         if self.config.limits.needs_more(bin, depth, effective) {
             return true;
         }
-        effective < self.config.limits.retention_floor(bin, depth)
-            && !self.bin_slot_covered(bin, slot_of(overlay, bin))
+        if effective >= self.config.limits.retention_floor(bin, depth) {
+            return false;
+        }
+        !self.bin_slot_covered(bin, slot_of(overlay, bin))
+            || self.outbound_count(bin) < self.config.limits.min_outbound()
     }
 
     /// Whether any connected peer in `bin` already occupies `slot`.
@@ -542,7 +562,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         // Pre-group handshaking peers by bin: O(in_progress) total
         let mut handshaking_by_bin: HashMap<Bin, Vec<OverlayAddress>> = HashMap::new();
         for (overlay, phase) in phases.iter() {
-            if *phase == ConnectionPhase::Handshaking {
+            if matches!(phase, ConnectionPhase::Handshaking(_)) {
                 handshaking_by_bin
                     .entry(self.bin_for(overlay))
                     .or_default()
@@ -759,6 +779,13 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         )
     }
 
+    /// Outbound (self-dialed) connections in `bin`, for the sim invariant
+    /// cross-check and outbound-quota assertions.
+    #[cfg(test)]
+    pub(crate) fn bin_outbound_count(&self, bin: Bin) -> usize {
+        self.outbound_count(bin)
+    }
+
     /// Returns (dialing, handshaking, active) counts for bin.
     pub(crate) fn bin_phase_counts(&self, bin: Bin) -> (usize, usize, usize) {
         (
@@ -891,6 +918,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         }
 
         atomic_inc(&self.dialing_counts, bin);
+        atomic_inc(&self.outbound_counts, bin);
         phases.insert(*overlay, ConnectionPhase::Dialing);
         record_phase_transition(phase::NONE, phase::DIALING);
         true
@@ -901,6 +929,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         if let Some(ConnectionPhase::Dialing) = phases.remove(overlay) {
             let bin = self.bin_for(overlay);
             atomic_dec(&self.dialing_counts, bin);
+            atomic_dec(&self.outbound_counts, bin);
             record_phase_transition(phase::DIALING, phase::NONE);
         }
     }
@@ -912,9 +941,11 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         if let Some(phase) = phases.get_mut(overlay)
             && *phase == ConnectionPhase::Dialing
         {
+            // Dialing is outbound; the handshaking phase inherits that
+            // direction so the outbound counter is unchanged by the move.
             atomic_dec(&self.dialing_counts, bin);
             atomic_inc(&self.handshaking_counts, bin);
-            *phase = ConnectionPhase::Handshaking;
+            *phase = ConnectionPhase::Handshaking(ConnectionDirection::Outbound);
             record_phase_transition(phase::DIALING, phase::HANDSHAKING);
         }
     }
@@ -924,20 +955,25 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         let mut phases = self.connection_phases.write();
 
         if let Some(phase) = phases.get_mut(overlay)
-            && *phase == ConnectionPhase::Handshaking
+            && let ConnectionPhase::Handshaking(direction) = *phase
         {
+            // Direction carries across the move, so the outbound counter is
+            // unchanged.
             atomic_dec(&self.handshaking_counts, bin);
             atomic_inc(&self.active_counts, bin);
-            *phase = ConnectionPhase::Active;
+            *phase = ConnectionPhase::Active(direction);
             record_phase_transition(phase::HANDSHAKING, phase::ACTIVE);
         }
     }
 
     fn release_handshake(&self, overlay: &OverlayAddress) {
         let mut phases = self.connection_phases.write();
-        if let Some(ConnectionPhase::Handshaking) = phases.remove(overlay) {
+        if let Some(ConnectionPhase::Handshaking(direction)) = phases.remove(overlay) {
             let bin = self.bin_for(overlay);
             atomic_dec(&self.handshaking_counts, bin);
+            if direction.is_outbound() {
+                atomic_dec(&self.outbound_counts, bin);
+            }
             record_phase_transition(phase::HANDSHAKING, phase::NONE);
         }
     }
@@ -949,14 +985,21 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
             match phase {
                 ConnectionPhase::Dialing => {
                     atomic_dec(&self.dialing_counts, bin);
+                    atomic_dec(&self.outbound_counts, bin);
                     record_phase_transition(phase::DIALING, phase::NONE);
                 }
-                ConnectionPhase::Handshaking => {
+                ConnectionPhase::Handshaking(direction) => {
                     atomic_dec(&self.handshaking_counts, bin);
+                    if direction.is_outbound() {
+                        atomic_dec(&self.outbound_counts, bin);
+                    }
                     record_phase_transition(phase::HANDSHAKING, phase::NONE);
                 }
-                ConnectionPhase::Active => {
+                ConnectionPhase::Active(direction) => {
                     atomic_dec(&self.active_counts, bin);
+                    if direction.is_outbound() {
+                        atomic_dec(&self.outbound_counts, bin);
+                    }
                     record_phase_transition(phase::ACTIVE, phase::NONE);
                 }
             }
@@ -984,7 +1027,10 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
         if !phases.contains_key(overlay) {
             atomic_inc(&self.handshaking_counts, bin);
-            phases.insert(*overlay, ConnectionPhase::Handshaking);
+            phases.insert(
+                *overlay,
+                ConnectionPhase::Handshaking(ConnectionDirection::Inbound),
+            );
             record_phase_transition(phase::NONE, phase::HANDSHAKING);
         }
     }
@@ -1060,13 +1106,17 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
             &mut selector,
             &self.peer_manager,
             |bin| self.effective_count(bin),
+            |bin| self.outbound_count(bin),
             self.max_bin(),
         );
         let neighbor_candidates = selector.len();
 
-        select_balanced_candidates(&mut selector, &self.peer_manager, |bin| {
-            self.effective_count(bin)
-        });
+        select_balanced_candidates(
+            &mut selector,
+            &self.peer_manager,
+            |bin| self.effective_count(bin),
+            |bin| self.outbound_count(bin),
+        );
         let balanced_candidates = selector.len() - neighbor_candidates;
 
         let new_candidates = selector.finish();
@@ -1740,10 +1790,11 @@ mod tests {
     fn force_active(routing: &KademliaRouting<MockIdentity>, peer: OverlayAddress) {
         let bin = routing.bin_for(&peer);
         atomic_inc(&routing.active_counts, bin);
+        atomic_inc(&routing.outbound_counts, bin);
         routing
             .connection_phases
             .write()
-            .insert(peer, ConnectionPhase::Active);
+            .insert(peer, ConnectionPhase::Active(ConnectionDirection::Outbound));
         let _ = routing.connected_peers.add(peer);
     }
 
@@ -1751,10 +1802,11 @@ mod tests {
     fn force_handshaking(routing: &KademliaRouting<MockIdentity>, peer: OverlayAddress) {
         let bin = routing.bin_for(&peer);
         atomic_inc(&routing.handshaking_counts, bin);
-        routing
-            .connection_phases
-            .write()
-            .insert(peer, ConnectionPhase::Handshaking);
+        atomic_inc(&routing.outbound_counts, bin);
+        routing.connection_phases.write().insert(
+            peer,
+            ConnectionPhase::Handshaking(ConnectionDirection::Outbound),
+        );
     }
 
     #[test]
@@ -1861,7 +1913,9 @@ mod tests {
             let mut bytes = [0x00u8; 32];
             bytes[0] = 0x90 + i;
             let peer = OverlayAddress::from(bytes);
-            atomic_inc(&routing.dialing_counts, routing.bin_for(&peer));
+            let peer_bin = routing.bin_for(&peer);
+            atomic_inc(&routing.dialing_counts, peer_bin);
+            atomic_inc(&routing.outbound_counts, peer_bin);
             routing
                 .connection_phases
                 .write()

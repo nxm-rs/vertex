@@ -40,6 +40,19 @@ impl CandidateSnapshot {
     }
 }
 
+/// Which per-bin bound a candidate add is subject to. Bin bookkeeping is
+/// shared across all three, so a bin can mix them without double-counting.
+enum AddBound {
+    /// Admit while the bin is below its dial target.
+    Count,
+    /// Admit while the bin is below its retention floor (the caller guarantees
+    /// the candidate fills an empty sub-prefix slot).
+    Slot,
+    /// Admit while the bin is below its retention floor and its outbound share
+    /// (plus this round's selections) is below the minimum-outbound quota.
+    OutboundQuota { outbound_effective: usize },
+}
+
 /// Builder for selecting dial candidates with TOCTOU safety and per-bin capacity tracking.
 pub(crate) struct CandidateSelector<'a> {
     snapshot: &'a CandidateSnapshot,
@@ -128,7 +141,7 @@ impl<'a> CandidateSelector<'a> {
         effective_count: usize,
         peer_manager: &PeerManager<I>,
     ) -> bool {
-        self.try_add_bounded(peer, bin, effective_count, peer_manager, false)
+        self.try_add_bounded(peer, bin, effective_count, peer_manager, AddBound::Count)
     }
 
     /// Try to add a peer that fills an empty sub-prefix slot, admitting it up
@@ -144,20 +157,55 @@ impl<'a> CandidateSelector<'a> {
         effective_count: usize,
         peer_manager: &PeerManager<I>,
     ) -> bool {
-        self.try_add_bounded(peer, bin, effective_count, peer_manager, true)
+        self.try_add_bounded(peer, bin, effective_count, peer_manager, AddBound::Slot)
     }
 
-    /// Shared admission: eligibility, dedup, and a bin-capacity bound. When
-    /// `fills_empty_slot` the bound is the retention floor; otherwise the dial
-    /// target. Bin bookkeeping is shared across both, so callers can mix the
-    /// two within a bin without double-counting.
+    /// Try to add an outbound dial that keeps the bin at its minimum-outbound
+    /// quota, admitting it up to the retention floor while the bin's outbound
+    /// share (plus this round's selections) is below the quota.
+    ///
+    /// The floor caps the pull, so a quota dial never exceeds the same ceiling
+    /// the slot bypass respects; ignoring slot coverage lets the quota fill
+    /// from duplicate-slot supply the slot pass leaves behind.
+    pub(crate) fn try_add_for_outbound_quota<I: SwarmIdentity>(
+        &mut self,
+        peer: OverlayAddress,
+        bin: Bin,
+        effective_count: usize,
+        outbound_effective: usize,
+        peer_manager: &PeerManager<I>,
+    ) -> bool {
+        self.try_add_bounded(
+            peer,
+            bin,
+            effective_count,
+            peer_manager,
+            AddBound::OutboundQuota { outbound_effective },
+        )
+    }
+
+    /// Whether `bin` still wants a candidate this round: below its dial target,
+    /// or below the minimum-outbound quota while under the retention floor.
+    /// Both are measured against effective counts plus this round's selections,
+    /// so the count deficit and the quota shortfall never double-count.
+    pub(crate) fn needs_bin(&self, bin: Bin, effective: usize, outbound_effective: usize) -> bool {
+        let selected = self.bin_selected(bin);
+        let projected = effective + selected;
+        self.snapshot.limits.needs_more(bin, projected)
+            || (projected < self.snapshot.limits.retention_floor(bin)
+                && outbound_effective + selected < self.snapshot.limits.min_outbound())
+    }
+
+    /// Shared admission: eligibility, dedup, and a bin-capacity bound. Bin
+    /// bookkeeping is shared across all three bounds, so a caller can mix them
+    /// within a bin without double-counting.
     fn try_add_bounded<I: SwarmIdentity>(
         &mut self,
         peer: OverlayAddress,
         bin: Bin,
         effective_count: usize,
         peer_manager: &PeerManager<I>,
-        fills_empty_slot: bool,
+        bound: AddBound,
     ) -> bool {
         if self.is_full() {
             return false;
@@ -178,10 +226,13 @@ impl<'a> CandidateSelector<'a> {
         let already_selected = self.bin_selected(bin);
         let projected_count = effective_count + already_selected;
 
-        let admit = if fills_empty_slot {
-            projected_count < self.snapshot.limits.retention_floor(bin)
-        } else {
-            self.snapshot.limits.needs_more(bin, projected_count)
+        let admit = match bound {
+            AddBound::Count => self.snapshot.limits.needs_more(bin, projected_count),
+            AddBound::Slot => projected_count < self.snapshot.limits.retention_floor(bin),
+            AddBound::OutboundQuota { outbound_effective } => {
+                projected_count < self.snapshot.limits.retention_floor(bin)
+                    && outbound_effective + already_selected < self.snapshot.limits.min_outbound()
+            }
         };
         if !admit {
             return false;
@@ -205,10 +256,15 @@ impl<'a> CandidateSelector<'a> {
 }
 
 /// Select candidates for neighborhood bins (>= depth), highest PO first.
+///
+/// During depth-0 bootstrap every bin is a finite-target neighborhood bin, so
+/// this path also enforces the minimum-outbound quota: a bin whose count target
+/// is met by inbound alone still pulls outbound dials up to the quota.
 pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
     peer_manager: &PeerManager<I>,
     connected_counts: impl Fn(Bin) -> usize,
+    outbound_counts: impl Fn(Bin) -> usize,
     max_bin: Bin,
 ) {
     let depth = selector.snapshot().limits.depth;
@@ -223,35 +279,31 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
         }
 
         let effective = connected_counts(bin);
-        let already_selected = selector.bin_selected(bin);
+        let outbound = outbound_counts(bin);
 
-        if !selector
-            .snapshot()
-            .limits
-            .needs_more(bin, effective + already_selected)
-        {
+        if !selector.needs_bin(bin, effective, outbound) {
             continue;
         }
 
         // Pull lazily from the bin's dialable supply until the selector
-        // fills or the bin reaches its target; rejected peers (queued,
-        // duplicate) simply advance to the next one.
+        // fills or the bin meets both its target and its outbound quota;
+        // rejected peers (queued, duplicate) simply advance to the next one.
         for peer in peer_manager
             .dialable_overlays_in_bin_excluding(bin, |overlay| connected.exists(overlay))
         {
             if selector.is_full() {
                 break;
             }
-            if !selector
-                .snapshot()
-                .limits
-                .needs_more(bin, effective + selector.bin_selected(bin))
-            {
+            if !selector.needs_bin(bin, effective, outbound) {
                 break;
             }
-            if !selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
+            // Count deficit first; a count-satisfied bin still fills the
+            // outbound quota from the same supply.
+            if selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
                 continue;
             }
+            let _ =
+                selector.try_add_for_outbound_quota(peer, bin, effective, outbound, peer_manager);
         }
     }
 }
@@ -264,11 +316,14 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
 /// already-covered slot only fills the count deficit toward the dial target.
 /// So a bin whose count target is met by peers clustered in one sub-trie still
 /// pulls in diverse supply, while duplicate-slot peers never dial past the
-/// target. Bins are visited proximity-order descending, as before.
+/// target. A bin count-satisfied by inbound additionally pulls outbound dials
+/// up to the minimum-outbound quota from the duplicate-slot supply the slot
+/// pass leaves behind. Bins are visited proximity-order descending, as before.
 pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
     peer_manager: &PeerManager<I>,
     connected_counts: impl Fn(Bin) -> usize,
+    outbound_counts: impl Fn(Bin) -> usize,
 ) {
     let depth = selector.snapshot().limits.depth;
     if depth == NeighborhoodDepth::ZERO {
@@ -299,6 +354,8 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
             break;
         }
 
+        let outbound = outbound_counts(bin);
+
         // Slots the connected set already covers; empty-slot fillers must miss
         // all of these and every slot claimed earlier this round.
         let mut covered: HashSet<u8> = connected
@@ -326,13 +383,18 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
             }
         }
 
-        // Second pass: duplicate-slot peers fill only the count deficit toward
-        // the dial target (empty-slot fills may already have met it).
+        // Second pass: duplicate-slot peers fill the count deficit toward the
+        // dial target (empty-slot fills may already have met it), then the
+        // outbound quota for a bin count-satisfied by inbound.
         for peer in duplicates {
             if selector.is_full() {
                 break;
             }
-            let _ = selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager);
+            if selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
+                continue;
+            }
+            let _ =
+                selector.try_add_for_outbound_quota(peer, bin, effective, outbound, peer_manager);
         }
     }
 }
@@ -387,9 +449,12 @@ mod tests {
 
         // Bin 0 holds 5 connected against a saturation-floored target of 8:
         // deficit 3, and exactly two unconnected candidates are known.
-        select_balanced_candidates(&mut selector, &peer_manager, |bin| {
-            if bin == b(0) { 5 } else { 0 }
-        });
+        select_balanced_candidates(
+            &mut selector,
+            &peer_manager,
+            |bin| if bin == b(0) { 5 } else { 0 },
+            |_| 0,
+        );
 
         let candidates = selector.finish();
         assert_eq!(

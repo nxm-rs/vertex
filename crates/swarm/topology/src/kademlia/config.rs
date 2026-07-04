@@ -163,6 +163,12 @@ impl KademliaConfig {
         self.limits = self.limits.with_saturation(saturation);
         self
     }
+
+    /// Set the minimum outbound connections held per finite-target bin.
+    pub(crate) fn with_min_outbound_peers(mut self, min_outbound: usize) -> Self {
+        self.limits = self.limits.with_min_outbound_peers(min_outbound);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +243,14 @@ mod tests {
         assert_eq!(config.neighborhood_stability_window, Duration::from_secs(5));
         // Sibling fields are preserved.
         assert_eq!(config.limits.total_target(), 160);
+    }
+
+    #[test]
+    fn test_with_min_outbound_peers() {
+        let config = KademliaConfig::default()
+            .with_saturation(8)
+            .with_min_outbound_peers(3);
+        assert_eq!(config.limits.min_outbound(), 3);
     }
 
     #[test]

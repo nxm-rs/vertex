@@ -1,7 +1,7 @@
 //! Scenario suite over the deterministic sim: convergence, churn stability,
 //! partition heal, starvation truth, saturation-floor safety, sub-prefix-slot
-//! dilution of a monoculture, and a characterization test pinning the current
-//! direction-blind fill behaviour.
+//! dilution of a monoculture, and the minimum-outbound quota holding a bin's
+//! self-dialed share under an inbound eclipse flood.
 //!
 //! Time is paused so the tokio-driven depth-hysteresis clock is deterministic;
 //! the phase window and dial backoff run on wall clocks, so nothing here asserts
@@ -302,60 +302,99 @@ async fn slot_fill_dilutes_subprefix_monoculture() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn inbound_flood_suppresses_outbound() {
-    // Characterization: the fill target is direction-blind. A bin flooded to its
-    // ceiling by inbound connections satisfies the target, so the evaluation
-    // loop queues no outbound dial for it even though known, dialable outbound
-    // peers exist in the same bin. A later direction-aware fill flips this.
-    // `nominal` is raised above the flood size so the freshly-known inbound
-    // peers do not inflate the estimated depth: the bin stays a finite-target
-    // bootstrap bin rather than being promoted to an unlimited neighborhood bin.
+async fn outbound_quota_holds_under_inbound_flood() {
+    // An attacker floods a bin to its count target with inbound sybils, hoping
+    // to switch off honest outbound dialling and leave every route into the
+    // neighbourhood attacker-created. The minimum-outbound quota resists: the
+    // bin still dials outbound up to the quota even though inbound alone met the
+    // count target. The target-to-floor band (target 4, oversaturation 8) opens
+    // the room; `nominal` is raised above the population so the freshly-known
+    // inbound peers do not inflate the estimated depth, keeping the bin a
+    // finite-target bootstrap bin rather than an unlimited neighborhood bin.
     let config = KademliaConfig::default()
         .with_bootstrap_target(4)
         .with_saturation(4)
-        .with_oversaturation_peers(4)
+        .with_oversaturation_peers(8)
         .with_inbound_headroom(0)
         .with_nominal(10);
     let mut world = SimWorld::new(config, 16, 13);
     let bin = 5u8;
+    // Quota is saturation (4) rounded up over two = 2.
+    let quota = 2usize;
 
-    // Four known, dialable outbound-capable peers in the bin. If the bin had
-    // room the evaluator would dial these.
+    // Four known, dialable outbound-capable peers in the bin.
     for idx in 0..4u8 {
         let overlay = super::overlay_in_bin(world.base(), bin, idx);
         world.add_scripted(overlay, STORER, PeerScript::Honest);
     }
 
-    // Flood the bin's inbound ceiling with a disjoint set of overlays.
+    // Flood to the count target (4), not the raised retention floor (8):
+    // flooding to the floor would leave no band for the quota and mask the fix.
+    // Every attempt is accepted (ceiling 8 > 4), so the attacker satisfies the
+    // fill target with a disjoint inbound set.
     let mut flooded = 0;
-    for idx in 100..108u8 {
+    for idx in 100..104u8 {
         let overlay = super::overlay_in_bin(world.base(), bin, idx);
         if world.flood_inbound(overlay, STORER) {
             flooded += 1;
         }
     }
-    assert_eq!(flooded, 4, "inbound is accepted up to the ceiling");
+    assert_eq!(
+        flooded, 4,
+        "attacker satisfies the fill target with inbound"
+    );
+    assert_eq!(
+        world.connected_in_bin(bin),
+        4,
+        "the count target is met by inbound alone"
+    );
+
+    // The direction-aware fill pulls outbound dials into the flooded bin even
+    // though the count target is already met.
+    world.evaluate();
+    assert!(
+        world.has_queued_candidates(),
+        "outbound quota pulls dials into the flooded bin"
+    );
 
     for _ in 0..10 {
         world.tick();
     }
 
     assert_eq!(
-        world.connected_in_bin(bin),
-        4,
-        "the fill target is satisfied by inbound alone"
+        world.outbound_in_bin(bin),
+        quota,
+        "the bin holds its minimum-outbound quota of self-dialed peers"
     );
-    let (dialing, handshaking, active) = world.bin_phase_counts(bin);
     assert_eq!(
-        dialing + handshaking,
-        0,
-        "no outbound dial is ever launched for the flooded bin"
+        world.connected_in_bin(bin),
+        4 + quota,
+        "four inbound plus the two quota dials, within the retention floor (8)"
     );
-    assert_eq!(active, 4, "the four inbound peers are the only actives");
+    assert_eq!(
+        world.connected_in_bin(bin) - world.outbound_in_bin(bin),
+        4,
+        "the four flooded inbound peers remain connected"
+    );
 
+    // No storm: the quota is met, so the evaluator falls quiet and the bin
+    // holds steady rather than dialling the band up to the floor.
     world.evaluate();
     assert!(
         !world.has_queued_candidates(),
-        "the direction-blind fill leaves the evaluator quiet"
+        "no further dials once the quota is met"
+    );
+    for _ in 0..10 {
+        world.tick();
+    }
+    assert_eq!(
+        world.connected_in_bin(bin),
+        4 + quota,
+        "the quota-filled bin holds without a dial storm"
+    );
+    assert_eq!(
+        world.outbound_in_bin(bin),
+        quota,
+        "the outbound share stays at the quota"
     );
 }
