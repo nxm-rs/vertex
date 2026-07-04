@@ -52,7 +52,7 @@ fn next_checkpoint(checkpoint: Au, rate: Au) -> Au {
 /// Plain `fetch_sub` wraps to near `u64::MAX` on underflow, which readers clamp
 /// to `i64::MAX` and subtract from every allowance, jamming the peer into
 /// permanent denial; a compare-exchange loop floors a mismatched release at zero.
-fn saturating_fetch_sub(atomic: &AtomicU64, delta: u64) {
+pub(super) fn saturating_fetch_sub(atomic: &AtomicU64, delta: u64) {
     let mut current = atomic.load(Ordering::Relaxed);
     loop {
         let next = current.saturating_sub(delta);
@@ -75,6 +75,10 @@ pub struct PeerState {
     reserved_balance: AtomicU64,
     shadow_reserved_balance: AtomicU64,
     ghost_balance: AtomicU64,
+    // Outstanding reservation counts per leg: begun at prepare, ended exactly
+    // once when the reservation resolves (apply or drop).
+    inflight_receive: AtomicU64,
+    inflight_provide: AtomicU64,
     serve_line: AtomicI64,
     settle_line: AtomicI64,
     disconnect_threshold: Au,
@@ -105,6 +109,8 @@ impl PeerState {
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
             ghost_balance: AtomicU64::new(0),
+            inflight_receive: AtomicU64::new(0),
+            inflight_provide: AtomicU64::new(0),
             serve_line: AtomicI64::new(serve_line.get()),
             settle_line: AtomicI64::new(settle_line.get()),
             disconnect_threshold,
@@ -112,6 +118,16 @@ impl PeerState {
             cumulative_repayment: AtomicU64::new(0),
             growth_checkpoint: AtomicI64::new(first_checkpoint(allowance_rate).get()),
         }
+    }
+
+    /// The receive leg's outstanding-reservation counter.
+    pub(super) fn inflight_receive(&self) -> &AtomicU64 {
+        &self.inflight_receive
+    }
+
+    /// The provide leg's outstanding-reservation counter.
+    pub(super) fn inflight_provide(&self) -> &AtomicU64 {
+        &self.inflight_provide
     }
 
     /// Get the current balance in AU.

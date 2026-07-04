@@ -92,6 +92,11 @@ pub enum ForwardError {
     /// on drop.
     #[error("accounting refused the relay")]
     AccountingRefused,
+
+    /// The relay walk hit its wall-clock bound before any candidate answered.
+    /// Dropping the walk releases every reservation it pinned.
+    #[error("relay walk deadline exceeded")]
+    DeadlineExceeded,
 }
 
 /// Relays a retrieval or a pushsync to a closer peer on behalf of an inbound

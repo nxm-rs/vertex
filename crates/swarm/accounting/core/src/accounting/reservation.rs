@@ -9,10 +9,12 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use vertex_swarm_api::Au;
 
 use super::PeerState;
+use super::peer::saturating_fetch_sub;
 
 mod sealed {
     pub trait Sealed {}
@@ -27,6 +29,10 @@ pub trait Leg: sealed::Sealed {
     /// Release the leg's reserved counter.
     #[doc(hidden)]
     fn release(state: &PeerState, price: Au);
+
+    /// The leg's outstanding-reservation counter.
+    #[doc(hidden)]
+    fn inflight(state: &PeerState) -> &AtomicU64;
 }
 
 /// Receiving service: we owe the peer. Reserves `reserved_balance`.
@@ -47,6 +53,10 @@ impl Leg for Receive {
     fn release(state: &PeerState, price: Au) {
         state.sub_reserved(price);
     }
+
+    fn inflight(state: &PeerState) -> &AtomicU64 {
+        state.inflight_receive()
+    }
 }
 
 impl Leg for Provide {
@@ -57,6 +67,10 @@ impl Leg for Provide {
 
     fn release(state: &PeerState, price: Au) {
         state.sub_shadow_reserved(price);
+    }
+
+    fn inflight(state: &PeerState) -> &AtomicU64 {
+        state.inflight_provide()
     }
 }
 
@@ -69,15 +83,20 @@ pub struct Reservation<L: Leg> {
     state: Arc<PeerState>,
     price: Au,
     applied: bool,
+    /// The owning ledger's outstanding-reservation total, decremented exactly
+    /// once on resolution (apply or drop) together with the leg's per-peer
+    /// count; the matching increments happen at prepare time.
+    global_inflight: Arc<AtomicU64>,
     _leg: PhantomData<L>,
 }
 
 impl<L: Leg> Reservation<L> {
-    pub(super) fn new(state: Arc<PeerState>, price: Au) -> Self {
+    pub(super) fn new(state: Arc<PeerState>, price: Au, global_inflight: Arc<AtomicU64>) -> Self {
         Self {
             state,
             price,
             applied: false,
+            global_inflight,
             _leg: PhantomData,
         }
     }
@@ -106,6 +125,10 @@ impl<L: Leg> Drop for Reservation<L> {
         if !self.applied {
             L::release(&self.state, self.price);
         }
+        // The in-flight hold ends however the reservation resolves; saturation
+        // guards a hold that was never begun (direct construction in tests).
+        saturating_fetch_sub(L::inflight(&self.state), 1);
+        saturating_fetch_sub(&self.global_inflight, 1);
     }
 }
 
@@ -133,12 +156,16 @@ mod tests {
         Au::new(value)
     }
 
+    fn global() -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(0))
+    }
+
     #[test]
     fn receive_apply_commits_balance_and_clears_reserve() {
         let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_reserved(au(100));
 
-        Reservation::<Receive>::new(Arc::clone(&state), au(100)).apply();
+        Reservation::<Receive>::new(Arc::clone(&state), au(100), global()).apply();
 
         assert_eq!(state.balance(), au(-100));
         assert_eq!(state.reserved_balance(), Au::ZERO);
@@ -149,7 +176,11 @@ mod tests {
         let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_reserved(au(100));
 
-        drop(Reservation::<Receive>::new(Arc::clone(&state), au(100)));
+        drop(Reservation::<Receive>::new(
+            Arc::clone(&state),
+            au(100),
+            global(),
+        ));
 
         assert_eq!(state.balance(), Au::ZERO);
         assert_eq!(state.reserved_balance(), Au::ZERO);
@@ -160,7 +191,7 @@ mod tests {
         let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
-        Reservation::<Provide>::new(Arc::clone(&state), au(100)).apply();
+        Reservation::<Provide>::new(Arc::clone(&state), au(100), global()).apply();
 
         assert_eq!(state.balance(), au(100));
         assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
@@ -171,7 +202,11 @@ mod tests {
         let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
-        drop(Reservation::<Provide>::new(Arc::clone(&state), au(100)));
+        drop(Reservation::<Provide>::new(
+            Arc::clone(&state),
+            au(100),
+            global(),
+        ));
 
         assert_eq!(state.balance(), Au::ZERO);
         assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
@@ -183,7 +218,7 @@ mod tests {
         let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
-        Reservation::<Provide>::new(Arc::clone(&state), au(100)).forfeit();
+        Reservation::<Provide>::new(Arc::clone(&state), au(100), global()).forfeit();
 
         assert_eq!(state.balance(), Au::ZERO, "never committed");
         assert_eq!(state.shadow_reserved_balance(), Au::ZERO, "released");
