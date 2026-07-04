@@ -18,8 +18,8 @@ use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol};
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{
-    BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StorageRadius,
-    StorerComponents, SwarmLaunchConfig, SwarmLocalStore, SwarmNodeType, construct,
+    BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StampValidation,
+    StorageRadius, StorerComponents, SwarmLaunchConfig, SwarmLocalStore, SwarmNodeType, construct,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
@@ -74,6 +74,7 @@ pub struct StorerConfig {
     swap: SwapConfig,
     cache: Option<CacheSeam>,
     reserve: Option<ReserveSeam>,
+    stamp_validation: StampValidation,
 }
 
 impl StorerConfig {
@@ -102,7 +103,20 @@ impl StorerConfig {
             swap,
             cache: None,
             reserve: None,
+            stamp_validation: StampValidation::default(),
         }
+    }
+
+    /// Override the stamp-validation policy the gRPC chunk service applies to
+    /// uploads. Defaults to [`StampValidation::Enforce`].
+    pub fn with_stamp_validation(mut self, stamp_validation: StampValidation) -> Self {
+        self.stamp_validation = stamp_validation;
+        self
+    }
+
+    /// Stamp-validation policy for the served chunk-upload surface.
+    pub fn stamp_validation(&self) -> StampValidation {
+        self.stamp_validation
     }
 
     /// Override the cache with a pre-built local store, replacing the default
@@ -233,6 +247,7 @@ pub(crate) async fn build_storer(
 ) -> Result<(NodeTaskFn, StorerProviders), SwarmNodeError> {
     let cache = config.take_cache();
     let reserve = config.take_reserve();
+    let stamp_validation = config.stamp_validation();
     // Reserve capacity is a consensus quantity read from the spec, not local disk:
     // a fixed power-of-two chunk count from which the redistribution game derives
     // storage radius and committed depth, so nodes covering one neighbourhood must
@@ -264,7 +279,13 @@ pub(crate) async fn build_storer(
     .await?;
 
     let (store, reserve) = parts.provider_store;
-    let providers = construct::storer(parts.topology, parts.chunks, store, reserve);
+    let providers = construct::storer(
+        parts.topology,
+        parts.chunks,
+        store,
+        reserve,
+        stamp_validation,
+    );
     Ok((parts.task, providers))
 }
 

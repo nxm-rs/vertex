@@ -14,10 +14,10 @@ use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_redistribution::{RedistributionArgs, StorageConfig};
 use vertex_swarm_spec::Spec;
 
-use vertex_swarm_api::ConfigError;
+use vertex_swarm_api::{ConfigError, StampValidation};
 
 use crate::args::{
-    ChainArgs, ChainConfig, NetworkArgs, NetworkConfig, ProtocolArgs, SwapArgs, SwapConfig,
+    ChainArgs, ChainConfig, NetworkArgs, NetworkConfig, ProtocolArgs, RpcArgs, SwapArgs, SwapConfig,
 };
 
 /// Swarm protocol configuration (serializable Args layer).
@@ -37,6 +37,7 @@ pub struct ProtocolConfig {
     pub redistribution: RedistributionArgs,
     pub chain: ChainArgs,
     pub swap: SwapArgs,
+    pub rpc: RpcArgs,
 }
 
 impl ProtocolConfig {
@@ -75,6 +76,11 @@ impl ProtocolConfig {
     pub fn swap_config(&self) -> SwapConfig {
         self.swap.swap_config()
     }
+
+    /// Stamp-validation policy for the gRPC chunk service.
+    pub fn rpc_stamp_validation(&self) -> StampValidation {
+        self.rpc.stamp_validation.into()
+    }
 }
 
 impl ProtocolConfig {
@@ -99,5 +105,6 @@ impl NodeProtocolConfig for ProtocolConfig {
         }
         self.chain = args.chain.clone();
         self.swap = args.swap.clone();
+        self.rpc = args.rpc;
     }
 }

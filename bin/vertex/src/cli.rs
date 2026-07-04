@@ -149,7 +149,8 @@ pub async fn run() -> Result<()> {
                     local_store,
                     chain,
                     swap,
-                );
+                )
+                .with_stamp_validation(config.protocol.rpc_stamp_validation());
 
                 let handle = builder.with_protocol(node_config).launch().await?;
                 if config.infra.api.grpc {
@@ -185,7 +186,8 @@ pub async fn run() -> Result<()> {
                     storage,
                     chain,
                     swap,
-                );
+                )
+                .with_stamp_validation(config.protocol.rpc_stamp_validation());
 
                 let handle = builder.with_protocol(node_config).launch().await?;
                 if config.infra.api.grpc {

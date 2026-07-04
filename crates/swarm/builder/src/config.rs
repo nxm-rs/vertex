@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vertex_node_api::NodeBuildsProtocol;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultAccountingConfig;
-use vertex_swarm_api::SwarmLocalStore;
+use vertex_swarm_api::{StampValidation, SwarmLocalStore};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
@@ -94,6 +94,7 @@ pub struct ClientConfig {
     chain: ChainConfig,
     swap: SwapConfig,
     cache: Option<CacheSeam>,
+    stamp_validation: StampValidation,
 }
 
 impl ClientConfig {
@@ -115,7 +116,20 @@ impl ClientConfig {
             chain,
             swap,
             cache: None,
+            stamp_validation: StampValidation::default(),
         }
+    }
+
+    /// Override the stamp-validation policy the gRPC chunk service applies to
+    /// uploads. Defaults to [`StampValidation::Enforce`].
+    pub fn with_stamp_validation(mut self, stamp_validation: StampValidation) -> Self {
+        self.stamp_validation = stamp_validation;
+        self
+    }
+
+    /// Stamp-validation policy for the served chunk-upload surface.
+    pub fn stamp_validation(&self) -> StampValidation {
+        self.stamp_validation
     }
 
     /// Override the cache with a pre-built local store, replacing the default
@@ -196,5 +210,40 @@ mod tests {
             agent.contains(vertex_node_core::version::GIT_SHA),
             "agent string {agent} is missing the build sha"
         );
+    }
+}
+
+#[cfg(test)]
+mod stamp_validation_tests {
+    use vertex_swarm_api::{StampValidation, SwarmIdentity};
+    use vertex_swarm_localstore::LocalStoreConfig;
+    use vertex_swarm_node::args::{ChainConfig, SwapConfig};
+    use vertex_swarm_test_utils::test_identity_arc;
+
+    use super::{ClientConfig, DefaultAccountingConfig, NetworkConfig};
+
+    fn client_config() -> ClientConfig {
+        let identity = test_identity_arc();
+        let spec = identity.spec().clone();
+        ClientConfig::new(
+            spec,
+            identity,
+            NetworkConfig::default(),
+            DefaultAccountingConfig::default(),
+            LocalStoreConfig::default(),
+            ChainConfig::default(),
+            SwapConfig::default(),
+        )
+    }
+
+    #[test]
+    fn client_config_defaults_to_enforce() {
+        assert_eq!(client_config().stamp_validation(), StampValidation::Enforce);
+    }
+
+    #[test]
+    fn with_stamp_validation_overrides_the_policy() {
+        let config = client_config().with_stamp_validation(StampValidation::PerRequest);
+        assert_eq!(config.stamp_validation(), StampValidation::PerRequest);
     }
 }

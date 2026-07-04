@@ -9,7 +9,8 @@
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::{
     BinCursorStore, BootnodeComponents, ClientComponents, HasChunkClient, HasReserve, HasStore,
-    HasTopology, StorerComponents, SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats,
+    HasTopology, StampValidation, StorerComponents, SwarmTopologyPeers, SwarmTopologyState,
+    SwarmTopologyStats,
 };
 use vertex_swarm_stream::ChunkClient;
 
@@ -88,8 +89,9 @@ impl<C> GrpcAdapter<C> {
     }
 
     /// Register the chunk upload/download service. The live connected-peer count
-    /// from the topology drives the download pipeline depth.
-    pub fn register_chunk(&self, registry: &mut GrpcRegistry)
+    /// from the topology drives the download pipeline depth; `stamp_validation`
+    /// is the components-carried upload policy.
+    pub fn register_chunk(&self, registry: &mut GrpcRegistry, stamp_validation: StampValidation)
     where
         C: HasChunkClient + HasTopology,
         C::ChunkClient: ChunkClient,
@@ -97,6 +99,7 @@ impl<C> GrpcAdapter<C> {
     {
         let topology = self.components.topology().clone();
         let chunk_service = ChunkService::new(self.components.chunk_client().clone())
+            .with_stamp_validation(stamp_validation)
             .with_peer_count(std::sync::Arc::new(move || {
                 topology.connected_peers_count()
             }));
@@ -134,7 +137,7 @@ where
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
-        self.register_chunk(registry);
+        self.register_chunk(registry, self.components.stamp_validation());
     }
 }
 
@@ -149,7 +152,7 @@ where
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
-        self.register_chunk(registry);
+        self.register_chunk(registry, self.components.stamp_validation());
         self.register_reserve(registry);
     }
 }

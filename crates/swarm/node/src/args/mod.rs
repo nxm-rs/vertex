@@ -9,6 +9,8 @@ mod chain;
 mod network;
 mod peer;
 #[cfg(feature = "cli")]
+mod rpc;
+#[cfg(feature = "cli")]
 mod spec;
 mod swap;
 #[cfg(feature = "cli")]
@@ -22,6 +24,8 @@ pub use network::NetworkConfig;
 #[cfg(feature = "cli")]
 pub use peer::PeerArgs;
 pub use peer::PeerConfig;
+#[cfg(feature = "cli")]
+pub use rpc::{RpcArgs, StampValidationArg};
 #[cfg(feature = "cli")]
 pub use spec::SwarmSpecArgs;
 #[cfg(feature = "cli")]

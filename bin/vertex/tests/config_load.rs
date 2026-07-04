@@ -33,3 +33,23 @@ fn accounting_section_deserializes() {
     let config = FullNodeConfig::<ProtocolConfig>::load(Some(file.path())).unwrap();
     assert_eq!(config.protocol.accounting.payment_threshold, 42);
 }
+
+#[test]
+fn rpc_section_maps_onto_the_stamp_validation_policy() {
+    use vertex_swarm_api::StampValidation;
+
+    let default_config = FullNodeConfig::<ProtocolConfig>::load(None).unwrap();
+    assert_eq!(
+        default_config.protocol.rpc_stamp_validation(),
+        StampValidation::Enforce
+    );
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(file, "[rpc]\nstamp_validation = \"per-request\"").unwrap();
+
+    let config = FullNodeConfig::<ProtocolConfig>::load(Some(file.path())).unwrap();
+    assert_eq!(
+        config.protocol.rpc_stamp_validation(),
+        StampValidation::PerRequest
+    );
+}
