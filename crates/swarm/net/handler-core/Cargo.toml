@@ -11,7 +11,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-futures-bounded = "0.2"
+futures.workspace = true
 vertex-net-ratelimiter.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

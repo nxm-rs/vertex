@@ -19,6 +19,7 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p codecs and upgrades)
+vertex-swarm-net-handler-core.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-pricing.workspace = true
 vertex-swarm-net-pseudosettle.workspace = true

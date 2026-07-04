@@ -8,17 +8,12 @@
 //! whole offer and collects the deliveries.
 
 use std::{
-    collections::VecDeque,
     num::NonZeroU32,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
-use futures::{
-    future::BoxFuture,
-    stream::{FuturesUnordered, StreamExt},
-};
 use libp2p::{
     PeerId,
     swarm::{
@@ -32,7 +27,7 @@ use libp2p::{
 use tracing::{debug, warn};
 use vertex_net_ratelimiter::{KeyedRateLimiter, Quota};
 use vertex_swarm_api::{Bin, ChunkAddress, PullStorage, StampedChunk, SwarmResult};
-use vertex_swarm_net_handler_core::HandlerCore;
+use vertex_swarm_net_handler_core::{BoundedQueue, HandlerCore, OutcomeDriver};
 use vertex_swarm_net_pullsync::{
     Ack, BitVector, ChunkDescriptor, DEFAULT_MAX_PAGE, Delivery, Get, Offer, SyncRequester,
     SyncResponder, Want,
@@ -149,9 +144,9 @@ pub struct PullsyncHandler {
     /// Shared with the behaviour so the per-peer chunks-per-second bucket
     /// survives reconnects; freed on the final `ConnectionClosed`.
     chunk_limit: Arc<KeyedRateLimiter<PeerId>>,
-    pending_commands: VecDeque<PullsyncCommand>,
-    inbound: FuturesUnordered<BoxFuture<'static, InboundOutcome>>,
-    outbound: FuturesUnordered<BoxFuture<'static, RangeOutcome>>,
+    pending_commands: BoundedQueue<PullsyncCommand>,
+    inbound: OutcomeDriver<InboundOutcome>,
+    outbound: OutcomeDriver<RangeOutcome>,
 }
 
 impl PullsyncHandler {
@@ -165,9 +160,9 @@ impl PullsyncHandler {
             storage,
             core: HandlerCore::new(INBOUND_SUBSTREAM_QUOTA),
             chunk_limit,
-            pending_commands: VecDeque::new(),
-            inbound: FuturesUnordered::new(),
-            outbound: FuturesUnordered::new(),
+            pending_commands: BoundedQueue::new(MAX_PENDING_COMMANDS),
+            inbound: OutcomeDriver::new(MAX_INBOUND_SERVING),
+            outbound: OutcomeDriver::new(MAX_OUTBOUND_DRIVING),
         }
     }
 
@@ -226,7 +221,7 @@ impl PullsyncHandler {
     /// Index of the first queued command that may dispatch now. A `FetchCursors`
     /// always may; a `SyncRange` only while the outbound driving cap has room.
     fn next_dispatchable_command(&self) -> Option<usize> {
-        let has_range_slot = self.outbound.len() < MAX_OUTBOUND_DRIVING;
+        let has_range_slot = self.outbound.has_capacity();
         self.pending_commands.iter().position(|cmd| match cmd {
             PullsyncCommand::FetchCursors { .. } => true,
             PullsyncCommand::SyncRange { .. } => has_range_slot,
@@ -457,7 +452,7 @@ impl ConnectionHandler for PullsyncHandler {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        while let Poll::Ready(Some(outcome)) = self.inbound.poll_next_unpin(cx) {
+        while let Poll::Ready(Some(outcome)) = self.inbound.poll_next(cx) {
             match outcome {
                 InboundOutcome::Cursors => crate::metrics::inbound_cursors_served(),
                 InboundOutcome::Range { delivered } => {
@@ -467,7 +462,7 @@ impl ConnectionHandler for PullsyncHandler {
             }
         }
 
-        if let Poll::Ready(Some(outcome)) = self.outbound.poll_next_unpin(cx) {
+        if let Poll::Ready(Some(outcome)) = self.outbound.poll_next(cx) {
             let event = match outcome {
                 RangeOutcome::Delivered {
                     request_id,
@@ -527,11 +522,9 @@ impl ConnectionHandler for PullsyncHandler {
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
-        if self.pending_commands.len() >= MAX_PENDING_COMMANDS {
+        if self.pending_commands.push_evict_oldest(event).is_some() {
             warn!(peer_id = %self.remote_peer_id, "Pullsync command queue full, dropping oldest");
-            self.pending_commands.pop_front();
         }
-        self.pending_commands.push_back(event);
     }
 
     fn on_connection_event(
@@ -547,7 +540,7 @@ impl ConnectionHandler for PullsyncHandler {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
                 protocol, ..
             }) => {
-                if !self.core.try_accept_inbound() || self.inbound.len() >= MAX_INBOUND_SERVING {
+                if !self.core.try_accept_inbound() || !self.inbound.has_capacity() {
                     warn!(peer_id = %self.remote_peer_id, "Rate limiting inbound pullsync stream");
                     crate::metrics::inbound_rate_limited();
                     return;
