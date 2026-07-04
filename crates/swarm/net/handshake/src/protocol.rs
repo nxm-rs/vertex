@@ -10,10 +10,7 @@ use vertex_swarm_spec::SwarmSpec;
 use crate::admission::{AdmissionDecision, ConnectionDirection};
 use crate::codec::{decode_ack, decode_syn, decode_synack, encode_ack, encode_syn, encode_synack};
 use crate::metrics::HandshakeMetrics;
-use crate::{HandshakeError, HandshakeInfo, SharedAdmissionControl};
-
-/// Maximum size for handshake message buffers.
-const MAX_HANDSHAKE_BUFFER_SIZE: usize = 1024;
+use crate::{HandshakeError, HandshakeInfo, MAX_HANDSHAKE_BUFFER_SIZE, SharedAdmissionControl};
 
 type Framed = FramedProto<MAX_HANDSHAKE_BUFFER_SIZE>;
 

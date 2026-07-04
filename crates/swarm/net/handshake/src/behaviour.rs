@@ -22,6 +22,7 @@ use vertex_net_peer_registry::ConnectionDirection;
 
 use crate::{
     AddressProvider, HandshakeError, HandshakeInfo, SharedAdmissionControl,
+    address::bound_advertised,
     admission::default_admission_control,
     cache::{CachedSelfRecord, SELF_RECORD_REFRESH_INTERVAL, fingerprint, needs_resign},
     handler::{HandshakeCommand, HandshakeConfig, HandshakeHandler, HandshakeHandlerEvent},
@@ -85,10 +86,12 @@ where
     /// `remote_addr`, reusing the cache when the advertised address set is
     /// unchanged and fresh.
     ///
-    /// Resolves the scope-filtered, ordered advertised set for the peer. An
-    /// empty set yields `None`: the protocol then signs a last-resort record
-    /// over just the peer-observed address during the exchange. A non-empty set
-    /// is fingerprinted; if the fingerprint matches a cached record still inside
+    /// Resolves the scope-filtered, trust-ordered advertised set for the peer
+    /// and bounds it before signing (see `bound_advertised`), so the frame
+    /// always fits a conformant peer's decode buffer. An empty set yields
+    /// `None`: the protocol then signs a last-resort record over just the
+    /// peer-observed address during the exchange. A non-empty set is
+    /// fingerprinted; if the fingerprint matches a cached record still inside
     /// [`SELF_RECORD_REFRESH_INTERVAL`] the cached record is cloned (same
     /// timestamp, same signature), otherwise the record is re-signed with a
     /// current timestamp and cached. Concurrent misses single-flight under the
@@ -97,6 +100,17 @@ where
         let addrs = self.address_provider.addresses_for_peer(remote_addr);
         if addrs.is_empty() {
             return None;
+        }
+
+        let welcome_bytes = self.identity.welcome_message().map_or(0, str::len);
+        let full_len = addrs.len();
+        let addrs = bound_advertised(addrs, welcome_bytes);
+        if addrs.len() < full_len {
+            debug!(
+                advertised = addrs.len(),
+                dropped = full_len - addrs.len(),
+                "advertised address set bounded before signing"
+            );
         }
 
         let fp = fingerprint(&addrs);
@@ -377,6 +391,51 @@ mod tests {
             first.multiaddrs(),
             other.multiaddrs(),
             "a different advertised set yields a different record"
+        );
+    }
+
+    #[test]
+    fn oversized_advertised_set_signs_bounded_record_that_fits_the_frame() {
+        use quick_protobuf::MessageWrite;
+        use vertex_swarm_api::SwarmSpec as _;
+        use vertex_swarm_peer::{MAX_MULTIADDRS_PER_PEER, SwarmNodeType};
+
+        let peer_id = PeerId::random();
+        let addrs: Vec<Multiaddr> = (0..40)
+            .map(|i| {
+                format!(
+                    "/dns4/node-{i:04}.very-long-swarm-hostname.example.org/tcp/1634/p2p/{peer_id}"
+                )
+                .parse()
+                .expect("valid multiaddr")
+            })
+            .collect();
+        let behaviour = behaviour(addrs);
+        let remote = addr("/ip4/198.51.100.4/tcp/1634");
+
+        let record = behaviour
+            .cached_self_record(&remote)
+            .expect("a bounded set still signs, never errors");
+        assert!(!record.multiaddrs().is_empty());
+        assert!(record.multiaddrs().len() <= MAX_MULTIADDRS_PER_PEER);
+
+        // The bounded record encodes into a synack that fits the decode
+        // buffer, even alongside a maximum-length ASCII welcome message and
+        // the echoed observed multiaddr.
+        let welcome = "w".repeat(140);
+        let observed = remote.with(libp2p::multiaddr::Protocol::P2p(peer_id));
+        let synack = crate::codec::encode_synack(
+            &observed,
+            &record,
+            SwarmNodeType::Storer,
+            &welcome,
+            behaviour.identity.spec().network_id(),
+        );
+        assert!(
+            synack.get_size() <= crate::MAX_HANDSHAKE_BUFFER_SIZE,
+            "synack of {} bytes exceeds the {} byte frame buffer",
+            synack.get_size(),
+            crate::MAX_HANDSHAKE_BUFFER_SIZE
         );
     }
 
