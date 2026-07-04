@@ -471,6 +471,7 @@ async fn build_client(
     SwarmNodeError,
 > {
     let cache = config.take_cache();
+    let stamp_validation = config.stamp_validation();
     let parts = build_client_backed_node(
         ctx,
         ClientNodeParams {
@@ -494,7 +495,7 @@ async fn build_client(
         provider_store: (),
         ..
     } = parts;
-    let providers = construct::client(topology, chunks);
+    let providers = construct::client(topology, chunks, stamp_validation);
     Ok((task, providers))
 }
 

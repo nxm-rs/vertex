@@ -100,24 +100,55 @@ impl<T: Send + Sync> HasTopology for BootnodeComponents<T> {
     }
 }
 
+/// Server-side policy for the caller-controlled per-request `validate` flag on
+/// chunk uploads. A public endpoint must not let a caller skip stamp-signature
+/// validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StampValidation {
+    /// Always validate, ignoring the request flag. Default for public endpoints.
+    #[default]
+    Enforce,
+    /// Honour the request's `validate` flag. For trusted/private endpoints.
+    PerRequest,
+}
+
+impl StampValidation {
+    /// Effective validate decision for a request whose flag is `requested`.
+    #[must_use]
+    pub fn resolve(self, requested: bool) -> bool {
+        match self {
+            Self::Enforce => true,
+            Self::PerRequest => requested,
+        }
+    }
+}
+
 /// Client components (topology + chunk client).
 ///
 /// Accounting is intentionally absent: it is a builder-wired internal of the
-/// network chunk client, not a served capability.
+/// network chunk client, not a served capability. The stamp-validation policy
+/// rides here because the serve view is projected from the components alone.
 ///
 /// Construction is builder-exclusive; see [`construct`].
 #[derive(Debug, Clone)]
 pub struct ClientComponents<T, C> {
     topology: T,
     chunk_client: C,
+    stamp_validation: StampValidation,
 }
 
 impl<T, C> ClientComponents<T, C> {
-    pub(crate) fn new(topology: T, chunk_client: C) -> Self {
+    pub(crate) fn new(topology: T, chunk_client: C, stamp_validation: StampValidation) -> Self {
         Self {
             topology,
             chunk_client,
+            stamp_validation,
         }
+    }
+
+    /// Stamp-validation policy for the served chunk-upload surface.
+    pub fn stamp_validation(&self) -> StampValidation {
+        self.stamp_validation
     }
 }
 
@@ -150,12 +181,23 @@ pub struct StorerComponents<T, C, S, R> {
 }
 
 impl<T, C, S, R> StorerComponents<T, C, S, R> {
-    pub(crate) fn new(topology: T, chunk_client: C, store: S, reserve: R) -> Self {
+    pub(crate) fn new(
+        topology: T,
+        chunk_client: C,
+        store: S,
+        reserve: R,
+        stamp_validation: StampValidation,
+    ) -> Self {
         Self {
-            client: ClientComponents::new(topology, chunk_client),
+            client: ClientComponents::new(topology, chunk_client, stamp_validation),
             store,
             reserve,
         }
+    }
+
+    /// Stamp-validation policy for the served chunk-upload surface.
+    pub fn stamp_validation(&self) -> StampValidation {
+        self.client.stamp_validation()
     }
 }
 
@@ -207,14 +249,18 @@ impl<T: Send + Sync, C: Send + Sync, S: Send + Sync, R: BinCursorStore> HasReser
 /// API.
 #[doc(hidden)]
 pub mod construct {
-    use super::{BootnodeComponents, ClientComponents, StorerComponents};
+    use super::{BootnodeComponents, ClientComponents, StampValidation, StorerComponents};
 
     pub fn bootnode<T>(topology: T) -> BootnodeComponents<T> {
         BootnodeComponents::new(topology)
     }
 
-    pub fn client<T, C>(topology: T, chunk_client: C) -> ClientComponents<T, C> {
-        ClientComponents::new(topology, chunk_client)
+    pub fn client<T, C>(
+        topology: T,
+        chunk_client: C,
+        stamp_validation: StampValidation,
+    ) -> ClientComponents<T, C> {
+        ClientComponents::new(topology, chunk_client, stamp_validation)
     }
 
     pub fn storer<T, C, S, R>(
@@ -222,7 +268,22 @@ pub mod construct {
         chunk_client: C,
         store: S,
         reserve: R,
+        stamp_validation: StampValidation,
     ) -> StorerComponents<T, C, S, R> {
-        StorerComponents::new(topology, chunk_client, store, reserve)
+        StorerComponents::new(topology, chunk_client, store, reserve, stamp_validation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StampValidation;
+
+    #[test]
+    fn stamp_validation_resolves_per_policy() {
+        assert!(StampValidation::Enforce.resolve(false));
+        assert!(StampValidation::Enforce.resolve(true));
+        assert!(!StampValidation::PerRequest.resolve(false));
+        assert!(StampValidation::PerRequest.resolve(true));
+        assert_eq!(StampValidation::default(), StampValidation::Enforce);
     }
 }

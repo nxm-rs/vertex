@@ -41,7 +41,7 @@ pub use self::components::{
     BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Commit, CommitOnWrite,
     Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology, IntervalStore,
     OriginAccounting, PullChunkVerifier, PullStorage, ReserveStore, SettableRadius,
-    SettlementCredit, StorerComponents, SwarmAccounting, SwarmAccountingConfig,
+    SettlementCredit, StampValidation, StorerComponents, SwarmAccounting, SwarmAccountingConfig,
     SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerAccounting,
     SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
     SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands,

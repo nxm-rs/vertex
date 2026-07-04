@@ -12,7 +12,7 @@ use vertex_swarm_primitives::SwarmNodeType;
 #[cfg(feature = "storer")]
 use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::{ChainArgs, NetworkArgs, SwapArgs, SwarmSpecArgs};
+use super::{ChainArgs, NetworkArgs, RpcArgs, SwapArgs, SwarmSpecArgs};
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -94,4 +94,8 @@ pub struct ProtocolArgs {
     /// SWAP settlement (chequebook, beneficiary, deploy).
     #[command(flatten)]
     pub swap: SwapArgs,
+
+    /// gRPC endpoint policy.
+    #[command(flatten)]
+    pub rpc: RpcArgs,
 }

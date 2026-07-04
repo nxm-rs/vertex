@@ -14,27 +14,7 @@ use vertex_swarm_stream::{
     ChunkClient, ChunkClientExt, StreamConfig, VerifiedChunk, get_stream_from, parse_address,
 };
 
-/// Server-side policy for the caller-controlled per-request `validate` flag. A
-/// public endpoint must not let a caller skip stamp-signature validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StampValidation {
-    /// Always validate, ignoring the request flag. Default for public endpoints.
-    #[default]
-    Enforce,
-    /// Honour the request's `validate` flag. For trusted/private endpoints.
-    PerRequest,
-}
-
-impl StampValidation {
-    /// Effective validate decision for a request whose flag is `requested`.
-    #[must_use]
-    pub fn resolve(self, requested: bool) -> bool {
-        match self {
-            Self::Enforce => true,
-            Self::PerRequest => requested,
-        }
-    }
-}
+pub use vertex_swarm_api::StampValidation;
 
 /// gRPC chunk retrieval and upload service.
 pub struct ChunkService<P> {
@@ -419,15 +399,6 @@ mod tests {
 
         let err = parse_stamped_chunk(&req).expect_err("malformed stamp must fail");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
-    fn stamp_validation_resolves_per_policy() {
-        assert!(StampValidation::Enforce.resolve(false));
-        assert!(StampValidation::Enforce.resolve(true));
-        assert!(!StampValidation::PerRequest.resolve(false));
-        assert!(StampValidation::PerRequest.resolve(true));
-        assert_eq!(StampValidation::default(), StampValidation::Enforce);
     }
 
     /// A verified item maps onto the wire response with a populated `served_by`,
