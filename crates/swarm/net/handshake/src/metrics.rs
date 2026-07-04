@@ -43,6 +43,19 @@ pub enum HandshakeStage {
     Failed,
 }
 
+/// Record an inbound exchange denied by the once-per-connection rule.
+///
+/// `direction` is the connection direction (which side we play on it), not
+/// the violating substream's.
+pub fn record_unexpected_exchange(direction: &'static str, purpose: &'static str) {
+    counter!(
+        "handshake_unexpected_exchange_total",
+        "direction" => direction,
+        "purpose" => purpose
+    )
+    .increment(1);
+}
+
 /// Tracks metrics for a single handshake operation with stage transitions.
 pub struct HandshakeMetrics {
     direction: &'static str,

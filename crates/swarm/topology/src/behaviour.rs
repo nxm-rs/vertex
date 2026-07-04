@@ -1508,6 +1508,49 @@ mod tests {
             assert_eq!(behaviour.connection_registry.pending_count(), 0);
         }
 
+        /// An extra handshake exchange is a protocol violation: the peer is
+        /// dropped through the close choke point with the recorded reason,
+        /// and the registry teardown is left to the close handler.
+        #[tokio::test]
+        async fn unexpected_exchange_closes_the_connection_as_protocol_violation() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            let c1 = ConnectionId::new_unchecked(1);
+            behaviour.process_protocol_event(
+                peer_id,
+                c1,
+                ProtocolEvent::Handshake(HandshakeEvent::Failed {
+                    peer_id,
+                    connection_id: c1,
+                    direction: ConnectionDirection::Inbound,
+                    error: HandshakeError::UnexpectedExchange,
+                }),
+            );
+
+            assert_eq!(
+                behaviour.pending_closes.get(&peer_id),
+                Some(&DisconnectReason::ProtocolViolation)
+            );
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection {
+                    peer_id: closed, ..
+                } => assert_eq!(closed, peer_id),
+                _ => panic!("expected CloseConnection for the violating peer"),
+            }
+
+            // The active entry survives until the close lands; the close
+            // handler owns the teardown.
+            assert!(
+                behaviour
+                    .connection_registry
+                    .get(&overlay)
+                    .expect("active entry survives until the close")
+                    .is_active()
+            );
+        }
+
         /// A failed handshake on the peer's sole connection still removes its
         /// registry entry exactly as before.
         #[tokio::test]

@@ -1,7 +1,10 @@
 //! Per-connection handler for handshake protocol.
 
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -19,13 +22,53 @@ use libp2p::{
     },
 };
 use tracing::{debug, warn};
+use vertex_metrics::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 
 use crate::{
     AddressProvider, ConnectionDirection, HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo,
-    PROTOCOL, SharedAdmissionControl, protocol::HandshakeProtocol,
+    PROTOCOL, SharedAdmissionControl, metrics::record_unexpected_exchange,
+    protocol::HandshakeProtocol,
 };
+
+/// Admission of inbound handshake exchanges on one connection.
+///
+/// The exchange runs once per connection: a dialer connection never accepts
+/// an inbound exchange, and a listener connection accepts only the first
+/// substream to claim its slot. A denied substream fails the upgrade before
+/// any frame is read.
+#[derive(Clone)]
+enum InboundExchangeGate {
+    /// We dialed this connection: no inbound exchange is ever legitimate.
+    Dialer,
+    /// We listened: the first claim wins, every later attempt is denied.
+    Listener { claimed: Arc<AtomicBool> },
+}
+
+impl InboundExchangeGate {
+    fn listener() -> Self {
+        Self::Listener {
+            claimed: Arc::default(),
+        }
+    }
+
+    /// Claim the connection's single inbound exchange; `false` denies.
+    fn try_claim(&self) -> bool {
+        match self {
+            Self::Dialer => false,
+            Self::Listener { claimed } => !claimed.swap(true, Ordering::AcqRel),
+        }
+    }
+
+    /// Metric label for a denial: which side of the connection we play.
+    fn direction_label(&self) -> &'static str {
+        match self {
+            Self::Dialer => direction::OUTBOUND,
+            Self::Listener { .. } => direction::INBOUND,
+        }
+    }
+}
 
 /// Configuration for handshake handler.
 #[derive(Debug, Clone)]
@@ -97,6 +140,9 @@ pub struct HandshakeHandler<I, A> {
     /// advertised set is empty, in which case the protocol signs a last-resort
     /// record over the peer-observed address.
     self_record: Option<SwarmPeer>,
+    /// Once-per-connection admission for inbound exchanges, shared with every
+    /// upgrade this handler constructs.
+    inbound_gate: InboundExchangeGate,
     state: State,
     pending_event: Option<HandshakeHandlerEvent>,
     should_initiate: bool,
@@ -126,6 +172,7 @@ where
             address_provider,
             admission_control,
             self_record,
+            inbound_gate: InboundExchangeGate::listener(),
             state: State::Pending,
             pending_event: None,
             should_initiate: false,
@@ -151,6 +198,7 @@ where
             address_provider,
             admission_control,
             self_record,
+            inbound_gate: InboundExchangeGate::Dialer,
             state: State::Pending,
             pending_event: None,
             should_initiate: true,
@@ -166,6 +214,7 @@ where
             address_provider: self.address_provider.clone(),
             admission_control: self.admission_control.clone(),
             self_record: self.self_record.clone(),
+            inbound_gate: self.inbound_gate.clone(),
             direction,
             purpose: self.config.purpose,
         }
@@ -275,7 +324,12 @@ where
 
             ConnectionEvent::ListenUpgradeError(error) => {
                 warn!(peer_id = %self.peer_id, "Inbound handshake failed: {}", error.error);
-                self.state = State::Failed;
+                // A denied extra exchange is the violating substream's failure,
+                // not this connection's handshake outcome (which may already be
+                // Completed); the behaviour drops the peer on the event.
+                if !matches!(error.error, HandshakeError::UnexpectedExchange) {
+                    self.state = State::Failed;
+                }
                 self.pending_event = Some(HandshakeHandlerEvent::Failed { error: error.error });
             }
 
@@ -310,6 +364,8 @@ pub struct HandshakeUpgrade<I, A> {
     /// advertised set was empty and the protocol must do the last-resort
     /// observed-address sign.
     self_record: Option<SwarmPeer>,
+    /// Handler-shared once-per-connection admission for inbound exchanges.
+    inbound_gate: InboundExchangeGate,
     /// Direction this upgrade was created for; drives which arm of the
     /// protocol runs and which side the admission gate sees.
     direction: ConnectionDirection,
@@ -325,6 +381,7 @@ impl<I, A> Clone for HandshakeUpgrade<I, A> {
             address_provider: self.address_provider.clone(),
             admission_control: self.admission_control.clone(),
             self_record: self.self_record.clone(),
+            inbound_gate: self.inbound_gate.clone(),
             direction: self.direction,
             purpose: self.purpose,
         }
@@ -377,6 +434,13 @@ where
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
     fn upgrade_inbound(self, socket: Stream, _: Self::Info) -> Self::Future {
+        // Gate before any frame is read: a denied substream is dropped
+        // without spending signature-recovery work on it.
+        if !self.inbound_gate.try_claim() {
+            record_unexpected_exchange(self.inbound_gate.direction_label(), self.purpose);
+            drop(socket);
+            return Box::pin(std::future::ready(Err(HandshakeError::UnexpectedExchange)));
+        }
         Box::pin(self.build_protocol().handle_inbound(socket))
     }
 }
@@ -392,5 +456,110 @@ where
 
     fn upgrade_outbound(self, socket: Stream, _: Self::Info) -> Self::Future {
         Box::pin(self.build_protocol().handle_outbound(socket))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::swarm::handler::ListenUpgradeError;
+    use vertex_swarm_peer::SwarmNodeType;
+    use vertex_swarm_test_utils::{test_identity_arc, test_swarm_peer};
+
+    use super::*;
+    use crate::{NoAddresses, default_admission_control};
+
+    #[test]
+    fn dialer_gate_denies_every_inbound_exchange() {
+        let gate = InboundExchangeGate::Dialer;
+        assert!(!gate.try_claim());
+        assert!(!gate.try_claim());
+    }
+
+    #[test]
+    fn listener_gate_admits_exactly_one_exchange() {
+        let gate = InboundExchangeGate::listener();
+        assert!(gate.try_claim());
+        assert!(!gate.try_claim());
+        assert!(!gate.try_claim());
+    }
+
+    #[test]
+    fn listener_gate_clones_share_the_claim() {
+        // `listen_protocol` constructs one upgrade per inbound substream, so
+        // the clones must contend for the same slot.
+        let gate = InboundExchangeGate::listener();
+        let clone = gate.clone();
+        assert!(clone.try_claim());
+        assert!(!gate.try_claim());
+    }
+
+    fn listener_handler() -> HandshakeHandler<impl SwarmIdentity + 'static, NoAddresses> {
+        HandshakeHandler::new_inbound(
+            Arc::new(HandshakeConfig::new("test")),
+            test_identity_arc(),
+            PeerId::random(),
+            "/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr"),
+            Arc::new(NoAddresses),
+            default_admission_control(),
+            None,
+        )
+    }
+
+    fn completed_info(peer_id: PeerId) -> HandshakeInfo {
+        HandshakeInfo {
+            peer_id,
+            swarm_peer: test_swarm_peer(1),
+            node_type: SwarmNodeType::Client,
+            welcome_message: String::new(),
+            observed_multiaddr: "/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr"),
+        }
+    }
+
+    #[test]
+    fn denied_exchange_does_not_clobber_a_completed_handshake() {
+        let mut handler = listener_handler();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        handler.on_connection_event(ConnectionEvent::FullyNegotiatedInbound(
+            FullyNegotiatedInbound {
+                protocol: completed_info(PeerId::random()),
+                info: (),
+            },
+        ));
+        assert!(matches!(
+            handler.poll(&mut cx),
+            Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                HandshakeHandlerEvent::Completed { .. }
+            ))
+        ));
+
+        handler.on_connection_event(ConnectionEvent::ListenUpgradeError(ListenUpgradeError {
+            info: (),
+            error: HandshakeError::UnexpectedExchange,
+        }));
+
+        // The connection's own handshake outcome stands; the violation still
+        // surfaces so the behaviour can drop the peer.
+        assert!(handler.connection_keep_alive());
+        assert!(matches!(
+            handler.poll(&mut cx),
+            Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                HandshakeHandlerEvent::Failed {
+                    error: HandshakeError::UnexpectedExchange
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn ordinary_listen_failure_still_fails_the_handshake() {
+        let mut handler = listener_handler();
+
+        handler.on_connection_event(ConnectionEvent::ListenUpgradeError(ListenUpgradeError {
+            info: (),
+            error: HandshakeError::NetworkIdMismatch,
+        }));
+
+        assert!(!handler.connection_keep_alive());
     }
 }
