@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    AdmissionControl, Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccounting,
-    SwarmAccountingConfig, SwarmIdentity, SwarmPeerAccounting, SwarmResult,
+    Au, Debt, Direction, Ledger, LedgerSnapshot, SwarmAccounting, SwarmAccountingConfig,
+    SwarmIdentity, SwarmPeerAccounting, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -86,7 +86,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 
     /// Prepare a receive reservation (we are receiving service, balance decreases).
     ///
-    /// The hard gate shares one boundary with the advisory [`AdmissionControl::admit`]:
+    /// The hard gate shares one boundary with the advisory
+    /// [`AdmissionControl::admit`](vertex_swarm_api::AdmissionControl::admit):
     /// it calls `admit` and refuses a [`Refuse`](vertex_swarm_api::Admission::Refuse)
     /// band. The breach is never scored against the peer; our debt reaching our own
     /// disconnect line is a local pacing outcome, not peer misbehaviour, and the
@@ -97,15 +98,18 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         price: Au,
         _originated: bool,
     ) -> Result<Reservation<Receive>, AccountingError> {
-        if !AdmissionControl::admit(self, &peer, price).admits() {
+        let state = self.peer_state(peer);
+        if !state_snapshot(&state, self.settle_trigger())
+            .admit(price)
+            .admits()
+        {
             return Err(AccountingError::DisconnectThreshold {
                 peer,
-                balance: Ledger::balance(self, &peer),
+                balance: state.balance(),
                 threshold: self.config.disconnect_threshold(),
             });
         }
 
-        let state = self.peer_state(peer);
         state.add_reserved(price);
         Ok(Reservation::new(state, price))
     }
@@ -167,6 +171,23 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             })
             .clone()
     }
+
+    /// The early-payment trigger floored at one refresh-rate unit.
+    fn settle_trigger(&self) -> Au {
+        self.config
+            .early_payment_trigger()
+            .max(self.config.refresh_rate())
+    }
+}
+
+/// Map peer state to the four admission fields a band reads.
+fn state_snapshot(state: &PeerState, settle_trigger: Au) -> LedgerSnapshot {
+    LedgerSnapshot {
+        balance: state.balance(),
+        reserved: state.reserved_balance(),
+        disconnect_line: state.disconnect_threshold(),
+        settle_trigger,
+    }
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<C, I> {
@@ -220,7 +241,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
 ///
 /// Sign convention: `balance` is the peer's debt to us in AU (positive means the
 /// peer owes us, negative we owe the peer). The admission band that consumes
-/// these reads lives in the default [`AdmissionControl::admit`]. Unknown peers
+/// these reads lives in the default
+/// [`AdmissionControl::admit`](vertex_swarm_api::AdmissionControl::admit). Unknown peers
 /// read as fresh zero-balance peers with the configured thresholds, matching
 /// [`Accounting::peer_state`], and the reads never insert peer state.
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
@@ -249,9 +271,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
         // The early-payment trigger floored at one refresh-rate unit, so a settle
         // always offers at least the minimum the peer acts on. Per-peer state
         // carries no early-payment figure, so this reads from config.
-        self.config
-            .early_payment_trigger()
-            .max(self.config.refresh_rate())
+        Accounting::settle_trigger(self)
     }
 
     fn snapshot(&self, peer: &OverlayAddress) -> LedgerSnapshot {
@@ -260,10 +280,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
         // unknown peer matches the per-field reads (fresh zero-balance peer at the
         // configured disconnect threshold), so a band over this snapshot is
         // identical to one over four separate reads.
-        let settle_trigger = self
-            .config
-            .early_payment_trigger()
-            .max(self.config.refresh_rate());
+        let settle_trigger = self.settle_trigger();
         self.peers.read().get(peer).map_or_else(
             || LedgerSnapshot {
                 balance: Au::ZERO,
@@ -271,12 +288,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Ledger for Accounting<C, I> {
                 disconnect_line: self.config.disconnect_threshold(),
                 settle_trigger,
             },
-            |state| LedgerSnapshot {
-                balance: state.balance(),
-                reserved: state.reserved_balance(),
-                disconnect_line: state.disconnect_threshold(),
-                settle_trigger,
-            },
+            |state| state_snapshot(state, settle_trigger),
         )
     }
 }
@@ -352,7 +364,7 @@ impl SwarmPeerAccounting for AccountingPeerHandle {
 mod tests {
     use super::*;
     use crate::{AccountingConfig, NoSettlement};
-    use vertex_swarm_api::Admission;
+    use vertex_swarm_api::{Admission, AdmissionControl};
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     fn test_accounting() -> Accounting<AccountingConfig, Identity> {
@@ -854,5 +866,55 @@ mod tests {
 
         drop(reservation);
         assert_eq!(Ledger::reserved(&accounting, &peer), Au::ZERO);
+    }
+
+    #[test]
+    fn prepare_receive_single_fetch_refuses_at_the_admit_boundary_for_a_fresh_peer() {
+        // The single peer_state fetch bands off state_snapshot, so a fresh peer's
+        // prepare_receive and the advisory admit refuse at exactly the same price.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        assert_ne!(
+            accounting.admit(&peer, SMALL_DISCONNECT_THRESHOLD),
+            Admission::Refuse
+        );
+        assert!(
+            accounting
+                .prepare_receive(peer, SMALL_DISCONNECT_THRESHOLD, true)
+                .is_ok()
+        );
+
+        let over = SMALL_DISCONNECT_THRESHOLD + Au::new(1);
+        assert_eq!(accounting.admit(&peer, over), Admission::Refuse);
+        assert!(matches!(
+            accounting.prepare_receive(peer, over, true),
+            Err(AccountingError::DisconnectThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn state_snapshot_reproduces_ledger_snapshot_known_peer_fields() {
+        // The one PeerState -> LedgerSnapshot mapping the receive gate and
+        // Ledger::snapshot share must read the identical four fields.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        let handle = accounting.for_peer(peer);
+        handle.record(au(500), Direction::Upload);
+        let reservation = accounting
+            .prepare_receive(peer, au(100), true)
+            .expect("within threshold");
+
+        let state = accounting.peer_state(peer);
+        let direct = state_snapshot(&state, accounting.settle_trigger());
+        let via_ledger = Ledger::snapshot(&accounting, &peer);
+
+        assert_eq!(direct.balance, via_ledger.balance);
+        assert_eq!(direct.reserved, via_ledger.reserved);
+        assert_eq!(direct.disconnect_line, via_ledger.disconnect_line);
+        assert_eq!(direct.settle_trigger, via_ledger.settle_trigger);
+
+        drop(reservation);
     }
 }
