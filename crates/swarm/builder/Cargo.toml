@@ -116,7 +116,7 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
 # The examples launch through the node-builder shell; metrics-free is fine since
-# they use `launch_without_grpc`.
+# they call `launch` without attaching a gRPC server.
 vertex-node-builder.workspace = true
 vertex-node-core.workspace = true
 

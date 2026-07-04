@@ -37,3 +37,6 @@ tokio = { workspace = true, features = ["sync", "signal"] }
 default = []
 metrics = ["dep:vertex-observability", "dep:eyre"]
 jemalloc = ["metrics", "vertex-observability/jemalloc"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

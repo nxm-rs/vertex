@@ -111,7 +111,7 @@ pub async fn run() -> Result<()> {
         // records, then flow the same context through the protocol shell.
         let executor = TaskExecutor::current();
         let builder = NodeBuilder::new()
-            .with_launch_context(config.infra.api.clone(), executor, dirs.clone())
+            .with_launch_context(executor, dirs.clone())
             .with_database_config(database_config)
             .with_metrics(metrics_config, &histogram_buckets)?
             .start_metrics_server()
@@ -140,23 +140,21 @@ pub async fn run() -> Result<()> {
                 let node_config =
                     ClientConfig::new(spec, identity, network, bandwidth, local_store, chain, swap);
 
-                builder
-                    .with_protocol(node_config)
-                    .launch()
-                    .await?
-                    .wait_for_shutdown()
-                    .await;
+                let handle = builder.with_protocol(node_config).launch().await?;
+                if config.infra.api.grpc {
+                    handle.serve_grpc(config.infra.api.grpc_socket_addr())?;
+                }
+                handle.wait_for_shutdown().await;
                 Ok(())
             }
             SwarmNodeType::Bootnode => {
                 let node_config = BootnodeConfig::new(spec, identity, network);
 
-                builder
-                    .with_protocol(node_config)
-                    .launch()
-                    .await?
-                    .wait_for_shutdown()
-                    .await;
+                let handle = builder.with_protocol(node_config).launch().await?;
+                if config.infra.api.grpc {
+                    handle.serve_grpc(config.infra.api.grpc_socket_addr())?;
+                }
+                handle.wait_for_shutdown().await;
                 Ok(())
             }
             #[cfg(feature = "storer")]
@@ -178,12 +176,11 @@ pub async fn run() -> Result<()> {
                     swap,
                 );
 
-                builder
-                    .with_protocol(node_config)
-                    .launch()
-                    .await?
-                    .wait_for_shutdown()
-                    .await;
+                let handle = builder.with_protocol(node_config).launch().await?;
+                if config.infra.api.grpc {
+                    handle.serve_grpc(config.infra.api.grpc_socket_addr())?;
+                }
+                handle.wait_for_shutdown().await;
                 Ok(())
             }
             // The default binary compiles without the storer cone; refuse the

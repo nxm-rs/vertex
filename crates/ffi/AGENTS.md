@@ -14,7 +14,7 @@ Global rules: root `/AGENTS.md`, plus `docs/agents/api-surface.md` (FFI is the p
 
 ## Dos
 
-- Keep the API thin; the crate is a boundary, not a place for logic. Launch through the node-builder shell (`NodeBuilder::new()...launch_without_grpc()`), the binary's path minus the gRPC server; drive chunks through `SwarmChunkSender` and `SwarmChunkProvider`. The shell spawns the node task; the crate keeps the `TaskManager` alive and pulls the chunk client from `handle.components()`.
+- Keep the API thin; the crate is a boundary, not a place for logic. Launch through the node-builder shell (`NodeBuilder::new()...launch()`), the binary's path minus the gRPC serve step; drive chunks through `SwarmChunkSender` and `SwarmChunkProvider`. The shell spawns the node task; the crate keeps the `TaskManager` alive and pulls the chunk client from `handle.components()`.
 - FFI is a crate, not a feature (Feature and cfg contract in `/AGENTS.md`). Never enable the builder's `reserve`, so the storer cone stays out (cone guard asserts this). It does pull `vertex-swarm-builder` and therefore `vertex-storage-redb`, the persistent-cache backend a native mobile embedder wants. It pulls `vertex-node-builder` with `default-features = false`, so the Prometheus exporter and axum metrics server never enter this cone (cone guard keys off `metrics-exporter-prometheus`).
 - Reconstruct strong types (`StampedChunk`, `ChunkAddress`, `Stamp`) immediately on entry. Raw bytes and strings live only in `api::types`; never let them flow into internal logic.
 - Generate the C ABI from the Rust `api` module via flutter_rust_bridge; no hand-maintained parallel C header.

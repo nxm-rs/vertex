@@ -1,9 +1,10 @@
 //! API server CLI arguments.
 
+use std::net::{IpAddr, SocketAddr};
+
 use crate::constants::{DEFAULT_GRPC_PORT, DEFAULT_LOCALHOST_ADDR};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::NodeRpcConfig;
 
 /// API server configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -33,16 +34,48 @@ impl Default for ApiArgs {
     }
 }
 
-impl NodeRpcConfig for ApiArgs {
-    fn grpc_enabled(&self) -> bool {
-        self.grpc
+impl ApiArgs {
+    /// gRPC socket address; falls back to localhost if the configured address is
+    /// unparseable.
+    pub fn grpc_socket_addr(&self) -> SocketAddr {
+        let ip: IpAddr = self.grpc_addr.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                addr = %self.grpc_addr,
+                "Invalid gRPC address, falling back to localhost"
+            );
+            [127, 0, 0, 1].into()
+        });
+        SocketAddr::new(ip, self.grpc_port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grpc_socket_addr_parses_valid_address() {
+        let args = ApiArgs {
+            grpc: true,
+            grpc_addr: "0.0.0.0".to_string(),
+            grpc_port: 1700,
+        };
+        assert_eq!(
+            args.grpc_socket_addr(),
+            SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 1700)
+        );
     }
 
-    fn grpc_addr(&self) -> &str {
-        &self.grpc_addr
-    }
-
-    fn grpc_port(&self) -> u16 {
-        self.grpc_port
+    #[test]
+    fn grpc_socket_addr_falls_back_to_localhost() {
+        let args = ApiArgs {
+            grpc: true,
+            grpc_addr: "not-an-address".to_string(),
+            grpc_port: 1701,
+        };
+        assert_eq!(
+            args.grpc_socket_addr(),
+            SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 1701)
+        );
     }
 }
