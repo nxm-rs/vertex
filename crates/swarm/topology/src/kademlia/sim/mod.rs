@@ -151,6 +151,11 @@ impl SimWorld {
         self.routing.depth()
     }
 
+    /// The neighborhood-stability clock as the readiness snapshot reads it.
+    fn stable_for(&self) -> Option<std::time::Duration> {
+        self.routing.neighborhood_stable_for()
+    }
+
     /// The [`Bin`] a peer occupies in this table (proximity to the local
     /// overlay, capped at `max_po`), mirroring the routing table's own mapping.
     fn bin_for(&self, overlay: &OverlayAddress) -> Bin {

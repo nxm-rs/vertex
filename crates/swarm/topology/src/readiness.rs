@@ -63,13 +63,15 @@ pub struct ReadinessSnapshot {
     pub bins: Vec<BinReadiness>,
     /// Bins with a finite target whose connected count meets it.
     pub bins_at_target: usize,
-    /// How long the neighborhood has been continuously saturated at an
-    /// unchanged depth as of this snapshot, or `None` while it is below
-    /// saturation. Tracked by the routing table on every mutation, so a
-    /// dip between two snapshots restarts the clock even if no snapshot
-    /// observed it. The clock's saturation threshold is the one the depth
-    /// frontier derives from, which on production construction paths is
-    /// the same spec value as [`Self::saturation_threshold`].
+    /// How long the neighborhood has been saturated at an unchanged depth
+    /// as of this snapshot, or `None` once a saturation dip has cleared the
+    /// clock. Tracked by the routing table on every mutation, so a dip
+    /// between two snapshots is never missed; a marginal one-peer dip is
+    /// damped for a short window (one churning boundary peer cannot zero
+    /// the clock), while a deeper or persistent dip clears it. The clock's
+    /// saturation threshold is the one the depth frontier derives from,
+    /// which on production construction paths is the same spec value as
+    /// [`Self::saturation_threshold`].
     pub neighborhood_stable_for: Option<Duration>,
     /// The configured window [`Self::neighborhood_stable_for`] must reach
     /// for [`Self::is_neighborhood_ready`].
@@ -116,9 +118,11 @@ impl ReadinessSnapshot {
     /// chunk synchronization must not start on total connectivity alone:
     /// it needs the bins at and above the depth boundary to be both
     /// saturated and settled, or the responsibility boundary it syncs
-    /// against is still moving. Any depth change or saturation dip
-    /// restarts the clock. Stricter than [`Self::is_saturated`], which is
-    /// instantaneous.
+    /// against is still moving. Any depth change restarts the clock; a
+    /// saturation dip clears it once it exceeds one peer or outlasts the
+    /// dip window, so a single flapping boundary peer cannot hold
+    /// readiness off indefinitely. Stricter than [`Self::is_saturated`],
+    /// which is instantaneous.
     #[must_use]
     pub fn is_neighborhood_ready(&self) -> bool {
         self.neighborhood_stable_for

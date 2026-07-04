@@ -1,7 +1,8 @@
 //! Scenario suite over the deterministic sim: convergence, churn stability,
 //! partition heal, starvation truth, saturation-floor safety, sub-prefix-slot
-//! dilution of a monoculture, and the minimum-outbound quota holding a bin's
-//! self-dialed share under an inbound eclipse flood.
+//! dilution of a monoculture, the minimum-outbound quota holding a bin's
+//! self-dialed share under an inbound eclipse flood, and the readiness clock
+//! surviving a boundary-peer flap.
 //!
 //! Time is paused so the tokio-driven depth-hysteresis clock is deterministic;
 //! the phase window and dial backoff run on wall clocks, so nothing here asserts
@@ -298,6 +299,66 @@ async fn slot_fill_dilutes_subprefix_monoculture() {
         world.distinct_slots_in_bin(bin),
         5,
         "slot diversity is retained, not trimmed back to the monoculture"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn boundary_flap_holds_readiness_clock() {
+    // The neighborhood sits exactly at the saturation threshold and one
+    // boundary peer auto-cycles: every drop dips the count a single peer
+    // below threshold and the next re-dial restores it. Without the dip
+    // damping each cycle would zero the readiness clock and pull-syncing
+    // would never gate open. Time is paused, so the dip window never
+    // expires: a clock that stays anchored through the cycles is exactly
+    // the hysteresis holding.
+    let mut world = SimWorld::new(KademliaConfig::default(), 16, 17);
+    let sat = world.saturation();
+    world.populate_bin(0, sat, STORER, PeerScript::Honest);
+    // Bins 1..=3 supply the neighborhood: sat - 1 honest peers plus one
+    // cycling boundary peer land the count exactly at the threshold.
+    world.populate_bin(1, sat - 4, STORER, PeerScript::Honest);
+    world.populate_bin(2, 2, STORER, PeerScript::Honest);
+    world.populate_bin(3, 1, STORER, PeerScript::Honest);
+    let flapper = super::overlay_in_bin(world.base(), 1, 200);
+    world.add_scripted(
+        flapper,
+        STORER,
+        PeerScript::AcceptThenDrop { after_ticks: 2 },
+    );
+
+    for _ in 0..30 {
+        world.tick();
+    }
+    assert_eq!(world.depth().get(), 1, "fixture anchors at depth 1");
+    assert!(
+        world.stable_for().is_some(),
+        "the saturated neighborhood carries a readiness clock"
+    );
+
+    // Flap cycles: the boundary peer keeps dropping and being re-dialled.
+    // The published depth and the readiness clock must both hold.
+    for _ in 0..30 {
+        world.tick();
+        assert_eq!(world.depth().get(), 1, "a one-peer flap never moves depth");
+        assert!(
+            world.stable_for().is_some(),
+            "a one-peer flap never zeroes the readiness clock"
+        );
+    }
+
+    // A genuine loss is still observed promptly: two honest neighborhood
+    // peers going away exceeds the dip tolerance and clears the clock at
+    // the second disconnect, with no window.
+    let lost = [
+        super::overlay_in_bin(world.base(), 2, 0),
+        super::overlay_in_bin(world.base(), 2, 1),
+    ];
+    for overlay in lost {
+        world.disconnect(overlay);
+    }
+    assert!(
+        world.stable_for().is_none(),
+        "a multi-peer loss clears the readiness clock immediately"
     );
 }
 
