@@ -5,14 +5,17 @@ use vertex_swarm_api::{SwarmAccounting, SwarmClientAccounting, SwarmPricing};
 /// Combined pricing and bandwidth accounting for client operations.
 #[derive(Clone)]
 pub struct ClientAccounting<B, P> {
-    bandwidth: B,
+    accounting: B,
     pricing: P,
 }
 
 impl<B, P> ClientAccounting<B, P> {
     /// Create a new client accounting instance.
-    pub fn new(bandwidth: B, pricing: P) -> Self {
-        Self { bandwidth, pricing }
+    pub fn new(accounting: B, pricing: P) -> Self {
+        Self {
+            accounting,
+            pricing,
+        }
     }
 }
 
@@ -25,7 +28,7 @@ where
     type Pricing = P;
 
     fn accounting(&self) -> &B {
-        &self.bandwidth
+        &self.accounting
     }
 
     fn pricing(&self) -> &P {

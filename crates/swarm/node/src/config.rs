@@ -24,14 +24,14 @@ use crate::args::{
 ///
 /// Contains all Swarm-specific settings for config file serialization.
 /// Used as the type parameter for `vertex_node_core::config::FullNodeConfig`.
-/// Pricing is nested under `bandwidth`.
+/// Pricing is nested under `accounting`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProtocolConfig {
     pub node_type: SwarmNodeType,
     pub identity: IdentityArgs,
     pub network: NetworkArgs,
-    pub bandwidth: AccountingArgs,
+    pub accounting: AccountingArgs,
     pub localstore: LocalStoreArgs,
     #[cfg(feature = "storer")]
     pub redistribution: RedistributionArgs,
@@ -50,9 +50,9 @@ impl ProtocolConfig {
         self.identity.identity(spec, network_dir, self.node_type)
     }
 
-    /// Build the bandwidth accounting configuration.
-    pub fn bandwidth_config(&self) -> DefaultAccountingConfig {
-        DefaultAccountingConfig::from(&self.bandwidth)
+    /// Build the accounting configuration.
+    pub fn accounting_config(&self) -> DefaultAccountingConfig {
+        DefaultAccountingConfig::from(&self.accounting)
     }
 
     /// Create local store configuration.
@@ -91,7 +91,7 @@ impl NodeProtocolConfig for ProtocolConfig {
     fn apply_args(&mut self, args: &Self::Args) {
         self.identity = args.identity.clone();
         self.network = args.network.clone();
-        self.bandwidth = args.bandwidth.clone();
+        self.accounting = args.accounting.clone();
         self.localstore = args.localstore.clone();
         #[cfg(feature = "storer")]
         {

@@ -17,13 +17,13 @@ vertex node --help
 
 ## Configuration Architecture
 
-CLI arguments are organised into logical groups that correspond to node subsystems: network, bandwidth, storage, identity, and network selection.
+CLI arguments are organised into logical groups that correspond to node subsystems: network, accounting, storage, identity, and network selection.
 
 ```mermaid
 flowchart LR
     A[CLI Args] --> C[Merge]
     B["SwarmSpec\n(mainnet/testnet)"] --> C
-    C --> D["NodeConfig\n- mode\n- network\n- bandwidth\n- storage\n- identity"]
+    C --> D["NodeConfig\n- mode\n- network\n- accounting\n- storage\n- identity"]
 ```
 
 The `SwarmSpec` provides network-level constants (network ID, bootnodes, contract addresses, default pricing parameters). CLI arguments provide node-level configuration (ports, capacity, node type, settlement selection) and can override network defaults where appropriate.
@@ -34,7 +34,7 @@ The `SwarmSpec` provides network-level constants (network ID, bootnodes, contrac
 |-------|--------|------------|---------|
 | **Mode** | `--mode` | All | Node type selection (bootnode, client, storer) |
 | **Network** | `--network.*` | All | P2P listen address/port, bootnodes, max peers, NAT |
-| **Bandwidth** | `--bandwidth.*` | Client, Storer | Accounting mode, pricing, thresholds |
+| **Accounting** | `--accounting.*` | Client, Storer | Accounting mode, pricing, thresholds |
 | **Storage** | `--storage.*` | Storer | Reserve capacity, cache size, redistribution |
 | **Identity** | `--password`, `--nonce`, etc. | All | Keystore, overlay nonce, ephemeral mode |
 | **Database** | `--db.*` | All | Database persistence (per-node-type default) and cache size |
@@ -72,7 +72,7 @@ When both `--db.path` and `--db.persist` are given, the explicit path wins.
 
 What persistence covers: peer snapshots (the identity-only records described in [Peer Management](../networking/peer-management.md)), written periodically and on shutdown so a restarted node warm-starts its peer set. Peer scores, bans, and dial backoff are runtime-only and are never persisted in either mode. If the configured database cannot be opened, the node logs a warning and continues fully in-memory rather than aborting.
 
-## Bandwidth accounting
+## Accounting
 
 Soft accounting (pseudosettle) is always on for client and storer nodes; it needs no flag. Monetary settlement (SWAP) is opt-in via `--swap` and selected purely by that flag plus the node type.
 
