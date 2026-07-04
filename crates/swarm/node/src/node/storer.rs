@@ -126,6 +126,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
+        let observed_addresses = topology.observed_addresses();
         let client = ClientBehaviour::new(
             ClientBehaviourConfig::default(),
             store,
@@ -138,6 +139,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
             identify: identify::Behaviour::new(
                 super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
+                observed_addresses,
             ),
             nat,
             storer: StorerBehaviour {

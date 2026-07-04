@@ -15,7 +15,7 @@ Global rules: see root `/AGENTS.md`. Deep guides for changes here: `docs/agents/
 - `retrieval`: `/swarm/retrieval/1.4.0/retrieval`. Chunk request and delivery.
 - `headers`: shared header frame for request-response protocols, with trace-context propagation. W3C-over-OpenTelemetry inject/extract is native-only (`tracing.rs`); the wasm sibling (`tracing_wasm.rs`, Pattern C) is a no-op since a browser client has no OTLP backend. The on-wire `tracing-span-context` field is unaffected.
 - `handler-core`: handler scaffolding. `HandlerCore<E>` (unbounded pending events, GCRA rate limiter, outbound-pending flag) plus two opt-in blocks composed a la carte: `BoundedQueue<T>` (bounded FIFO with a caller-owned reject-newest or evict-oldest policy) and `OutcomeDriver<O>` (a capped `FuturesUnordered` outcome driver). The blocks carry mechanics only; the drop policy, metrics, warn lines, and cap constants stay at the call site.
-- `identify`: vendored libp2p-identify with a targeted-push extension.
+- `identify`: vendored libp2p-identify with a targeted-push extension and the shared per-connection observed-address registry (`ObservedAddresses`, entries dying with their connection), the source for the topology handle's read-only observed external address vote.
 - `proto`: consolidated protobuf modules. Re-exports `handshake`, `headers`, `hive`, `pricing`, `pseudosettle`, `pullsync`, `pushsync`, `retrieval`, `swap`.
 
 ## Dos

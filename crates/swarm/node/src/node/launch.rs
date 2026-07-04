@@ -440,6 +440,21 @@ impl LaunchedClient {
     pub fn local_peer_id(&self) -> PeerId {
         self.peer_id
     }
+
+    /// The public multiaddr most peers currently observe for this node,
+    /// learnt from identify exchanges over live connections. `None` until
+    /// enough peers agree on one IP, so treat it as absent shortly after
+    /// launch. Unverified, and on a dial-only node (including the browser,
+    /// where it is the only self-address source) the port is typically a
+    /// NAT-ephemeral source port; the IP is the meaningful component.
+    pub fn observed_external_addr(&self) -> Option<Multiaddr> {
+        self.topology.observed_external_addr()
+    }
+
+    /// The IP component of [`Self::observed_external_addr`].
+    pub fn observed_external_ip(&self) -> Option<std::net::IpAddr> {
+        self.topology.observed_external_ip()
+    }
 }
 
 #[cfg(test)]

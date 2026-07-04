@@ -294,6 +294,10 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Agent versions received via identify, shared with identify behaviour.
     pub(crate) agent_versions: identify::AgentVersions,
 
+    /// Peer-observed addresses per live connection, written by the identify
+    /// behaviour and read by the handle's majority accessors.
+    pub(crate) observed_addresses: identify::ObservedAddresses,
+
     /// When set, same-subnet / private-LAN peers are protected from
     /// capacity-driven bin trimming by ranking above remotes of equal
     /// reachability. Liveness demotion and bans stay authoritative.
@@ -350,6 +354,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Shared agent version map, populated by identify and read by topology handle.
     pub fn agent_versions(&self) -> identify::AgentVersions {
         Arc::clone(&self.agent_versions)
+    }
+
+    /// Shared per-connection observed-address registry, written by identify
+    /// and read by the handle's majority accessors. Never feeds advertisement.
+    pub fn observed_addresses(&self) -> identify::ObservedAddresses {
+        self.observed_addresses.clone()
     }
 
     /// Shared read view of the handshake-complete overlay-to-PeerId map. The

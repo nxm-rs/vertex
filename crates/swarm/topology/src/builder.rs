@@ -134,6 +134,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 
         let connection_registry = Arc::new(ConnectionRegistry::new());
         let agent_versions = identify::new_agent_versions();
+        let observed_addresses = identify::ObservedAddresses::default();
 
         let lifecycle_rx = peer_manager.subscribe();
 
@@ -182,9 +183,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             LocalCapabilities::new()
         });
 
-        // LocalAddressManager handles NAT address advertisement
-        // Note: We no longer track peer-observed addresses - they contain
-        // ephemeral NAT ports that only work for the specific peer connection.
+        // LocalAddressManager handles NAT address advertisement. Peer-observed
+        // addresses never enter it: their ports are connection-specific NAT
+        // ephemera. They live in the read-only observed-address registry above.
         let nat_discovery = Arc::new(if !self.nat_addrs.is_empty() {
             info!(count = self.nat_addrs.len(), "NAT addresses configured");
             LocalAddressManager::new(local_capabilities.clone(), self.nat_addrs)
@@ -213,6 +214,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             command_tx,
             event_tx.clone(),
             agent_versions.clone(),
+            observed_addresses.clone(),
         );
 
         // Queue static NAT addresses to emit as external addresses on first poll
@@ -263,6 +265,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             outbound_public_dials: HashSet::new(),
             lifecycle_rx: tokio_stream::wrappers::BroadcastStream::new(lifecycle_rx),
             agent_versions,
+            observed_addresses,
             trust_local_peers: self.trust_local_peers,
             pending_nat_external_addrs,
             metrics,
