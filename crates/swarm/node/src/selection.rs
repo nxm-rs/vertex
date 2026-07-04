@@ -747,6 +747,13 @@ mod tests {
         ) -> SwarmResult<Self::ProvideAction> {
             Ok(NoopProvide)
         }
+        fn connect_peer(
+            &self,
+            _peer: OverlayAddress,
+            _node_type: vertex_swarm_primitives::SwarmNodeType,
+        ) -> Au {
+            Au::ZERO
+        }
     }
 
     #[test]
