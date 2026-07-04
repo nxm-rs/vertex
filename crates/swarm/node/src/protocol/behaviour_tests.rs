@@ -8,17 +8,21 @@
 //! accounting and the outbound `ClientHandle`) over the behaviour the
 //! `vertex-swarm-client-behaviour` crate provides.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use alloy_primitives::{B256, Signature};
 use alloy_signer_local::PrivateKeySigner;
 use futures::StreamExt;
-use libp2p::Swarm;
+use libp2p::swarm::ConnectionId;
+use libp2p::{PeerId, Swarm};
 use libp2p_swarm_test::SwarmExt;
 use nectar_postage::Stamp;
 use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};
 use tokio::sync::oneshot;
+use vertex_net_peer_registry::PeerRegistry;
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_localstore::{ChunkStore, Clock};
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
@@ -28,6 +32,46 @@ use crate::client_service::RetrievalResult;
 use crate::protocol::{
     BehaviourConfig as Config, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
 };
+
+/// Identity registry a test swarm's `ClientBehaviour` reads through, keyed by the
+/// swarm's local peer id so `connect_and_activate` can populate the right side.
+/// Topology is absent in these standalone swarms, so the harness is the writer.
+type IdentityRegistry = Arc<PeerRegistry<OverlayAddress, ()>>;
+
+fn identity_registries() -> &'static Mutex<HashMap<PeerId, IdentityRegistry>> {
+    static REGISTRIES: OnceLock<Mutex<HashMap<PeerId, IdentityRegistry>>> = OnceLock::new();
+    REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Build a fresh identity registry, register it under `local` for later
+/// population, and return the read view to embed in the behaviour.
+fn register_identity(local: PeerId) -> IdentityRegistry {
+    let registry: IdentityRegistry = Arc::new(PeerRegistry::new());
+    identity_registries()
+        .lock()
+        .expect("registry map poisoned")
+        .insert(local, Arc::clone(&registry));
+    registry
+}
+
+/// Distinct connection ids so a registry that activates several peers keeps its
+/// secondary indices unique.
+fn next_conn_id() -> ConnectionId {
+    static N: AtomicUsize = AtomicUsize::new(1);
+    ConnectionId::new_unchecked(N.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Mark `peer`/`overlay` Active in `owner`'s identity registry, mirroring what
+/// topology's connection registry does at handshake completion.
+fn activate_identity(owner: PeerId, peer: PeerId, overlay: OverlayAddress) {
+    let map = identity_registries().lock().expect("registry map poisoned");
+    let registry = map
+        .get(&owner)
+        .expect("registry registered for owner swarm");
+    let conn = next_conn_id();
+    registry.connected_inbound(peer, conn);
+    registry.activate(peer, conn, overlay);
+}
 
 /// Fixed-instant clock for SOC freshness tests.
 struct FixedClock(i64);
@@ -62,11 +106,13 @@ fn overlay(n: u8) -> OverlayAddress {
 }
 
 fn swarm_with_store(store: Arc<dyn SwarmLocalStore>) -> Swarm<ClientBehaviour> {
-    Swarm::new_ephemeral_tokio(move |_| {
+    Swarm::new_ephemeral_tokio(move |keypair| {
+        let identity = register_identity(keypair.public().to_peer_id());
         ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Client),
             store,
             Arc::new(StubForwarder),
+            identity,
         )
     })
 }
@@ -84,6 +130,10 @@ async fn connect_and_activate(
     client.listen().with_memory_addr_external().await;
     server.listen().with_memory_addr_external().await;
     client.connect(server).await;
+
+    // Each side's registry maps the other peer, as topology would at handshake.
+    activate_identity(client_peer, server_peer, server_overlay);
+    activate_identity(server_peer, client_peer, client_overlay);
 
     client
         .behaviour_mut()
@@ -416,13 +466,15 @@ fn storer_swarm(
 
     let reserve_for_swarm = Arc::clone(&reserve);
     let signer_for_swarm = signer.clone();
-    let swarm = Swarm::new_ephemeral_tokio(move |_| {
+    let swarm = Swarm::new_ephemeral_tokio(move |keypair| {
+        let identity = register_identity(keypair.public().to_peer_id());
         // The reserve serves on retrieval too, so it is the behaviour's store.
         let store: Arc<dyn SwarmLocalStore> = Arc::clone(&reserve_for_swarm) as _;
         let mut behaviour = ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Storer),
             store,
             Arc::new(StubForwarder),
+            identity,
         );
         behaviour.set_network_id(NetworkId::MAINNET);
         let spec = Arc::new(
@@ -628,11 +680,13 @@ fn relay_node(
         crate::NoLatencyHint,
         Arc::new(NoTriggeredSettle),
     );
-    let swarm = Swarm::new_ephemeral_tokio(move |_| {
+    let swarm = Swarm::new_ephemeral_tokio(move |keypair| {
+        let identity = register_identity(keypair.public().to_peer_id());
         let mut behaviour = ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Client),
             store,
             Arc::new(StubForwarder),
+            identity,
         );
         // Inbound receipts are recovered against this network id; the storer
         // test receipts are ground against it too.

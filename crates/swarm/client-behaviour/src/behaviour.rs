@@ -3,7 +3,7 @@
 //! dormant and activated after handshake completion.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -18,6 +18,7 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+use vertex_net_peer_registry::ActivePeers;
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -77,8 +78,10 @@ pub struct ClientBehaviour {
     /// for are stored and acknowledged with a signed receipt; when absent every
     /// inbound pushsync takes the verbatim-relay path.
     storer: Option<StorerCapability>,
-    peer_overlays: HashMap<PeerId, OverlayAddress>,
-    overlay_peers: HashMap<OverlayAddress, PeerId>,
+    /// Read-only view of the topology connection registry: the single writer is
+    /// topology, so command routing and connection-close resolution consult this
+    /// rather than mirroring the overlay-to-PeerId map here.
+    identity: Arc<dyn ActivePeers<OverlayAddress>>,
     pending_events: VecDeque<ToSwarm<ClientEvent, HandlerCommand>>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     #[cfg(feature = "swap")]
@@ -90,14 +93,14 @@ impl ClientBehaviour {
         config: Config,
         store: Arc<dyn SwarmLocalStore>,
         forward: Arc<dyn Forwarder>,
+        identity: Arc<dyn ActivePeers<OverlayAddress>>,
     ) -> Self {
         Self {
             config,
             store,
             forward,
             storer: None,
-            peer_overlays: HashMap::new(),
-            overlay_peers: HashMap::new(),
+            identity,
             pending_events: VecDeque::new(),
             pseudosettle_event_tx: None,
             #[cfg(feature = "swap")]
@@ -194,8 +197,6 @@ impl ClientBehaviour {
                 node_type,
             } => {
                 debug!(%peer_id, %overlay, ?node_type, "Activating peer");
-                self.peer_overlays.insert(peer_id, overlay);
-                self.overlay_peers.insert(overlay, peer_id);
                 self.push_command(peer_id, HandlerCommand::Activate { overlay, node_type });
             }
             ClientCommand::Peer { peer, command } => {
@@ -207,7 +208,7 @@ impl ClientBehaviour {
                 if command.is_request() && self.at_capacity() {
                     metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
                     command.refuse(ChunkTransferError::Overloaded);
-                } else if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                } else if let Some(peer_id) = self.identity.active_peer_id(&peer) {
                     self.push_command(peer_id, HandlerCommand::Peer(command));
                 } else {
                     command.refuse(ChunkTransferError::NotConnected);
@@ -409,9 +410,8 @@ impl NetworkBehaviour for ClientBehaviour {
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
         if let FromSwarm::ConnectionClosed(info) = event
             && info.remaining_established == 0
-            && let Some(overlay) = self.peer_overlays.remove(&info.peer_id)
+            && let Some(overlay) = self.identity.active_id(&info.peer_id)
         {
-            self.overlay_peers.remove(&overlay);
             debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
             // A full disconnect may never surface as a substream error, so
             // release any pending settle for this peer here too.
@@ -459,12 +459,46 @@ impl NetworkBehaviour for ClientBehaviour {
 #[cfg(test)]
 mod tests {
     use libp2p::PeerId;
+    use libp2p::core::{ConnectedPoint, transport::PortUse};
+    use libp2p::swarm::behaviour::ConnectionClosed;
+    use vertex_net_peer_registry::PeerRegistry;
     use vertex_swarm_api::{ChunkAddress, SwarmResult};
     use vertex_swarm_primitives::CachedChunk;
     use vertex_swarm_test_utils::test_peer;
+    use vertex_util_runtime::time::Instant;
 
     use super::*;
     use crate::forward::StubForwarder;
+
+    /// Identity registry the harness writes to and the behaviour reads through,
+    /// standing in for topology's connection registry.
+    type TestRegistry = Arc<PeerRegistry<OverlayAddress, ()>>;
+
+    /// Mark `overlay`/`peer_id` Active in the registry, as topology does at
+    /// handshake completion.
+    fn activate(registry: &TestRegistry, peer_id: PeerId, overlay: OverlayAddress) {
+        let conn = ConnectionId::new_unchecked(0);
+        registry.connected_inbound(peer_id, conn);
+        registry.activate(peer_id, conn, overlay);
+    }
+
+    /// A closed-connection event for `peer_id` with no remaining connections.
+    fn connection_closed(peer_id: PeerId) -> ConnectionClosed<'static> {
+        // A leaked listener endpoint keeps the borrow `'static` so the event can
+        // be handed to `on_swarm_event` without a live local binding.
+        let endpoint: &'static ConnectedPoint = Box::leak(Box::new(ConnectedPoint::Dialer {
+            address: "/memory/0".parse().expect("valid memory multiaddr"),
+            role_override: libp2p::core::Endpoint::Dialer,
+            port_use: PortUse::Reuse,
+        }));
+        ConnectionClosed {
+            peer_id,
+            connection_id: ConnectionId::new_unchecked(0),
+            endpoint,
+            cause: None,
+            remaining_established: 0,
+        }
+    }
 
     struct NoopStore;
 
@@ -483,12 +517,17 @@ mod tests {
         }
     }
 
-    fn build_behaviour() -> ClientBehaviour {
+    fn behaviour_with_identity(identity: TestRegistry) -> ClientBehaviour {
         ClientBehaviour::new(
             Config::default(),
             Arc::new(NoopStore),
             Arc::new(StubForwarder),
+            identity,
         )
+    }
+
+    fn build_behaviour() -> ClientBehaviour {
+        behaviour_with_identity(Arc::new(PeerRegistry::new()))
     }
 
     /// A behaviour whose event queue is permanently at capacity.
@@ -497,7 +536,13 @@ mod tests {
             max_pending_events: 0,
             ..Config::default()
         };
-        ClientBehaviour::new(config, Arc::new(NoopStore), Arc::new(StubForwarder))
+        let identity: TestRegistry = Arc::new(PeerRegistry::new());
+        ClientBehaviour::new(
+            config,
+            Arc::new(NoopStore),
+            Arc::new(StubForwarder),
+            identity,
+        )
     }
 
     #[test]
@@ -642,6 +687,145 @@ mod tests {
         );
 
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_command_routes_to_an_active_peer_and_refuses_otherwise() {
+        let registry: TestRegistry = Arc::new(PeerRegistry::new());
+        let overlay = OverlayAddress::from([1u8; 32]);
+        let peer_id = PeerId::random();
+        activate(&registry, peer_id, overlay);
+        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+
+        // Active peer: the request enqueues a handler command and leaves the
+        // responder for the handler to resolve.
+        let before = behaviour.pending_events.len();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::Peer {
+            peer: overlay,
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: tx,
+                originated: true,
+            },
+        });
+        assert_eq!(behaviour.pending_events.len(), before + 1);
+        assert!(rx.try_recv().is_err(), "an active peer routes, not refuses");
+
+        // Unknown overlay: refused NotConnected.
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::Peer {
+            peer: OverlayAddress::from([2u8; 32]),
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: tx,
+                originated: true,
+            },
+        });
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Err(ChunkTransferError::NotConnected))
+        ));
+
+        // Pending overlay (a Known connection not yet activated): excluded from
+        // the Active view, so a request refuses NotConnected too.
+        let pending_overlay = OverlayAddress::from([3u8; 32]);
+        registry.connected_outbound(
+            PeerId::random(),
+            ConnectionId::new_unchecked(9),
+            Some(pending_overlay),
+            Instant::now(),
+            (),
+        );
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::Peer {
+            peer: pending_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: tx,
+                originated: true,
+            },
+        });
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Err(ChunkTransferError::NotConnected))
+        ));
+    }
+
+    #[test]
+    fn a_closed_active_connection_emits_disconnected_and_tees_failed() {
+        let registry: TestRegistry = Arc::new(PeerRegistry::new());
+        let overlay = test_peer();
+        let peer_id = PeerId::random();
+        activate(&registry, peer_id, overlay);
+        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        behaviour.route_pseudosettle_events(tx);
+
+        behaviour.on_swarm_event(FromSwarm::ConnectionClosed(connection_closed(peer_id)));
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PseudosettleEvent::Failed { peer }) if peer == overlay
+        ));
+        assert!(
+            behaviour.pending_events.iter().any(|e| matches!(
+                e,
+                ToSwarm::GenerateEvent(ClientEvent::PeerDisconnected { overlay: o, .. }) if *o == overlay
+            )),
+            "a closed active connection emits PeerDisconnected"
+        );
+    }
+
+    /// Regression: an overlay that re-handshakes from a new PeerId stays routable
+    /// when the old connection closes, and the old close emits nothing.
+    #[test]
+    fn a_replaced_overlay_stays_routable_and_its_old_close_is_quiet() {
+        let registry: TestRegistry = Arc::new(PeerRegistry::new());
+        let overlay = test_peer();
+        let p1 = PeerId::random();
+        let p2 = PeerId::random();
+
+        // p1 activates the overlay, then p2 re-handshakes the same overlay: the
+        // registry replaces p1 with p2 under the overlay key.
+        activate(&registry, p1, overlay);
+        registry.connected_inbound(p2, ConnectionId::new_unchecked(1));
+        registry.activate(p2, ConnectionId::new_unchecked(1), overlay);
+
+        let mut behaviour = behaviour_with_identity(Arc::clone(&registry));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        behaviour.route_pseudosettle_events(tx);
+
+        // The old connection closes: active_id(p1) is None, so no disconnect and
+        // no Failed tee for an overlay still connected via p2.
+        behaviour.on_swarm_event(FromSwarm::ConnectionClosed(connection_closed(p1)));
+        assert!(rx.try_recv().is_err(), "no Failed tee for a replaced peer");
+        assert!(
+            !behaviour.pending_events.iter().any(|e| matches!(
+                e,
+                ToSwarm::GenerateEvent(ClientEvent::PeerDisconnected { .. })
+            )),
+            "no PeerDisconnected for a replaced peer"
+        );
+
+        // A request to the overlay still routes, now to p2.
+        let (rtx, mut rrx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::Peer {
+            peer: overlay,
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: rtx,
+                originated: true,
+            },
+        });
+        assert!(rrx.try_recv().is_err(), "the overlay still routes to p2");
+        assert!(
+            behaviour.pending_events.iter().any(|e| matches!(
+                e,
+                ToSwarm::NotifyHandler { peer_id, .. } if *peer_id == p2
+            )),
+            "the routed handler command targets the new PeerId p2"
+        );
     }
 
     #[cfg(feature = "swap")]

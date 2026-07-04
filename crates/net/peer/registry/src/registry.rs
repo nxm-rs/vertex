@@ -527,6 +527,41 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static>
     }
 }
 
+/// Read-only view of the handshake-complete identity map.
+pub trait ActivePeers<Id>: Send + Sync {
+    /// PeerId of an Active connection for `id`, excluding pending connections.
+    fn active_peer_id(&self, id: &Id) -> Option<PeerId>;
+    /// Application-level ID of an Active connection for `peer_id`, excluding
+    /// pending connections.
+    fn active_id(&self, peer_id: &PeerId) -> Option<Id>;
+}
+
+impl<Id, R> ActivePeers<Id> for PeerRegistry<Id, R>
+where
+    Id: Clone + Eq + Hash + Debug + Send + Sync + 'static,
+    R: Clone + Default + Send + Sync + 'static,
+{
+    fn active_peer_id(&self, id: &Id) -> Option<PeerId> {
+        self.maps
+            .read()
+            .by_key
+            .get(&id.clone().into())
+            .and_then(|s| match s {
+                ConnectionState::Active { peer_id, .. } => Some(*peer_id),
+                _ => None,
+            })
+    }
+
+    fn active_id(&self, peer_id: &PeerId) -> Option<Id> {
+        let maps = self.maps.read();
+        let key = maps.peer_to_key.get(peer_id)?;
+        match (key, maps.by_key.get(key)) {
+            (RegistryKey::Known(id), Some(ConnectionState::Active { .. })) => Some(id.clone()),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +815,28 @@ mod tests {
 
         r.disconnected(&peer(1));
         assert_counts(&r, 0, 0);
+    }
+
+    #[test]
+    fn test_active_lookups_include_active_exclude_pending_and_removed() {
+        let r = registry();
+        let p = peer(1);
+        let id = TestId(1);
+
+        // Pending (connected without activate): excluded from the Active view.
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        assert_eq!(ActivePeers::active_peer_id(&r, &id), None);
+        assert_eq!(ActivePeers::active_id(&r, &p), None);
+
+        // After activation: both directions resolve.
+        r.activate(p, conn(1), id.clone());
+        assert_eq!(ActivePeers::active_peer_id(&r, &id), Some(p));
+        assert_eq!(ActivePeers::active_id(&r, &p), Some(id.clone()));
+
+        // After disconnect: excluded again.
+        r.disconnected(&p);
+        assert_eq!(ActivePeers::active_peer_id(&r, &id), None);
+        assert_eq!(ActivePeers::active_id(&r, &p), None);
     }
 
     /// Regression: ByPeerId replacement must clean up Connected entries under the
