@@ -354,7 +354,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     /// Shared read view of the handshake-complete overlay-to-PeerId map. The
     /// connection registry stays the single writer; consumers only look up.
-    pub fn identity_view(&self) -> Arc<dyn ActivePeers<OverlayAddress>> {
+    pub fn active_peers(&self) -> Arc<dyn ActivePeers<OverlayAddress>> {
         self.connection_registry.clone()
     }
 

@@ -42,7 +42,7 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal and LAN discovery as one platform sub-behaviour; a no-op in
     /// the browser, where a wasm client dials over websockets and never listens.
     pub(crate) nat: NatBehaviour,
-    /// Before topology: reads the identity view at connection close while the
+    /// Before topology: reads the active-peers view at connection close while the
     /// registry entry is live.
     pub(crate) client: ClientBehaviour,
     pub(crate) topology: TopologyBehaviour<I>,
@@ -58,7 +58,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
-        let identity = topology.identity_view();
+        let active_peers = topology.active_peers();
         Self {
             connection_limits,
             // Identify advertises addresses scoped per peer (see
@@ -76,7 +76,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
                 ClientBehaviourConfig::default(),
                 store,
                 Arc::new(StubForwarder),
-                identity,
+                active_peers,
             ),
             topology,
         }

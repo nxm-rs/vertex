@@ -157,12 +157,12 @@ fn storer(storage: MockStorage) -> Swarm<StorerBehaviour> {
     let storage = Arc::new(storage);
     let store = Arc::clone(&storage);
     Swarm::new_ephemeral_tokio(move |_| {
-        let identity = Arc::new(PeerRegistry::<OverlayAddress, ()>::new());
+        let active_peers = Arc::new(PeerRegistry::<OverlayAddress, ()>::new());
         let client = ClientBehaviour::new(
             ClientBehaviourConfig::default(),
             store.clone(),
             Arc::new(StubForwarder),
-            identity,
+            active_peers,
         );
         let pullsync = PullsyncBehaviour::new(Arc::clone(&storage) as Arc<dyn PullStorage>);
         StorerBehaviour { client, pullsync }
