@@ -11,7 +11,10 @@ mod handler;
 pub mod metrics;
 mod protocol;
 
-pub use behaviour::{AgentVersions, Behaviour, Event, new_agent_versions};
+pub use behaviour::{
+    AgentVersions, Behaviour, Event, OBSERVATION_QUORUM, ObservationChange, ObservedAddresses,
+    new_agent_versions,
+};
 pub use config::Config;
 pub use protocol::{Info, PushInfo};
 

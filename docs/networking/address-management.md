@@ -78,7 +78,7 @@ All returned addresses include `/p2p/{local_peer_id}`.
 
 Two signals can flip the self-reachability flag, in increasing order of confidence:
 
-- `on_observed_addr()` is the weak signal, and it is fed only from **inbound** handshakes. When a peer dials us and the address it reports observing us at is public-scope, that is our genuinely reachable listen address (the peer reached it), so the flag is set. Observed addresses from outbound connections are deliberately ignored here: when we dial out, the remote sees our ephemeral NAT source port, which proves nothing about our reachability. The observed address itself is **not stored or advertised**, only the connectivity fact is recorded. Outbound-observed addresses still flow to the AutoNAT v2 client (via identify's `NewExternalAddrCandidate`) to be verified by dial-back.
+- `on_observed_addr()` is the weak signal, and it is fed only from **inbound** handshakes. When a peer dials us and the address it reports observing us at is public-scope, that is our genuinely reachable listen address (the peer reached it), so the flag is set. Observed addresses from outbound connections are deliberately ignored here: when we dial out, the remote sees our ephemeral NAT source port, which proves nothing about our reachability. The observed address itself is **never advertised**; here only the connectivity fact is recorded. Outbound-observed addresses still flow to the AutoNAT v2 client (via identify's `NewExternalAddrCandidate`) to be verified by dial-back, and identify additionally keeps each live connection's observation in a shared read-only registry (see "Observed external address" below).
 - `on_external_addr_confirmed()` is the strong signal. It fires on `FromSwarm::ExternalAddrConfirmed`, which the libp2p swarm raises only after AutoNAT v2 has dialed one of our candidate addresses back, or UPnP has mapped a port. This is hard to spoof because it requires a completed inbound connection on the address under test. Unlike the observed signal it is reversible: `on_external_addr_expired()` drops the address on `FromSwarm::ExternalAddrExpired` (for example a UPnP lease that fails to renew), so a node whose only public path was a mapping that lapsed stops advertising itself as reachable.
 
 ### Peer reachability is not peer liveness
@@ -111,7 +111,18 @@ AutoNAT v2 runs both roles on every node type, including bootnodes, so the netwo
 
 AutoNAT v2 (`/libp2p/autonat/2/dial-request`, `/libp2p/autonat/2/dial-back`) and UPnP are additive libp2p protocols. Peers that do not implement them simply never negotiate them, so the Swarm handshake and every `/swarm/...` protocol are unaffected. Until AutoNAT v2 support is widespread on the live network, a vertex node depends on other vertex nodes to act as its dial-back verifiers.
 
-## Why Observed Addresses Are Not Stored
+## Observed external address (read-only)
+
+The identify behaviour keeps the address each live connection's peer reports observing for us in a shared registry (`vertex-swarm-net-identify::ObservedAddresses`, shared through the topology builder like the agent-version map). An entry lives exactly as long as its connection: recorded on the identify exchange, replaced on re-identify, removed at connection close, so the view never goes stale on disconnected peers.
+
+`TopologyHandle::observed_external_addr()` / `observed_external_ip()` (surfaced on `LaunchedClient` under the same names) answer "what public address does the network see for me?" by plurality vote over the public-scope IPs of those live observations, requiring a small quorum before reporting anything, so a minority of wrong or stale reports is tolerated and callers must treat the value as absent shortly after launch. This replaces any need for a third-party IP-echo service and works on every target, including the browser client, whose dial-only shape has no listener, no AutoNAT, and therefore no other self-address source.
+
+Two hard boundaries keep this safe:
+
+- **Read-only.** The vote result feeds nothing: not advertisement, not routing, not the signed record. A peer set that lies about our address can only mislead the local caller, never make us advertise attacker-chosen addresses.
+- **Unverified.** The result is weaker than an AutoNAT v2 confirmation and does not imply reachability; where verified external addresses exist (listening native nodes) they remain the advertisement source via `LocalAddressManager`.
+
+## Why Observed Addresses Are Not Advertised
 
 NAT-mapped addresses contain ephemeral ports that are connection-specific. Each inbound connection gets a different port assignment from the NAT, so the port reported by peer A only works for the A-to-us connection. If we advertise it to peer C via hive gossip, peer C cannot use it because the NAT mapping does not exist for C. Storing and advertising these addresses causes:
 

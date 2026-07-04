@@ -35,6 +35,7 @@ fn new_node() -> Swarm<TestNode> {
         identify: identify::Behaviour::new(
             identify::Config::new(keypair.public().clone()),
             identify::new_agent_versions(),
+            identify::ObservedAddresses::default(),
         ),
         autonat_client: autonat::client::Behaviour::new(
             OsRng,

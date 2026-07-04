@@ -72,6 +72,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
+        let observed_addresses = topology.observed_addresses();
         let active_peers = topology.active_peers();
         Self {
             connection_limits: limits.connection,
@@ -82,6 +83,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
             identify: identify::Behaviour::new(
                 super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
+                observed_addresses,
             ),
             nat,
             // A bootnode advertises pricing only and never serves retrieval or

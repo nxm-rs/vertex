@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    net::IpAddr,
     num::NonZeroUsize,
     sync::Arc,
     task::{Context, Poll},
@@ -133,12 +134,113 @@ pub fn new_agent_versions() -> AgentVersions {
     Arc::new(RwLock::new(LruCache::new(MAX_AGENT_VERSIONS)))
 }
 
+/// Live observations of the winning IP required before the majority accessors
+/// report an external address.
+pub const OBSERVATION_QUORUM: usize = 3;
+
+/// Peer-observed addresses for the local node, keyed by live connection and
+/// shared with topology (the [`AgentVersions`] pattern).
+///
+/// An entry lives exactly as long as its connection: recorded on an identify
+/// exchange, replaced in place on re-identify, removed at connection close.
+/// The majority accessors therefore vote only over current observations.
+#[derive(Clone, Default)]
+pub struct ObservedAddresses(Arc<RwLock<HashMap<ConnectionId, Multiaddr>>>);
+
+/// Outcome of recording a connection's observed address.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ObservationChange {
+    /// First observation on this connection.
+    New,
+    /// Same address as previously observed on this connection.
+    Unchanged,
+    /// The observed address on this connection changed.
+    Changed {
+        /// The address previously observed on this connection.
+        previous: Multiaddr,
+    },
+}
+
+impl ObservedAddresses {
+    /// Record a connection's observed address. The identify behaviour is the
+    /// writer; the return value tells it whether to re-emit an
+    /// external-address candidate.
+    pub fn record(&self, connection_id: ConnectionId, addr: Multiaddr) -> ObservationChange {
+        match self.0.write().entry(connection_id) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(addr);
+                ObservationChange::New
+            }
+            Entry::Occupied(occupied) if *occupied.get() == addr => ObservationChange::Unchanged,
+            Entry::Occupied(mut occupied) => ObservationChange::Changed {
+                previous: std::mem::replace(occupied.get_mut(), addr),
+            },
+        }
+    }
+
+    /// Drop a closed connection's observation.
+    pub fn remove(&self, connection_id: &ConnectionId) {
+        self.0.write().remove(connection_id);
+    }
+
+    /// The public multiaddr most peers currently observe for us, or `None`
+    /// until [`OBSERVATION_QUORUM`] live connections agree on one IP.
+    ///
+    /// Plurality vote over the IP of each live connection's observation
+    /// (public scope only), so a minority of wrong or stale reports is
+    /// tolerated; the winning IP and its representative multiaddr resolve
+    /// deterministically. Unverified: reachability is not implied, and the
+    /// port may be a NAT-ephemeral source port.
+    pub fn external_addr(&self) -> Option<Multiaddr> {
+        let observed = self.0.read();
+        let mut votes: HashMap<IpAddr, usize> = HashMap::new();
+        for addr in observed.values() {
+            if let Some(ip) = public_ip(addr) {
+                *votes.entry(ip).or_default() += 1;
+            }
+        }
+        let (winner, count) = votes.into_iter().max_by_key(|(ip, count)| (*count, *ip))?;
+        if count < OBSERVATION_QUORUM {
+            return None;
+        }
+        // Ports differ per connection behind a NAT, so pick the most frequent
+        // full multiaddr among the winning IP's observations, ties broken by
+        // byte order.
+        let mut addr_votes: HashMap<&Multiaddr, usize> = HashMap::new();
+        for addr in observed.values().filter(|a| public_ip(a) == Some(winner)) {
+            *addr_votes.entry(addr).or_default() += 1;
+        }
+        addr_votes
+            .into_iter()
+            .max_by(|(a, ca), (b, cb)| ca.cmp(cb).then_with(|| a.as_ref().cmp(b.as_ref())))
+            .map(|(addr, _)| addr.clone())
+    }
+
+    /// The IP component of [`Self::external_addr`].
+    pub fn external_ip(&self) -> Option<IpAddr> {
+        public_ip(&self.external_addr()?)
+    }
+}
+
+/// The IP of a public-scope multiaddr, `None` for other scopes.
+fn public_ip(addr: &Multiaddr) -> Option<IpAddr> {
+    if classify_multiaddr(addr) != Some(AddressScope::Public) {
+        return None;
+    }
+    addr.iter().find_map(|p| match p {
+        Protocol::Ip4(ip) => Some(IpAddr::V4(ip)),
+        Protocol::Ip6(ip) => Some(IpAddr::V6(ip)),
+        _ => None,
+    })
+}
+
 /// Network behaviour for identify protocol with targeted push support.
 pub struct Behaviour {
     config: Config,
     local_key: Arc<KeyType>,
     connected: HashMap<PeerId, HashMap<ConnectionId, Multiaddr>>,
-    our_observed_addresses: HashMap<ConnectionId, Multiaddr>,
+    /// Peer-observed addresses per live connection, shared with topology.
+    our_observed_addresses: ObservedAddresses,
     outbound_connections_with_ephemeral_port: HashSet<ConnectionId>,
     events: VecDeque<ToSwarm<Event, InEvent>>,
     discovered_peers: PeerCache,
@@ -192,7 +294,11 @@ impl Event {
 
 impl Behaviour {
     /// Create a new identify behaviour with the given public key.
-    pub fn new(config: Config, agent_versions: AgentVersions) -> Self {
+    pub fn new(
+        config: Config,
+        agent_versions: AgentVersions,
+        observed_addresses: ObservedAddresses,
+    ) -> Self {
         let discovered_peers = match NonZeroUsize::new(config.cache_size) {
             None => PeerCache::disabled(),
             Some(size) => PeerCache::enabled(size),
@@ -204,7 +310,7 @@ impl Behaviour {
             config,
             local_key,
             connected: HashMap::new(),
-            our_observed_addresses: Default::default(),
+            our_observed_addresses: observed_addresses,
             outbound_connections_with_ephemeral_port: Default::default(),
             events: VecDeque::new(),
             discovered_peers,
@@ -220,6 +326,7 @@ impl Behaviour {
         config: Config,
         keypair: &Keypair,
         agent_versions: AgentVersions,
+        observed_addresses: ObservedAddresses,
     ) -> Self {
         let discovered_peers = match NonZeroUsize::new(config.cache_size) {
             None => PeerCache::disabled(),
@@ -235,7 +342,7 @@ impl Behaviour {
             config,
             local_key,
             connected: HashMap::new(),
-            our_observed_addresses: Default::default(),
+            our_observed_addresses: observed_addresses,
             outbound_connections_with_ephemeral_port: Default::default(),
             events: VecDeque::new(),
             discovered_peers,
@@ -477,20 +584,21 @@ impl NetworkBehaviour for Behaviour {
                     }
                 }
 
-                match self.our_observed_addresses.entry(connection_id) {
-                    Entry::Vacant(not_yet_observed) => {
-                        not_yet_observed.insert(observed.clone());
+                match self
+                    .our_observed_addresses
+                    .record(connection_id, observed.clone())
+                {
+                    ObservationChange::Unchanged => {}
+                    ObservationChange::New => {
                         self.emit_new_external_addr_candidate_event(connection_id, &observed);
                     }
-                    Entry::Occupied(already_observed) if already_observed.get() == &observed => {}
-                    Entry::Occupied(mut already_observed) => {
+                    ObservationChange::Changed { previous } => {
                         tracing::info!(
-                            old_address=%already_observed.get(),
+                            old_address=%previous,
                             new_address=%observed,
                             "Our observed address on connection {connection_id} changed",
                         );
 
-                        *already_observed.get_mut() = observed.clone();
                         self.emit_new_external_addr_candidate_event(connection_id, &observed);
                     }
                 }
@@ -714,6 +822,122 @@ mod tests {
         hide: bool,
     ) -> HashSet<Multiaddr> {
         select_addresses_for_remote(listen.iter(), external.iter(), &addr(remote), hide)
+    }
+
+    fn conn(n: usize) -> ConnectionId {
+        ConnectionId::new_unchecked(n)
+    }
+
+    #[test]
+    fn external_addr_absent_below_quorum() {
+        let observed = ObservedAddresses::default();
+        for n in 0..OBSERVATION_QUORUM - 1 {
+            observed.record(conn(n), addr("/ip4/91.189.35.149/tcp/1634"));
+        }
+        assert_eq!(observed.external_addr(), None);
+        assert_eq!(observed.external_ip(), None);
+
+        observed.record(
+            conn(OBSERVATION_QUORUM),
+            addr("/ip4/91.189.35.149/tcp/1634"),
+        );
+        assert_eq!(
+            observed.external_addr(),
+            Some(addr("/ip4/91.189.35.149/tcp/1634"))
+        );
+        assert_eq!(
+            observed.external_ip(),
+            Some("91.189.35.149".parse().expect("valid ip"))
+        );
+    }
+
+    #[test]
+    fn majority_wins_over_minority_of_wrong_reports() {
+        let observed = ObservedAddresses::default();
+        // Three peers agree on the IP, each seeing a different NAT port.
+        observed.record(conn(1), addr("/ip4/91.189.35.149/tcp/40001"));
+        observed.record(conn(2), addr("/ip4/91.189.35.149/tcp/40002"));
+        observed.record(conn(3), addr("/ip4/91.189.35.149/tcp/40003"));
+        // A minority reports a different (wrong or stale) IP.
+        observed.record(conn(4), addr("/ip4/203.0.113.7/tcp/1634"));
+        observed.record(conn(5), addr("/ip4/203.0.113.7/tcp/1634"));
+
+        assert_eq!(
+            observed.external_ip(),
+            Some("91.189.35.149".parse().expect("valid ip"))
+        );
+    }
+
+    #[test]
+    fn vote_recomputes_as_observations_change() {
+        let observed = ObservedAddresses::default();
+        for n in 0..3 {
+            observed.record(conn(n), addr("/ip4/91.189.35.149/tcp/1634"));
+        }
+        for n in 3..5 {
+            observed.record(conn(n), addr("/ip4/203.0.113.7/tcp/1634"));
+        }
+        assert_eq!(
+            observed.external_ip(),
+            Some("91.189.35.149".parse().expect("valid ip"))
+        );
+
+        // Two connections re-identify at a new address: the vote flips.
+        for n in 0..2 {
+            assert_eq!(
+                observed.record(conn(n), addr("/ip4/203.0.113.7/tcp/1634")),
+                ObservationChange::Changed {
+                    previous: addr("/ip4/91.189.35.149/tcp/1634")
+                }
+            );
+        }
+        assert_eq!(
+            observed.external_ip(),
+            Some("203.0.113.7".parse().expect("valid ip"))
+        );
+    }
+
+    #[test]
+    fn vote_decays_with_closed_connections() {
+        let observed = ObservedAddresses::default();
+        for n in 0..OBSERVATION_QUORUM {
+            observed.record(conn(n), addr("/ip4/91.189.35.149/tcp/1634"));
+        }
+        assert!(observed.external_addr().is_some());
+
+        observed.remove(&conn(0));
+        assert_eq!(observed.external_addr(), None);
+    }
+
+    #[test]
+    fn non_public_observations_never_win() {
+        let observed = ObservedAddresses::default();
+        observed.record(conn(1), addr("/ip4/192.168.1.10/tcp/1634"));
+        observed.record(conn(2), addr("/ip4/192.168.1.10/tcp/1634"));
+        observed.record(conn(3), addr("/ip4/192.168.1.10/tcp/1634"));
+        observed.record(conn(4), addr("/ip4/127.0.0.1/tcp/1634"));
+        assert_eq!(observed.external_addr(), None);
+    }
+
+    #[test]
+    fn representative_addr_is_the_most_frequent() {
+        let observed = ObservedAddresses::default();
+        observed.record(conn(1), addr("/ip4/91.189.35.149/tcp/1634"));
+        observed.record(conn(2), addr("/ip4/91.189.35.149/tcp/1634"));
+        observed.record(conn(3), addr("/ip4/91.189.35.149/tcp/40003"));
+
+        assert_eq!(
+            observed.external_addr(),
+            Some(addr("/ip4/91.189.35.149/tcp/1634"))
+        );
+    }
+
+    #[test]
+    fn repeat_observation_is_unchanged() {
+        let observed = ObservedAddresses::default();
+        let a = addr("/ip4/91.189.35.149/tcp/1634");
+        assert_eq!(observed.record(conn(1), a.clone()), ObservationChange::New);
+        assert_eq!(observed.record(conn(1), a), ObservationChange::Unchanged);
     }
 
     #[test]

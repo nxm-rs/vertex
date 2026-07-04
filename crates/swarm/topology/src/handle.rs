@@ -30,6 +30,7 @@ pub struct TopologyHandle<I: SwarmIdentity> {
     command_tx: mpsc::Sender<TopologyCommand>,
     event_tx: broadcast::Sender<TopologyEvent>,
     agent_versions: identify::AgentVersions,
+    observed_addresses: identify::ObservedAddresses,
 }
 
 impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
@@ -42,11 +43,13 @@ impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
             command_tx: self.command_tx.clone(),
             event_tx: self.event_tx.clone(),
             agent_versions: Arc::clone(&self.agent_versions),
+            observed_addresses: self.observed_addresses.clone(),
         }
     }
 }
 
 impl<I: SwarmIdentity> TopologyHandle<I> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         identity: Arc<I>,
         routing: Arc<KademliaRouting<I>>,
@@ -55,6 +58,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         command_tx: mpsc::Sender<TopologyCommand>,
         event_tx: broadcast::Sender<TopologyEvent>,
         agent_versions: identify::AgentVersions,
+        observed_addresses: identify::ObservedAddresses,
     ) -> Self {
         Self {
             identity,
@@ -64,6 +68,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             command_tx,
             event_tx,
             agent_versions,
+            observed_addresses,
         }
     }
 
@@ -324,6 +329,19 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         self.agent_versions.read().peek(&peer_id).cloned()
     }
 
+    /// The public multiaddr most peers currently observe for us, derived from
+    /// identify exchanges over live connections. `None` until enough peers
+    /// agree on one IP; unverified and read-only, never fed into address
+    /// advertisement. See [`identify::ObservedAddresses::external_addr`].
+    pub fn observed_external_addr(&self) -> Option<Multiaddr> {
+        self.observed_addresses.external_addr()
+    }
+
+    /// The IP component of [`Self::observed_external_addr`].
+    pub fn observed_external_ip(&self) -> Option<std::net::IpAddr> {
+        self.observed_addresses.external_ip()
+    }
+
     /// Run a connection-evaluation round now instead of waiting for the
     /// periodic tick. Reuses the tick body, so every queued dial still pays a
     /// rate token; this only advances timing, never dial policy. Inherent
@@ -560,6 +578,7 @@ mod tests {
         routing: Arc<KademliaRouting<MockIdentity>>,
         peer_manager: Arc<PeerManager<MockIdentity>>,
         event_tx: broadcast::Sender<TopologyEvent>,
+        observed_addresses: identify::ObservedAddresses,
         // Held so handle commands stay sendable; unused by these tests.
         _command_rx: mpsc::Receiver<TopologyCommand>,
     }
@@ -574,6 +593,7 @@ mod tests {
         );
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (command_tx, command_rx) = mpsc::channel(8);
+        let observed_addresses = identify::ObservedAddresses::default();
         let handle = TopologyHandle::new(
             Arc::new(identity),
             routing.clone(),
@@ -582,12 +602,14 @@ mod tests {
             command_tx,
             event_tx.clone(),
             identify::new_agent_versions(),
+            observed_addresses.clone(),
         );
         ReadinessHarness {
             handle,
             routing,
             peer_manager,
             event_tx,
+            observed_addresses,
             _command_rx: command_rx,
         }
     }
@@ -622,6 +644,24 @@ mod tests {
                 rtt: Duration::from_millis(1),
             });
         }
+    }
+
+    #[test]
+    fn observed_external_addr_reads_the_shared_registry() {
+        let h = harness(SwarmNodeType::Client, 16);
+        assert_eq!(h.handle.observed_external_addr(), None);
+
+        let addr: Multiaddr = "/ip4/91.189.35.149/tcp/1634".parse().expect("valid addr");
+        for n in 0..identify::OBSERVATION_QUORUM {
+            h.observed_addresses
+                .record(libp2p::swarm::ConnectionId::new_unchecked(n), addr.clone());
+        }
+
+        assert_eq!(h.handle.observed_external_addr(), Some(addr));
+        assert_eq!(
+            h.handle.observed_external_ip(),
+            Some("91.189.35.149".parse().expect("valid ip"))
+        );
     }
 
     #[test]
