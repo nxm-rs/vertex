@@ -340,19 +340,25 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
 
         // Cap at time-based allowance: refresh_rate AU accumulate per second.
         // The elapsed interval is measured from the last settlement, or, with
-        // none yet, from when we first started accounting for this peer. It is
-        // never seeded from `now`: that would treat the whole Unix epoch as
-        // elapsed and overflow the scaling into an unbounded grant, defeating
-        // the only anti-free-ride brake on first contact and after a reconnect.
+        // none yet, from when we first started accounting for this peer. The
+        // anchor must be a recorded wall-clock instant: deriving `elapsed`
+        // from an absolute epoch seed (timestamp zero) rather than a recorded
+        // anchor would scale the whole epoch into an unbounded grant,
+        // defeating the only anti-free-ride brake on first contact and after
+        // a reconnect.
         // On overflow the allowance saturates, but the request and owed caps
         // below still bound the result.
+        // A missing anchor grants zero; the allowance is never derived from the clock alone.
         let now = current_timestamp();
-        let since = self
+        let Some(since) = self
             .last_settlement
             .get(peer)
             .or_else(|| self.first_seen.get(peer))
             .copied()
-            .unwrap_or(now);
+        else {
+            debug!(%peer, "no allowance anchor recorded, granting zero");
+            return Au::ZERO;
+        };
         let elapsed = now.saturating_sub(since);
         let allowance = self
             .refresh_rate
@@ -773,6 +779,52 @@ mod tests {
         assert!(
             acceptable <= ceiling,
             "post-reconnect grant {acceptable} exceeded the elapsed-bounded ceiling {ceiling}"
+        );
+    }
+
+    #[test]
+    fn missing_anchor_yields_zero_allowance() {
+        let peer = test_peer();
+        let refresh_rate = Au::from_amount(4_500_000);
+        let svc = service_with_large_debt(peer, refresh_rate);
+
+        // Neither anchor map holds this peer, so the zero provably comes from
+        // the missing-anchor branch rather than the positive-balance guard.
+        assert!(!svc.last_settlement.contains_key(&peer));
+        assert!(!svc.first_seen.contains_key(&peer));
+
+        let handle = svc.accounting.for_peer(peer);
+        let requested = Au::from_amount(1_000_000_000_000);
+        // Pins the missing-anchor branch to a hard zero grant. A re-arming
+        // seeded from the absolute epoch, or any positive grant reaching this
+        // branch, trips the assertion; a `now` seed also yields zero elapsed,
+        // so that shape is not distinguished here.
+        assert_eq!(
+            svc.calculate_acceptable(&peer, &handle, requested),
+            Au::ZERO
+        );
+    }
+
+    #[test]
+    fn present_anchor_allowance_arithmetic_unchanged() {
+        let peer = test_peer();
+        let refresh_rate = Au::from_amount(4_500_000);
+        let mut svc = service_with_large_debt(peer, refresh_rate);
+
+        // A settlement anchored ten seconds ago: the normal path computes
+        // refresh_rate * elapsed, so the grant tracks ten times the rate.
+        let now = current_timestamp();
+        svc.last_settlement.insert(peer, now - 10);
+
+        let handle = svc.accounting.for_peer(peer);
+        let acceptable =
+            svc.calculate_acceptable(&peer, &handle, Au::from_amount(1_000_000_000_000));
+
+        let floor = refresh_rate.checked_scale(10).unwrap();
+        let ceiling = refresh_rate.checked_scale(12).unwrap();
+        assert!(
+            acceptable >= floor && acceptable <= ceiling,
+            "present-anchor grant {acceptable} left the expected [{floor}, {ceiling}] band"
         );
     }
 
