@@ -122,6 +122,16 @@ impl PeerConfigValues for DefaultPeerConfig {
     }
 }
 
+/// Default cap on established inbound connections per remote IP group (an
+/// IPv4 address, or an IPv6 /64 prefix).
+///
+/// A resource-admission control, not reputation: it bounds how much of the
+/// connection table one host can hold, and the count decays instantly on
+/// disconnect. The default is deliberately generous (8% of the default
+/// transport cap) so NAT'd households and multi-node fleets behind one
+/// address are unaffected.
+pub const DEFAULT_MAX_INBOUND_PER_IP: u32 = 32;
+
 /// Configuration for P2P networking.
 ///
 /// Address methods return parsed `Multiaddr` to ensure validation happens early.
@@ -154,6 +164,16 @@ pub trait SwarmNetworkConfig {
     /// Enforced at the transport layer as a hard cap on total established
     /// connections, independent of the topology's per-bin accounting.
     fn max_peers(&self) -> usize;
+
+    /// Maximum established inbound connections per remote IP group (an IPv4
+    /// address, or an IPv6 /64 prefix). `0` disables the cap.
+    ///
+    /// Loopback, private, and link-local sources are exempt, as are the IPs
+    /// of configured trusted peers. Enforced at the transport layer before
+    /// any protocol upgrade; outbound dials are never counted or denied.
+    fn max_inbound_per_ip(&self) -> u32 {
+        DEFAULT_MAX_INBOUND_PER_IP
+    }
 
     /// Connection idle timeout.
     fn idle_timeout(&self) -> Duration;

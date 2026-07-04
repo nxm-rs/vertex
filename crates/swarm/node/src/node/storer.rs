@@ -34,8 +34,9 @@ use vertex_swarm_topology::{
 use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
-use super::base::BaseNode;
+use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
+use super::ip_limits::IpConnectionLimits;
 use super::nat::{NatBehaviour, NatEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
@@ -101,6 +102,9 @@ pub(crate) struct StorerNodeBehaviour<I: SwarmIdentity + Clone> {
     /// Connection caps (total, per-peer, pending). First so a denied connection
     /// is rejected before other behaviours allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
+    /// Per-IP inbound cap, with the transport caps ahead of every other
+    /// behaviour.
+    pub(crate) ip_limits: IpConnectionLimits,
     pub(crate) identify: identify::Behaviour,
     /// NAT traversal and LAN discovery, native only.
     pub(crate) nat: NatBehaviour,
@@ -116,7 +120,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
-        connection_limits: connection_limits::Behaviour,
+        limits: AdmissionLimits,
         store: Arc<dyn SwarmLocalStore>,
         pullsync_storage: Arc<dyn PullStorage>,
         agent_version: Option<&str>,
@@ -129,7 +133,8 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
             topology.active_peers(),
         );
         Self {
-            connection_limits,
+            connection_limits: limits.connection,
+            ip_limits: limits.ip,
             identify: identify::Behaviour::new(
                 super::builder::identify_config(local_public_key, agent_version),
                 agent_versions,
@@ -156,14 +161,14 @@ where
     I: SwarmIdentity + Clone,
     C: SwarmNetworkConfig,
 {
-    let connection_limits = super::base::build_connection_limits(network_config);
+    let limits = super::base::build_admission_limits(network_config);
     super::builder::build_base_node(infra, network_config, "Storer node", move |pk, topology| {
         let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
         StorerNodeBehaviour::from_parts(
             pk,
             topology,
             nat,
-            connection_limits,
+            limits,
             store,
             pullsync_storage,
             network_config.agent_version(),

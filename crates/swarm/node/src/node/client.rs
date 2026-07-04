@@ -22,8 +22,9 @@ use vertex_tasks::TaskExecutor;
 
 use vertex_swarm_api::SwarmLocalStore;
 
-use super::base::BaseNode;
+use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
+use super::ip_limits::IpConnectionLimits;
 use super::nat::{NatBehaviour, NatEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
@@ -38,6 +39,9 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     /// Connection caps (total, per-peer, pending). First so a denied connection
     /// is rejected before other behaviours allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
+    /// Per-IP inbound cap, with the transport caps ahead of every other
+    /// behaviour. Inert in the browser, which never listens.
+    pub(crate) ip_limits: IpConnectionLimits,
     pub(crate) identify: identify::Behaviour,
     /// NAT traversal and LAN discovery as one platform sub-behaviour; a no-op in
     /// the browser, where a wasm client dials over websockets and never listens.
@@ -53,14 +57,15 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
-        connection_limits: connection_limits::Behaviour,
+        limits: AdmissionLimits,
         store: Arc<dyn SwarmLocalStore>,
         agent_version: Option<&str>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         let active_peers = topology.active_peers();
         Self {
-            connection_limits,
+            connection_limits: limits.connection,
+            ip_limits: limits.ip,
             // Identify advertises addresses scoped per peer (see
             // `addresses_for_remote`), so a public peer never receives our
             // private or loopback addresses.
@@ -94,14 +99,14 @@ where
     I: SwarmIdentity + Clone,
     C: SwarmNetworkConfig,
 {
-    let connection_limits = super::base::build_connection_limits(network_config);
+    let limits = super::base::build_admission_limits(network_config);
     super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
         let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
         ClientNodeBehaviour::from_parts(
             pk,
             topology,
             nat,
-            connection_limits,
+            limits,
             store,
             network_config.agent_version(),
         )

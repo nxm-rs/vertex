@@ -34,7 +34,7 @@ pub fn extract_ip(addr: &Multiaddr) -> Option<IpAddr> {
 /// Classify the scope of an IP address.
 ///
 /// Returns `None` for unspecified addresses (0.0.0.0, ::) that are not routable.
-fn classify_ip(ip: IpAddr) -> Option<AddressScope> {
+pub fn classify_ip(ip: IpAddr) -> Option<AddressScope> {
     match ip {
         IpAddr::V4(ipv4) => classify_ipv4(ipv4),
         IpAddr::V6(ipv6) => classify_ipv6(ipv6),

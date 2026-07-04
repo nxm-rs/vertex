@@ -152,11 +152,15 @@ The swarm composes `libp2p::connection_limits` into every node-type behaviour (b
 | Limit | Source | Default |
 |-------|--------|---------|
 | Established total | `--network.max-peers` | 400 |
+| Established incoming | derived (3/4 of `--network.max-peers`) | 300 |
 | Established per peer | constant | 2 |
+| Established inbound per IP | `--network.max-inbound-per-ip` | 32 |
 | Pending incoming | constant | 64 |
 | Pending outgoing | constant | 64 |
 
-Division of responsibility: topology owns connection composition (per-bin targets, saturation, inbound ceilings, trimming) and its steady-state totals sit well below the transport cap; the transport cap only bounds resource consumption (file descriptors, memory) when topology accounting is bypassed or overwhelmed. The per-peer cap of 2 tolerates the simultaneous-open race; topology closes duplicate connections itself. The pending-outgoing cap of 64 sits at twice the dialer's 32 concurrent in-flight dials to leave room for bootnode, mDNS, and operator-issued dials.
+Division of responsibility: topology owns connection composition (per-bin targets, saturation, inbound ceilings, trimming) and its steady-state totals sit well below the transport cap; the transport cap only bounds resource consumption (file descriptors, memory) when topology accounting is bypassed or overwhelmed. The per-peer cap of 2 tolerates the simultaneous-open race; topology closes duplicate connections itself. The pending-outgoing cap of 64 sits at twice the dialer's 32 concurrent in-flight dials to leave room for bootnode, mDNS, and operator-issued dials. The incoming share reserves a quarter of the table for our own dials, so an inbound flood can never switch off outbound dialling at the transport layer; it composes with topology's per-bin minimum-outbound quota, which defends bin composition rather than transport resources.
+
+The per-IP cap is admission control, not reputation: it bounds how much of the connection table one host can hold, and the count decays instantly on disconnect. It is enforced by a dedicated behaviour (`vertex-swarm-node`, alongside the connection-limits assembly) that denies an inbound connection at the pending stage, before any protocol upgrade work, and re-checks at establishment. Because denial precedes the handshake and the peer registry, a capped connection can never displace a healthy incumbent and needs no teardown of its own. IPv6 sources are counted per /64 prefix (a single host routinely holds a whole /64); IPv4-mapped IPv6 sources count in the IPv4 group. Loopback, private, and link-local sources are exempt, as are the IPs of `--network.trusted-peers`; outbound dials are never counted or denied, so multiple peers behind one NAT can still all be dialled. `--network.max-inbound-per-ip 0` disables the cap. The default of 32 is deliberately generous (8% of the default table) so NAT'd households and multi-node fleets behind one address are unaffected.
 
 A dial denied by the limits surfaces to topology as `DialError::Denied` and carries no score penalty: the peer was never contacted, so the failure says nothing about it. The peer still receives normal dial backoff, which paces retries while the cap is exhausted. Gossip-admitted records are dialed through this same swarm and are subject to the same limits; there is no separate verification swarm.
 
