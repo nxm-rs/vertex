@@ -642,7 +642,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tokio::sync::Notify;
-    use vertex_swarm_accounting::{NoProvideAction, NoReceiveAction};
     use vertex_swarm_api::{Direction, SwarmAccounting, SwarmPeerAccounting, SwarmResult};
     use vertex_swarm_test_utils::MockIdentity;
     use vertex_tasks::TaskManager;
@@ -694,6 +693,16 @@ mod tests {
         }
     }
 
+    struct NoopReceive;
+    impl vertex_swarm_api::Commit for NoopReceive {
+        fn apply(self) {}
+    }
+
+    struct NoopProvide;
+    impl vertex_swarm_api::CommitOnWrite for NoopProvide {
+        fn apply_boxed(self: Box<Self>) {}
+    }
+
     struct MockBandwidth {
         for_peer_calls: Arc<AtomicUsize>,
         started: Arc<AtomicUsize>,
@@ -704,8 +713,8 @@ mod tests {
     impl SwarmAccounting for MockBandwidth {
         type Identity = MockIdentity;
         type Peer = MockPeerBandwidth;
-        type ReceiveAction = NoReceiveAction;
-        type ProvideAction = NoProvideAction;
+        type ReceiveAction = NoopReceive;
+        type ProvideAction = NoopProvide;
 
         fn identity(&self) -> &Self::Identity {
             unreachable!("settlement never reads the identity")
@@ -729,14 +738,14 @@ mod tests {
             _price: Au,
             _originated: bool,
         ) -> SwarmResult<Self::ReceiveAction> {
-            Ok(NoReceiveAction)
+            Ok(NoopReceive)
         }
         fn prepare_provide(
             &self,
             _peer: OverlayAddress,
             _price: Au,
         ) -> SwarmResult<Self::ProvideAction> {
-            Ok(NoProvideAction)
+            Ok(NoopProvide)
         }
     }
 

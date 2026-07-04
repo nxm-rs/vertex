@@ -9,7 +9,6 @@
 //! - [`AccountingBuilder`] - Builder for constructing accounting with pricing
 //! - [`AccountingPeerHandle`] - Handle for recording bandwidth per peer
 //! - [`Reservation`] - Typed receive/provide reservation legs
-//! - [`NoSettlement`] - No-op settlement provider
 //!
 //! Settlement providers (`PseudosettleProvider`, `SwapProvider`) are in sibling crates.
 //!
@@ -38,7 +37,7 @@ mod builder;
 mod client_accounting;
 mod config;
 mod constants;
-mod noop;
+#[cfg(test)]
 mod settlement;
 
 pub use accounting::{
@@ -46,9 +45,9 @@ pub use accounting::{
 };
 #[cfg(feature = "cli")]
 pub use args::AccountingArgs;
-pub use builder::{AccountingBuilder, NoAccountingBuilder};
+pub use builder::AccountingBuilder;
 pub use client_accounting::ClientAccounting;
 pub use config::{AccountingConfig, DefaultAccountingConfig};
-pub use noop::{NoAccounting, NoPeerAccounting, NoProvideAction, NoReceiveAction};
-pub use settlement::NoSettlement;
+#[cfg(test)]
+pub(crate) use settlement::NoSettlement;
 pub use vertex_swarm_accounting_pricing::{FixedPricer, FixedPricingConfig, NoPricer};

@@ -14,11 +14,6 @@ impl<B, P> ClientAccounting<B, P> {
     pub fn new(bandwidth: B, pricing: P) -> Self {
         Self { bandwidth, pricing }
     }
-
-    /// Decompose into parts.
-    pub fn into_parts(self) -> (B, P) {
-        (self.bandwidth, self.pricing)
-    }
 }
 
 impl<B, P> SwarmClientAccounting for ClientAccounting<B, P>
