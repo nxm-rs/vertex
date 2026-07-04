@@ -154,7 +154,9 @@ mod tests {
     mod staggered_race {
         use std::time::{Duration, Instant};
 
-        use crate::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
+        use crate::{
+            ChunkTransferError, ClientCommand, ClientHandle, PeerCommand, RetrievalResult,
+        };
         use nectar_primitives::ContentChunk;
         use tokio::sync::mpsc;
 
@@ -203,14 +205,20 @@ mod tests {
             // withholds. The stagger must bring in the second candidate, whose
             // response resolves the race well under the per-attempt deadline.
             let head = match rx.recv().await.expect("head command") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, peer_a);
                     response
                 }
                 other => panic!("unexpected command: {other:?}"),
             };
             match rx.recv().await.expect("second command after stagger") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, peer_b);
                     response
                         .send(Ok(RetrievalResult {
@@ -287,7 +295,8 @@ mod tests {
         use tokio::sync::mpsc;
 
         use crate::{
-            ChunkTransferError, ClientCommand, ClientHandle, PeerInflightLimiter, RetrievalResult,
+            ChunkTransferError, ClientCommand, ClientHandle, PeerCommand, PeerInflightLimiter,
+            RetrievalResult,
         };
 
         use crate::race_candidates;
@@ -431,7 +440,10 @@ mod tests {
 
             // The only command is for the free peer: the saturated peer is declined.
             match rx.recv().await.expect("a command for the free peer") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, free, "the saturated peer is declined, not contacted");
                     response
                         .send(Ok(RetrievalResult {
@@ -478,7 +490,10 @@ mod tests {
             // The only command dispatched is to the next-closest peer: the capped
             // head was skipped at selection time, not contacted.
             match rx.recv().await.expect("a command for the free peer") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, next, "the skipped head is not contacted");
                     response
                         .send(Ok(RetrievalResult {
@@ -518,7 +533,10 @@ mod tests {
 
             // The head attempt dispatches first and reserves the head's only slot.
             let _head_response = match rx.recv().await.expect("head command") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, head);
                     assert!(
                         !limiter.has_free_slot(&head),
@@ -530,7 +548,10 @@ mod tests {
             };
             // After the stagger the second candidate joins and resolves the race.
             match rx.recv().await.expect("second command after stagger") {
-                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                ClientCommand::Peer {
+                    peer,
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                } => {
                     assert_eq!(peer, second);
                     response
                         .send(Ok(RetrievalResult {

@@ -11,7 +11,9 @@ use vertex_swarm_api::{
     Au, Direction, PeerReporter, ReportSource, SwarmAccounting, SwarmPeerAccounting,
     SwarmScoringEvent,
 };
-use vertex_swarm_client_protocol::{ClientCommand, PseudosettleAck, PseudosettleEvent};
+use vertex_swarm_client_protocol::{
+    ClientCommand, PeerCommand, PseudosettleAck, PseudosettleEvent,
+};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
@@ -187,9 +189,11 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
                 debug!(%peer, %amount, "Sending pseudosettle request");
 
                 // Send via network
-                if let Err(e) = self.command_tx.send(ClientCommand::SendPseudosettle {
+                if let Err(e) = self.command_tx.send(ClientCommand::Peer {
                     peer,
-                    amount: wire_from_au(amount),
+                    command: PeerCommand::SendPseudosettle {
+                        amount: wire_from_au(amount),
+                    },
                 }) {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle command");
                     // Remove the pending entry and notify failure
@@ -265,10 +269,9 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
                         accepted: Au::ZERO,
                         timestamp: ack_timestamp(),
                     };
-                    let _ = self.command_tx.send(ClientCommand::AckPseudosettle {
+                    let _ = self.command_tx.send(ClientCommand::Peer {
                         peer,
-                        request_id,
-                        ack,
+                        command: PeerCommand::AckPseudosettle { request_id, ack },
                     });
                     return;
                 }
@@ -299,10 +302,9 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
 
                 debug!(%peer, %acceptable, "Sending pseudosettle ack");
 
-                if let Err(e) = self.command_tx.send(ClientCommand::AckPseudosettle {
+                if let Err(e) = self.command_tx.send(ClientCommand::Peer {
                     peer,
-                    request_id,
-                    ack,
+                    command: PeerCommand::AckPseudosettle { request_id, ack },
                 }) {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle ack");
                 }
@@ -520,7 +522,10 @@ mod tests {
                 // awaits its ack. Reset so the next settle starts fresh.
                 assert!(matches!(
                     client_rx.try_recv(),
-                    Ok(ClientCommand::SendPseudosettle { .. })
+                    Ok(ClientCommand::Peer {
+                        command: PeerCommand::SendPseudosettle { .. },
+                        ..
+                    })
                 ));
                 svc.pending.remove(&peer);
                 true

@@ -18,7 +18,7 @@ use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::inflight::PeerInflightLimiter;
-use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
+use crate::protocol::{ClientCommand, ClientEvent, FailureKind, PeerCommand, PeerEvent};
 use crate::retrieval_latency::RetrievalLatency;
 use crate::selection::SettlementTrigger;
 
@@ -204,11 +204,13 @@ impl ClientHandle {
 
         let (tx, rx) = oneshot::channel();
 
-        if let Err(e) = self.send_command(ClientCommand::RetrieveChunk {
+        if let Err(e) = self.send_command(ClientCommand::Peer {
             peer,
-            address,
-            response: tx,
-            originated,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated,
+            },
         }) {
             // Never reached the wire, so nothing was charged: refund.
             self.refund_origin(peer, committed);
@@ -245,12 +247,13 @@ impl ClientHandle {
 
         let (tx, rx) = oneshot::channel();
 
-        if let Err(e) = self.send_command(ClientCommand::PushChunk {
+        if let Err(e) = self.send_command(ClientCommand::Peer {
             peer,
-            address,
-            chunk,
-            response: tx,
-            originated,
+            command: PeerCommand::PushChunk {
+                chunk,
+                response: tx,
+                originated,
+            },
         }) {
             self.refund_origin(peer, committed);
             return Err(e);
@@ -416,102 +419,6 @@ impl ClientService {
                 // TODO: Trigger pricing announcement based on peer type
             }
 
-            ClientEvent::PricingReceived {
-                peer,
-                peer_id,
-                threshold,
-            } => {
-                debug!(%peer_id, %peer, %threshold, "Received pricing threshold");
-                // TODO: Validate threshold against minimum
-                // TODO: Store peer's threshold for bandwidth accounting
-            }
-
-            ClientEvent::PricingSent { peer } => {
-                debug!(%peer, "Pricing threshold sent");
-            }
-
-            ClientEvent::ChunkReceived {
-                peer,
-                address,
-                chunk,
-                stamp,
-                latency,
-                originated,
-            } => {
-                // The requester is resolved by the handler; this event exists for
-                // scoring and caching. Content chunks are cached by address
-                // (immutable); SOCs are not (no version signal). The origin debit
-                // is committed by the dispatch reservation, not here; a relay leg
-                // is accounted by the forwarder. Cache and scoring apply to every
-                // delivery.
-                debug!(%peer, %address, ?latency, "Chunk received");
-                // Feed the per-PO latency estimate so the chunk provider can pace
-                // its staggered race to the forwarding distance. Only originated
-                // retrievals: a relay leg's latency is the requester's chain, not
-                // ours. Keyed by PO(serving_peer, chunk), the forwarding distance.
-                if originated && let Some(latency_estimate) = &self.retrieval_latency {
-                    latency_estimate.record(address.proximity(&peer).get(), latency);
-                }
-                if let Some(store) = &self.store
-                    && chunk.is_content()
-                {
-                    let _ = store.put(CachedChunk::new(chunk, stamp));
-                }
-                self.report(
-                    &peer,
-                    SwarmScoringEvent::RetrievalSuccess { latency },
-                    RETRIEVAL_SOURCE,
-                );
-            }
-
-            ClientEvent::InboundServed { peer } => {
-                debug!(%peer, "Served inbound retrieval from cache");
-                metrics::counter!("swarm.client.inbound_served").increment(1);
-            }
-
-            ClientEvent::InboundForwarded { peer } => {
-                debug!(%peer, "Forwarded inbound retrieval to a closer peer");
-                metrics::counter!("swarm.client.inbound_forwarded").increment(1);
-            }
-
-            ClientEvent::InboundMissed { peer, address } => {
-                debug!(%peer, %address, "Inbound retrieval missed (substream reset)");
-                metrics::counter!("swarm.client.inbound_missed").increment(1);
-            }
-
-            ClientEvent::InboundRelayed { peer } => {
-                debug!(%peer, "Relayed pushsync receipt to pusher");
-                metrics::counter!("swarm.client.inbound_relayed").increment(1);
-            }
-
-            ClientEvent::InboundStored { peer } => {
-                debug!(%peer, "Stored inbound pushsync delivery and signed a receipt");
-                metrics::counter!("swarm.client.inbound_stored").increment(1);
-            }
-
-            ClientEvent::InboundPushFailed { peer, address } => {
-                debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
-                metrics::counter!("swarm.client.inbound_push_failed").increment(1);
-            }
-
-            ClientEvent::ReceiptReceived {
-                peer,
-                address,
-                latency,
-                originated: _,
-            } => {
-                // The pusher is resolved by the handler; this event exists for
-                // scoring. The origin debit is committed by the dispatch
-                // reservation, not here; a relay leg is accounted by the
-                // forwarder.
-                debug!(%peer, %address, ?latency, "Receipt received");
-                self.report(
-                    &peer,
-                    SwarmScoringEvent::PushSuccess { latency },
-                    PUSHSYNC_SOURCE,
-                );
-            }
-
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
                 debug!(%peer_id, %overlay, "Peer disconnected");
                 if let Some(inflight) = &self.inflight {
@@ -535,144 +442,224 @@ impl ClientService {
                 // TODO: Handle specific errors, maybe disconnect peer
             }
 
-            ClientEvent::RetrievalFailed {
-                peer,
-                address,
-                error,
-                kind,
-            } => {
-                // Scoring policy: a malformed chunk is misbehaviour and scored
-                // adversely. A plain `Protocol` failure (miss, timeout, or
-                // transport error) is blameless and not scored, so a bulk
-                // download's flood of misses cannot decay the peer set past the
-                // disconnect threshold; the staggered race steers around an
-                // unhelpful candidate within a request instead.
-                warn!(%peer, %address, %error, ?kind, "Retrieval failed");
-                match kind {
-                    FailureKind::InvalidChunk => {
-                        metrics::counter!(
-                            "swarm.client.invalid_chunk",
-                            "protocol" => "retrieval",
-                        )
-                        .increment(1);
-                        self.report(&peer, SwarmScoringEvent::InvalidData, RETRIEVAL_SOURCE);
-                    }
-                    FailureKind::Protocol => {
-                        // Blameless miss: counted but not scored.
-                        metrics::counter!(
-                            "swarm.client.retrieval_miss",
-                            "protocol" => "retrieval",
-                        )
-                        .increment(1);
-                    }
-                }
-            }
-
-            ClientEvent::PushFailed {
-                peer,
-                address,
-                error,
-                kind,
-            } => {
-                // Same scoring policy as retrieval: a malformed receipt is
-                // scored, a plain `Protocol` failure is blameless.
-                warn!(%peer, %address, %error, ?kind, "Push failed");
-                match kind {
-                    FailureKind::InvalidChunk => {
-                        metrics::counter!(
-                            "swarm.client.invalid_chunk",
-                            "protocol" => "pushsync",
-                        )
-                        .increment(1);
-                        self.report(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
-                    }
-                    FailureKind::Protocol => {
-                        metrics::counter!(
-                            "swarm.client.retrieval_miss",
-                            "protocol" => "pushsync",
-                        )
-                        .increment(1);
-                    }
-                }
-            }
-
-            ClientEvent::InboundInvalidData { peer, protocol } => {
-                // Decode rejected a malformed inbound chunk or request before
-                // relay; score the sender adversely.
-                warn!(%peer, %protocol, "Inbound malformed data rejected");
-                metrics::counter!(
-                    "swarm.client.invalid_chunk",
-                    "protocol" => protocol,
-                )
-                .increment(1);
-                self.report(
-                    &peer,
-                    SwarmScoringEvent::InvalidData,
-                    ReportSource::Protocol(protocol),
-                );
-            }
-
-            ClientEvent::PseudosettleReceived {
+            ClientEvent::Peer {
                 peer,
                 peer_id,
-                amount,
-                request_id,
-            } => {
-                debug!(%peer, %peer_id, %amount, %request_id, "Pseudosettle received");
-
-                // TODO: Validate amount against accounting rules
-                // TODO: Credit peer's balance in accounting system:
-                //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
-
-                let ack = PseudosettleAck {
-                    accepted: Au::saturating_from_u256(amount),
-                    // Unix seconds: the payer rejects an ack whose timestamp is
-                    // more than a couple of seconds off its own clock.
-                    timestamp: vertex_util_runtime::time::now_unix_secs() as i64,
-                };
-
-                if let Err(e) = self.handle.send_command(ClientCommand::AckPseudosettle {
-                    peer,
-                    request_id,
-                    ack,
-                }) {
-                    warn!(%peer, %peer_id, error = ?e, "Failed to send pseudosettle ack");
+                event,
+            } => match event {
+                PeerEvent::PricingReceived { threshold } => {
+                    debug!(%peer_id, %peer, %threshold, "Received pricing threshold");
+                    // TODO: Validate threshold against minimum
+                    // TODO: Store peer's threshold for bandwidth accounting
                 }
-            }
 
-            ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
-                debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
-            }
+                PeerEvent::PricingSent => {
+                    debug!(%peer, "Pricing threshold sent");
+                }
 
-            #[cfg(feature = "swap")]
-            ClientEvent::SwapChequeReceived {
-                peer,
-                peer_id,
-                peer_rate,
-                ..
-            } => {
-                // The swap settlement service consumes cheques via the dedicated
-                // channel configured with `route_swap_events`.
-                debug!(%peer, %peer_id, %peer_rate, "Swap cheque received");
-            }
+                PeerEvent::ChunkReceived {
+                    address,
+                    chunk,
+                    stamp,
+                    latency,
+                    originated,
+                } => {
+                    // The requester is resolved by the handler; this event exists for
+                    // scoring and caching. Content chunks are cached by address
+                    // (immutable); SOCs are not (no version signal). The origin debit
+                    // is committed by the dispatch reservation, not here; a relay leg
+                    // is accounted by the forwarder. Cache and scoring apply to every
+                    // delivery.
+                    debug!(%peer, %address, ?latency, "Chunk received");
+                    // Feed the per-PO latency estimate so the chunk provider can pace
+                    // its staggered race to the forwarding distance. Only originated
+                    // retrievals: a relay leg's latency is the requester's chain, not
+                    // ours. Keyed by PO(serving_peer, chunk), the forwarding distance.
+                    if originated && let Some(latency_estimate) = &self.retrieval_latency {
+                        latency_estimate.record(address.proximity(&peer).get(), latency);
+                    }
+                    if let Some(store) = &self.store
+                        && chunk.is_content()
+                    {
+                        let _ = store.put(CachedChunk::new(chunk, stamp));
+                    }
+                    self.report(
+                        &peer,
+                        SwarmScoringEvent::RetrievalSuccess { latency },
+                        RETRIEVAL_SOURCE,
+                    );
+                }
 
-            #[cfg(feature = "swap")]
-            ClientEvent::SwapChequeSent {
-                peer,
-                peer_id,
-                peer_rate,
-            } => {
-                debug!(%peer, %peer_id, %peer_rate, "Swap cheque sent");
-            }
-            // `ClientEvent` carries swap variants when `client-protocol/swap`
-            // is on, which Cargo feature unification can turn on (a workspace
-            // build also compiling `accounting-swap`) even when this crate's
-            // `swap` feature is off. The swap wire is then not linked here, so
-            // ignore them. The all-features build keeps full exhaustiveness.
-            // Unreachable when nothing in the build enables `client-protocol/swap`.
-            #[cfg(not(feature = "swap"))]
-            #[allow(unreachable_patterns)]
-            _ => {}
+                PeerEvent::InboundServed => {
+                    debug!(%peer, "Served inbound retrieval from cache");
+                    metrics::counter!("swarm.client.inbound_served").increment(1);
+                }
+
+                PeerEvent::InboundForwarded => {
+                    debug!(%peer, "Forwarded inbound retrieval to a closer peer");
+                    metrics::counter!("swarm.client.inbound_forwarded").increment(1);
+                }
+
+                PeerEvent::InboundMissed { address } => {
+                    debug!(%peer, %address, "Inbound retrieval missed (substream reset)");
+                    metrics::counter!("swarm.client.inbound_missed").increment(1);
+                }
+
+                PeerEvent::InboundRelayed => {
+                    debug!(%peer, "Relayed pushsync receipt to pusher");
+                    metrics::counter!("swarm.client.inbound_relayed").increment(1);
+                }
+
+                PeerEvent::InboundStored => {
+                    debug!(%peer, "Stored inbound pushsync delivery and signed a receipt");
+                    metrics::counter!("swarm.client.inbound_stored").increment(1);
+                }
+
+                PeerEvent::InboundPushFailed { address } => {
+                    debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
+                    metrics::counter!("swarm.client.inbound_push_failed").increment(1);
+                }
+
+                PeerEvent::ReceiptReceived {
+                    address,
+                    latency,
+                    originated: _,
+                } => {
+                    // The pusher is resolved by the handler; this event exists for
+                    // scoring. The origin debit is committed by the dispatch
+                    // reservation, not here; a relay leg is accounted by the
+                    // forwarder.
+                    debug!(%peer, %address, ?latency, "Receipt received");
+                    self.report(
+                        &peer,
+                        SwarmScoringEvent::PushSuccess { latency },
+                        PUSHSYNC_SOURCE,
+                    );
+                }
+
+                PeerEvent::RetrievalFailed {
+                    address,
+                    error,
+                    kind,
+                } => {
+                    // Scoring policy: a malformed chunk is misbehaviour and scored
+                    // adversely. A plain `Protocol` failure (miss, timeout, or
+                    // transport error) is blameless and not scored, so a bulk
+                    // download's flood of misses cannot decay the peer set past the
+                    // disconnect threshold; the staggered race steers around an
+                    // unhelpful candidate within a request instead.
+                    warn!(%peer, %address, %error, ?kind, "Retrieval failed");
+                    match kind {
+                        FailureKind::InvalidChunk => {
+                            metrics::counter!(
+                                "swarm.client.invalid_chunk",
+                                "protocol" => "retrieval",
+                            )
+                            .increment(1);
+                            self.report(&peer, SwarmScoringEvent::InvalidData, RETRIEVAL_SOURCE);
+                        }
+                        FailureKind::Protocol => {
+                            // Blameless miss: counted but not scored.
+                            metrics::counter!(
+                                "swarm.client.retrieval_miss",
+                                "protocol" => "retrieval",
+                            )
+                            .increment(1);
+                        }
+                    }
+                }
+
+                PeerEvent::PushFailed {
+                    address,
+                    error,
+                    kind,
+                } => {
+                    // Same scoring policy as retrieval: a malformed receipt is
+                    // scored, a plain `Protocol` failure is blameless.
+                    warn!(%peer, %address, %error, ?kind, "Push failed");
+                    match kind {
+                        FailureKind::InvalidChunk => {
+                            metrics::counter!(
+                                "swarm.client.invalid_chunk",
+                                "protocol" => "pushsync",
+                            )
+                            .increment(1);
+                            self.report(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
+                        }
+                        FailureKind::Protocol => {
+                            metrics::counter!(
+                                "swarm.client.retrieval_miss",
+                                "protocol" => "pushsync",
+                            )
+                            .increment(1);
+                        }
+                    }
+                }
+
+                PeerEvent::InboundInvalidData { protocol } => {
+                    // Decode rejected a malformed inbound chunk or request before
+                    // relay; score the sender adversely.
+                    warn!(%peer, %protocol, "Inbound malformed data rejected");
+                    metrics::counter!(
+                        "swarm.client.invalid_chunk",
+                        "protocol" => protocol,
+                    )
+                    .increment(1);
+                    self.report(
+                        &peer,
+                        SwarmScoringEvent::InvalidData,
+                        ReportSource::Protocol(protocol),
+                    );
+                }
+
+                PeerEvent::PseudosettleReceived { amount, request_id } => {
+                    debug!(%peer, %peer_id, %amount, %request_id, "Pseudosettle received");
+
+                    // TODO: Validate amount against accounting rules
+                    // TODO: Credit peer's balance in accounting system:
+                    //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
+
+                    let ack = PseudosettleAck {
+                        accepted: Au::saturating_from_u256(amount),
+                        // Unix seconds: the payer rejects an ack whose timestamp is
+                        // more than a couple of seconds off its own clock.
+                        timestamp: vertex_util_runtime::time::now_unix_secs() as i64,
+                    };
+
+                    if let Err(e) = self.handle.send_command(ClientCommand::Peer {
+                        peer,
+                        command: PeerCommand::AckPseudosettle { request_id, ack },
+                    }) {
+                        warn!(%peer, %peer_id, error = ?e, "Failed to send pseudosettle ack");
+                    }
+                }
+
+                PeerEvent::PseudosettleSent { ack } => {
+                    debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
+                }
+
+                #[cfg(feature = "swap")]
+                PeerEvent::SwapChequeReceived { peer_rate, .. } => {
+                    // The swap settlement service consumes cheques via the dedicated
+                    // channel configured with `route_swap_events`.
+                    debug!(%peer, %peer_id, %peer_rate, "Swap cheque received");
+                }
+
+                #[cfg(feature = "swap")]
+                PeerEvent::SwapChequeSent { peer_rate } => {
+                    debug!(%peer, %peer_id, %peer_rate, "Swap cheque sent");
+                }
+
+                // `PeerEvent` carries swap variants when `client-protocol/swap`
+                // is on, which Cargo feature unification can turn on (a workspace
+                // build also compiling `accounting-swap`) even when this crate's
+                // `swap` feature is off. The swap wire is then not linked here, so
+                // ignore them. The all-features build keeps full exhaustiveness.
+                // Unreachable when nothing in the build enables `client-protocol/swap`.
+                #[cfg(not(feature = "swap"))]
+                #[allow(unreachable_patterns)]
+                _ => {}
+            },
         }
     }
 }
@@ -742,11 +729,14 @@ mod tests {
     #[test]
     fn malformed_retrieval_reports_invalid_data() {
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::RetrievalFailed {
+        service.process_event(ClientEvent::Peer {
             peer: peer(1),
-            address: ChunkAddress::zero(),
-            error: "invalid chunk".into(),
-            kind: FailureKind::InvalidChunk,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::RetrievalFailed {
+                address: ChunkAddress::zero(),
+                error: "invalid chunk".into(),
+                kind: FailureKind::InvalidChunk,
+            },
         });
         let (reported_peer, event, source) = reporter.single();
         assert_eq!(reported_peer, peer(1));
@@ -758,11 +748,14 @@ mod tests {
     fn plain_retrieval_failure_does_not_penalise_peer() {
         // `FailureKind::Protocol` is a blameless miss and must not be scored.
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::RetrievalFailed {
+        service.process_event(ClientEvent::Peer {
             peer: peer(2),
-            address: ChunkAddress::zero(),
-            error: "not found".into(),
-            kind: FailureKind::Protocol,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::RetrievalFailed {
+                address: ChunkAddress::zero(),
+                error: "not found".into(),
+                kind: FailureKind::Protocol,
+            },
         });
         reporter.assert_none();
     }
@@ -770,11 +763,14 @@ mod tests {
     #[test]
     fn malformed_push_reports_invalid_data() {
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::PushFailed {
+        service.process_event(ClientEvent::Peer {
             peer: peer(3),
-            address: ChunkAddress::zero(),
-            error: "invalid chunk".into(),
-            kind: FailureKind::InvalidChunk,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::PushFailed {
+                address: ChunkAddress::zero(),
+                error: "invalid chunk".into(),
+                kind: FailureKind::InvalidChunk,
+            },
         });
         let (_, event, source) = reporter.single();
         assert_eq!(event, SwarmScoringEvent::InvalidData);
@@ -786,11 +782,14 @@ mod tests {
         // Mirror of the retrieval case: a `FailureKind::Protocol` push failure
         // must not be scored.
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::PushFailed {
+        service.process_event(ClientEvent::Peer {
             peer: peer(4),
-            address: ChunkAddress::zero(),
-            error: "rejected".into(),
-            kind: FailureKind::Protocol,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::PushFailed {
+                address: ChunkAddress::zero(),
+                error: "rejected".into(),
+                kind: FailureKind::Protocol,
+            },
         });
         reporter.assert_none();
     }
@@ -798,9 +797,12 @@ mod tests {
     #[test]
     fn inbound_malformed_delivery_reports_invalid_data_against_sender() {
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::InboundInvalidData {
+        service.process_event(ClientEvent::Peer {
             peer: peer(5),
-            protocol: "pushsync",
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::InboundInvalidData {
+                protocol: "pushsync",
+            },
         });
         let (reported_peer, event, source) = reporter.single();
         assert_eq!(reported_peer, peer(5));
@@ -811,11 +813,14 @@ mod tests {
     #[test]
     fn receipt_received_reports_push_success_with_latency() {
         let (service, reporter) = service_with_reporter();
-        service.process_event(ClientEvent::ReceiptReceived {
+        service.process_event(ClientEvent::Peer {
             peer: peer(6),
-            address: ChunkAddress::zero(),
-            latency: Duration::from_millis(42),
-            originated: false,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::ReceiptReceived {
+                address: ChunkAddress::zero(),
+                latency: Duration::from_millis(42),
+                originated: false,
+            },
         });
         let (_, event, source) = reporter.single();
         assert_eq!(
@@ -909,8 +914,9 @@ mod tests {
         // so the balance is already debited and nothing is left reserved (this is
         // the distinguishing behaviour from the old reserve-only-at-dispatch).
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk {
-                peer: p, response, ..
+            ClientCommand::Peer {
+                peer: p,
+                command: PeerCommand::RetrieveChunk { response, .. },
             } => {
                 assert_eq!(p, peer);
                 response
@@ -954,7 +960,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         // Already committed at dispatch.
@@ -989,7 +998,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1027,7 +1039,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1058,7 +1073,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         // Committed at dispatch, then refunded on the confirmed absence.
@@ -1091,7 +1109,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1123,7 +1144,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched anyway in the band") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer]);
@@ -1167,9 +1191,13 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk {
-                originated,
-                response,
+            ClientCommand::Peer {
+                command:
+                    PeerCommand::RetrieveChunk {
+                        originated,
+                        response,
+                        ..
+                    },
                 ..
             } => {
                 assert!(!originated, "a relay leg is not an origin request");
@@ -1212,7 +1240,10 @@ mod tests {
             async move { handle.push_chunk(peer, stamped, true).await }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::PushChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::PushChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1236,7 +1267,10 @@ mod tests {
             async move { handle.push_chunk(peer, stamped, true).await }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::PushChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::PushChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1288,7 +1322,10 @@ mod tests {
         // Drain the command so the dispatch (and its commit) has happened, then
         // hold the response so the future is parked awaiting it.
         let _response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         assert_eq!(Ledger::balance(&*accounting, &peer), Au::new(-100));
@@ -1322,7 +1359,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         response
@@ -1346,7 +1386,10 @@ mod tests {
             }
         });
         let response = match rx.recv().await.expect("dispatched") {
-            ClientCommand::RetrieveChunk { response, .. } => response,
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => response,
             other => panic!("unexpected command: {other:?}"),
         };
         response
@@ -1376,7 +1419,10 @@ mod tests {
             }
         });
         match rx.recv().await.expect("dispatched without a gate") {
-            ClientCommand::RetrieveChunk { response, .. } => {
+            ClientCommand::Peer {
+                command: PeerCommand::RetrieveChunk { response, .. },
+                ..
+            } => {
                 response.send(Err(ChunkTransferError::Remote)).ok();
             }
             other => panic!("unexpected command: {other:?}"),
@@ -1402,7 +1448,10 @@ mod tests {
             .expect("admissible push dispatched promptly")
             .expect("command emitted");
         match cmd {
-            ClientCommand::PushChunk { response, .. } => {
+            ClientCommand::Peer {
+                command: PeerCommand::PushChunk { response, .. },
+                ..
+            } => {
                 response.send(Err(ChunkTransferError::Remote)).ok();
             }
             other => panic!("unexpected command: {other:?}"),
@@ -1430,11 +1479,14 @@ mod tests {
     fn no_reporter_is_a_noop() {
         let (service, _event_tx, _handle) = ClientService::new();
         // Must not panic without a reporter configured.
-        service.process_event(ClientEvent::RetrievalFailed {
+        service.process_event(ClientEvent::Peer {
             peer: peer(7),
-            address: ChunkAddress::zero(),
-            error: "x".into(),
-            kind: FailureKind::InvalidChunk,
+            peer_id: libp2p::PeerId::random(),
+            event: PeerEvent::RetrievalFailed {
+                address: ChunkAddress::zero(),
+                error: "x".into(),
+                kind: FailureKind::InvalidChunk,
+            },
         });
     }
 
@@ -1452,9 +1504,11 @@ mod tests {
 
         // Fill the single channel slot.
         handle
-            .send_command_buffered(ClientCommand::SendPseudosettle {
+            .send_command_buffered(ClientCommand::Peer {
                 peer: peer(1),
-                amount: U256::from(1u64),
+                command: PeerCommand::SendPseudosettle {
+                    amount: U256::from(1u64),
+                },
             })
             .await
             .expect("first send fits");
@@ -1465,9 +1519,11 @@ mod tests {
             let handle = handle.clone();
             tokio::spawn(async move {
                 handle
-                    .send_command_buffered(ClientCommand::SendPseudosettle {
+                    .send_command_buffered(ClientCommand::Peer {
                         peer: peer(2),
-                        amount: U256::from(2u64),
+                        command: PeerCommand::SendPseudosettle {
+                            amount: U256::from(2u64),
+                        },
                     })
                     .await
             })
@@ -1482,7 +1538,10 @@ mod tests {
         // none lost.
         assert!(matches!(
             rx.recv().await,
-            Some(ClientCommand::SendPseudosettle { .. })
+            Some(ClientCommand::Peer {
+                command: PeerCommand::SendPseudosettle { .. },
+                ..
+            })
         ));
         queued
             .await
@@ -1490,7 +1549,10 @@ mod tests {
             .expect("queued send delivers once room frees");
         assert!(matches!(
             rx.recv().await,
-            Some(ClientCommand::SendPseudosettle { .. })
+            Some(ClientCommand::Peer {
+                command: PeerCommand::SendPseudosettle { .. },
+                ..
+            })
         ));
     }
 }

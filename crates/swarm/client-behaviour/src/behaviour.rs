@@ -8,7 +8,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_primitives::U256;
 use libp2p::{
     Multiaddr, PeerId,
     core::Endpoint,
@@ -19,14 +18,13 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use vertex_swarm_api::{Au, SwarmLocalStore};
-use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_primitives::OverlayAddress;
 
 #[cfg(feature = "swap")]
 use vertex_swarm_client_protocol::SwapEvent;
 use vertex_swarm_client_protocol::{
-    ChunkTransferError, ClientCommand, ClientEvent, PseudosettleAck, PseudosettleEvent,
+    ChunkTransferError, ClientCommand, ClientEvent, PeerCommand, PeerEvent, PseudosettleEvent,
 };
 
 use super::{
@@ -200,107 +198,21 @@ impl ClientBehaviour {
                 self.overlay_peers.insert(overlay, peer_id);
                 self.push_command(peer_id, HandlerCommand::Activate { overlay, node_type });
             }
-            ClientCommand::AnnouncePricing { peer, threshold } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %threshold, "Announcing pricing");
-                    self.push_command(peer_id, HandlerCommand::AnnouncePricing { threshold });
-                } else {
-                    debug!(%peer, "Unknown peer for pricing announcement");
-                }
-            }
-            ClientCommand::RetrieveChunk {
-                peer,
-                address,
-                response,
-                originated,
-            } => {
-                if self.at_capacity() {
+            ClientCommand::Peer { peer, command } => {
+                // A request command bearing a responder is refused at the soft
+                // cap before any peer lookup, so an overloaded queue resolves the
+                // caller rather than growing. Every other command rides past the
+                // cap; an unknown peer refuses a responder-carrying command and
+                // drops the rest.
+                if command.is_request() && self.at_capacity() {
                     metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
-                    let _ = response.send(Err(ChunkTransferError::Overloaded));
+                    command.refuse(ChunkTransferError::Overloaded);
                 } else if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %address, "Retrieving chunk");
-                    self.push_command(
-                        peer_id,
-                        HandlerCommand::RetrieveChunk {
-                            address,
-                            response,
-                            originated,
-                        },
-                    );
+                    self.push_command(peer_id, HandlerCommand::Peer(command));
                 } else {
-                    debug!(%peer, "Unknown peer for retrieval");
-                    let _ = response.send(Err(ChunkTransferError::NotConnected));
+                    command.refuse(ChunkTransferError::NotConnected);
                 }
             }
-            ClientCommand::PushChunk {
-                peer,
-                address,
-                chunk,
-                response,
-                originated,
-            } => {
-                if self.at_capacity() {
-                    metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
-                    let _ = response.send(Err(ChunkTransferError::Overloaded));
-                } else if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %address, "Pushing chunk");
-                    self.push_command(
-                        peer_id,
-                        HandlerCommand::PushChunk {
-                            chunk,
-                            response,
-                            originated,
-                        },
-                    );
-                } else {
-                    debug!(%peer, "Unknown peer for push");
-                    let _ = response.send(Err(ChunkTransferError::NotConnected));
-                }
-            }
-            ClientCommand::SendPseudosettle { peer, amount } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %amount, "Sending pseudosettle");
-                    self.push_command(peer_id, HandlerCommand::SendPseudosettle { amount });
-                } else {
-                    debug!(%peer, "Unknown peer for pseudosettle");
-                }
-            }
-            ClientCommand::AckPseudosettle {
-                peer,
-                request_id,
-                ack,
-            } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %request_id, "Acking pseudosettle");
-                    self.push_command(
-                        peer_id,
-                        HandlerCommand::AckPseudosettle {
-                            request_id,
-                            ack: wire_ack(ack),
-                        },
-                    );
-                } else {
-                    debug!(%peer, "Unknown peer for pseudosettle ack");
-                }
-            }
-            #[cfg(feature = "swap")]
-            ClientCommand::SendCheque { peer, cheque } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, "Sending swap cheque");
-                    self.push_command(peer_id, HandlerCommand::SendCheque { cheque });
-                } else {
-                    debug!(%peer, "Unknown peer for swap cheque");
-                }
-            }
-            // `ClientCommand` carries swap variants when `client-protocol/swap`
-            // is on, which Cargo feature unification can turn on (a workspace
-            // build also compiling `accounting-swap`) even when this crate's
-            // `swap` feature is off. The swap wire is then not linked here, so
-            // drop the command. The all-features build keeps full exhaustiveness.
-            // Unreachable when nothing in the build enables `client-protocol/swap`.
-            #[cfg(not(feature = "swap"))]
-            #[allow(unreachable_patterns)]
-            _ => {}
         }
     }
 
@@ -314,113 +226,25 @@ impl ClientBehaviour {
                         overlay,
                     }));
             }
-            HandlerEvent::PricingReceived { overlay, threshold } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingReceived {
+            HandlerEvent::Peer { overlay, event } => {
+                self.tee_settlement(overlay, &event);
+                // Inherited cap policy: a chunk delivery and a pricing-sent
+                // notification ride past the soft cap; every other signal drops
+                // at it.
+                let cap_exempt = matches!(
+                    event,
+                    PeerEvent::ChunkReceived { .. } | PeerEvent::PricingSent
+                );
+                let to_swarm = ToSwarm::GenerateEvent(ClientEvent::Peer {
                     peer: overlay,
                     peer_id,
-                    threshold,
-                }));
-            }
-            HandlerEvent::PricingSent { overlay } => {
-                self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(ClientEvent::PricingSent {
-                        peer: overlay,
-                    }));
-            }
-            HandlerEvent::InboundServed { overlay } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundServed {
-                    peer: overlay,
-                }));
-            }
-            HandlerEvent::InboundForwarded { overlay } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundForwarded {
-                    peer: overlay,
-                }));
-            }
-            HandlerEvent::InboundMissed { overlay, address } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundMissed {
-                    peer: overlay,
-                    address,
-                }));
-            }
-            HandlerEvent::InboundRelayed { overlay } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundRelayed {
-                    peer: overlay,
-                }));
-            }
-            HandlerEvent::InboundStored { overlay } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundStored {
-                    peer: overlay,
-                }));
-            }
-            HandlerEvent::InboundPushFailed { overlay, address } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundPushFailed {
-                    peer: overlay,
-                    address,
-                }));
-            }
-            HandlerEvent::ChunkReceived {
-                overlay,
-                address,
-                chunk,
-                stamp,
-                latency,
-                originated,
-            } => {
-                self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(ClientEvent::ChunkReceived {
-                        peer: overlay,
-                        address,
-                        chunk,
-                        stamp,
-                        latency,
-                        originated,
-                    }));
-            }
-            HandlerEvent::ReceiptReceived {
-                overlay,
-                address,
-                latency,
-                originated,
-            } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
-                    peer: overlay,
-                    address,
-                    latency,
-                    originated,
-                }));
-            }
-            HandlerEvent::RetrievalFailed {
-                overlay,
-                address,
-                error,
-                kind,
-            } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::RetrievalFailed {
-                    peer: overlay,
-                    address,
-                    error,
-                    kind,
-                }));
-            }
-            HandlerEvent::PushFailed {
-                overlay,
-                address,
-                error,
-                kind,
-            } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PushFailed {
-                    peer: overlay,
-                    address,
-                    error,
-                    kind,
-                }));
-            }
-            HandlerEvent::InboundInvalidData { overlay, protocol } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundInvalidData {
-                    peer: overlay,
-                    protocol,
-                }));
+                    event,
+                });
+                if cap_exempt {
+                    self.pending_events.push_back(to_swarm);
+                } else {
+                    self.push_event(to_swarm);
+                }
             }
             HandlerEvent::Error {
                 overlay,
@@ -453,85 +277,105 @@ impl ClientBehaviour {
                         error,
                     }));
             }
-            HandlerEvent::PseudosettleReceived {
-                overlay,
-                amount,
-                request_id,
-            } => {
+        }
+    }
+
+    /// Tee a settlement signal to its dedicated service channel. A dead channel
+    /// warns but never blocks the event path; every non-settlement signal is a
+    /// no-op here.
+    fn tee_settlement(&self, overlay: OverlayAddress, event: &PeerEvent) {
+        match event {
+            PeerEvent::PseudosettleReceived { amount, request_id } => {
                 if let Some(tx) = &self.pseudosettle_event_tx
                     && tx
                         .send(PseudosettleEvent::Received {
                             peer: overlay,
-                            amount,
-                            request_id,
+                            amount: *amount,
+                            request_id: *request_id,
                         })
                         .is_err()
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleReceived {
-                    peer: overlay,
-                    peer_id,
-                    amount,
-                    request_id,
-                }));
             }
-            HandlerEvent::PseudosettleSent { overlay, ack } => {
-                let ack = domain_ack(ack);
+            PeerEvent::PseudosettleSent { ack } => {
                 if let Some(tx) = &self.pseudosettle_event_tx
                     && tx
-                        .send(PseudosettleEvent::Sent { peer: overlay, ack })
+                        .send(PseudosettleEvent::Sent {
+                            peer: overlay,
+                            ack: *ack,
+                        })
                         .is_err()
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleSent {
-                    peer: overlay,
-                    peer_id,
-                    ack,
-                }));
             }
             #[cfg(feature = "swap")]
-            HandlerEvent::SwapChequeReceived {
-                overlay,
-                cheque,
-                peer_rate,
-            } => {
+            PeerEvent::SwapChequeReceived { cheque, peer_rate } => {
                 if let Some(tx) = &self.swap_event_tx
                     && tx
                         .send(SwapEvent::ChequeReceived {
                             peer: overlay,
                             cheque: cheque.clone(),
-                            peer_rate,
+                            peer_rate: *peer_rate,
                         })
                         .is_err()
                 {
                     warn!(%overlay, "Swap event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::SwapChequeReceived {
-                    peer: overlay,
-                    peer_id,
-                    cheque,
-                    peer_rate,
-                }));
             }
             #[cfg(feature = "swap")]
-            HandlerEvent::SwapChequeSent { overlay, peer_rate } => {
+            PeerEvent::SwapChequeSent { peer_rate } => {
                 if let Some(tx) = &self.swap_event_tx
                     && tx
                         .send(SwapEvent::ChequeSent {
                             peer: overlay,
-                            peer_rate,
+                            peer_rate: *peer_rate,
                         })
                         .is_err()
                 {
                     warn!(%overlay, "Swap event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::SwapChequeSent {
-                    peer: overlay,
-                    peer_id,
-                    peer_rate,
-                }));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Refusal and classification helpers for a per-peer command.
+///
+/// Lives here rather than as an inherent impl on `PeerCommand` because the drop
+/// log needs this crate's tracing and the command contract crate carries no
+/// logging dependency.
+trait PeerCommandExt {
+    /// Whether the command carries a responder that a refusal must resolve.
+    fn is_request(&self) -> bool;
+    /// Resolve a request command's responder with `err`, or log-drop the rest.
+    fn refuse(self, err: ChunkTransferError);
+}
+
+impl PeerCommandExt for PeerCommand {
+    fn is_request(&self) -> bool {
+        matches!(
+            self,
+            PeerCommand::RetrieveChunk { .. } | PeerCommand::PushChunk { .. }
+        )
+    }
+
+    fn refuse(self, err: ChunkTransferError) {
+        match self {
+            PeerCommand::RetrieveChunk { response, .. } => {
+                let _ = response.send(Err(err));
+            }
+            PeerCommand::PushChunk { response, .. } => {
+                let _ = response.send(Err(err));
+            }
+            other => {
+                debug!(
+                    ?other,
+                    ?err,
+                    "Dropping command for unknown or overloaded peer"
+                );
             }
         }
     }
@@ -612,27 +456,6 @@ impl NetworkBehaviour for ClientBehaviour {
     }
 }
 
-/// Assemble the wire ack from the deciding service's domain decision.
-///
-/// The clock was sampled in the deciding service and is preserved verbatim; only
-/// the amount crosses the AU boundary here.
-fn wire_ack(ack: PseudosettleAck) -> PaymentAck {
-    PaymentAck::new(U256::from(ack.accepted.as_amount()), ack.timestamp)
-}
-
-/// Convert a decoded wire ack into the domain decision.
-///
-/// In-spec pseudosettle amounts fit in a `u64` of AU; a larger wire value is out
-/// of spec and saturates to the maximum AU so the deciding service still detects
-/// the over-acceptance in AU space rather than wrapping to a small amount. The
-/// responder's sampled timestamp passes through unchanged.
-fn domain_ack(ack: PaymentAck) -> PseudosettleAck {
-    PseudosettleAck {
-        accepted: Au::saturating_from_u256(ack.amount),
-        timestamp: ack.timestamp,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use libp2p::PeerId;
@@ -690,16 +513,41 @@ mod tests {
         });
 
         let (tx, mut rx) = tokio::sync::oneshot::channel();
-        behaviour.on_command(ClientCommand::RetrieveChunk {
+        behaviour.on_command(ClientCommand::Peer {
             peer: overlay,
-            address: ChunkAddress::zero(),
-            response: tx,
-            originated: true,
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: tx,
+                originated: true,
+            },
         });
 
         match rx.try_recv() {
             Ok(Err(ChunkTransferError::Overloaded)) => {}
             other => panic!("expected an explicit Overloaded refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_saturated_queue_refuses_before_the_peer_lookup() {
+        // The capacity check precedes the overlay lookup, so a request to an
+        // unknown peer on a saturated queue refuses `Overloaded`, never
+        // `NotConnected`.
+        let mut behaviour = saturated_behaviour();
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        behaviour.on_command(ClientCommand::Peer {
+            peer: test_peer(),
+            command: PeerCommand::RetrieveChunk {
+                address: ChunkAddress::zero(),
+                response: tx,
+                originated: true,
+            },
+        });
+
+        match rx.try_recv() {
+            Ok(Err(ChunkTransferError::Overloaded)) => {}
+            other => panic!("expected Overloaded before the peer lookup, got {other:?}"),
         }
     }
 
@@ -718,13 +566,41 @@ mod tests {
             "an activation command enqueues past the soft cap"
         );
 
-        behaviour.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingSent {
-            peer: test_peer(),
-        }));
+        // A droppable per-peer signal still drops at the cap through the envelope.
+        behaviour.on_handler_event(
+            PeerId::random(),
+            HandlerEvent::Peer {
+                overlay: test_peer(),
+                event: PeerEvent::InboundServed,
+            },
+        );
         assert_eq!(
             behaviour.pending_events.len(),
             before + 1,
-            "a consumer event still drops at the cap"
+            "a droppable signal still drops at the cap"
+        );
+
+        // A chunk delivery is cap-exempt and enqueues even at the cap.
+        let chunk: nectar_primitives::AnyChunk = nectar_primitives::ContentChunk::new(&b"cap"[..])
+            .expect("valid content chunk")
+            .into();
+        behaviour.on_handler_event(
+            PeerId::random(),
+            HandlerEvent::Peer {
+                overlay: test_peer(),
+                event: PeerEvent::ChunkReceived {
+                    address: ChunkAddress::zero(),
+                    chunk,
+                    stamp: None,
+                    latency: std::time::Duration::ZERO,
+                    originated: true,
+                },
+            },
+        );
+        assert_eq!(
+            behaviour.pending_events.len(),
+            before + 2,
+            "a chunk delivery rides past the cap through the envelope"
         );
     }
 

@@ -20,7 +20,7 @@ use vertex_swarm_api::{
     Au, Direction, PeerReporter, ReportSource, SwarmAccounting, SwarmPeerAccounting,
     SwarmScoringEvent,
 };
-use vertex_swarm_client_protocol::{ClientCommand, SwapEvent};
+use vertex_swarm_client_protocol::{ClientCommand, PeerCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
@@ -243,10 +243,10 @@ where
                             "Issuing swap cheque"
                         );
 
-                        if let Err(e) = self
-                            .command_tx
-                            .send(ClientCommand::SendCheque { peer, cheque })
-                        {
+                        if let Err(e) = self.command_tx.send(ClientCommand::Peer {
+                            peer,
+                            command: PeerCommand::SendCheque { cheque },
+                        }) {
                             // Roll back the optimistic cumulative-payout bump so a
                             // retry re-issues at the same level.
                             if let Some(state) = self.peers.get_mut(&peer) {

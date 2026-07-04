@@ -31,14 +31,12 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::{AnyChunk, ChunkAddress, NetworkId};
+use nectar_primitives::{ChunkAddress, NetworkId};
 use tracing::{debug, warn};
-use vertex_swarm_api::SwarmLocalStore;
+use vertex_swarm_api::{Au, SwarmLocalStore};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
-#[cfg(feature = "swap")]
-use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::forward::Forwarder;
@@ -48,7 +46,9 @@ use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade, ClientUpgradeError, FailureKind,
 };
-use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
+use vertex_swarm_client_protocol::{
+    ChunkTransferError, PeerCommand, PeerEvent, PseudosettleAck, RetrievalResult,
+};
 use vertex_swarm_net_pushsync::PROTOCOL_NAME as PUSHSYNC_PROTOCOL;
 use vertex_swarm_net_retrieval::PROTOCOL_NAME as RETRIEVAL_PROTOCOL;
 
@@ -148,29 +148,8 @@ pub enum HandlerCommand {
         overlay: OverlayAddress,
         node_type: SwarmNodeType,
     },
-    /// Announce our payment threshold to the peer.
-    AnnouncePricing { threshold: U256 },
-    /// Request a chunk from the peer.
-    RetrieveChunk {
-        address: ChunkAddress,
-        response: RetrievalResponseTx,
-        /// True for our own request, false for a forwarder relay leg.
-        originated: bool,
-    },
-    /// Push a chunk to the peer for storage.
-    PushChunk {
-        chunk: StampedChunk,
-        response: PushResponseTx,
-        /// True for our own push, false for a forwarder relay leg.
-        originated: bool,
-    },
-    /// Send a pseudosettle payment to the peer.
-    SendPseudosettle { amount: U256 },
-    /// Acknowledge a pseudosettle payment.
-    AckPseudosettle { request_id: u64, ack: PaymentAck },
-    /// Send a swap cheque to the peer.
-    #[cfg(feature = "swap")]
-    SendCheque { cheque: SignedCheque },
+    /// A per-peer command; the connection already identifies the peer.
+    Peer(PeerCommand),
 }
 
 /// Events emitted by the handler to the behaviour.
@@ -179,75 +158,10 @@ pub enum HandlerCommand {
 pub enum HandlerEvent {
     /// Handler has been activated.
     Activated { overlay: OverlayAddress },
-    /// Received pricing threshold from peer.
-    PricingReceived {
+    /// A per-peer signal under the connection's active overlay.
+    Peer {
         overlay: OverlayAddress,
-        threshold: U256,
-    },
-    /// Successfully sent our pricing threshold.
-    PricingSent { overlay: OverlayAddress },
-    /// Served an inbound retrieval from cache (scoring/metrics only).
-    InboundServed { overlay: OverlayAddress },
-    /// Answered an inbound retrieval by forwarding to a closer peer.
-    InboundForwarded { overlay: OverlayAddress },
-    /// Could not serve or forward an inbound retrieval; substream reset.
-    InboundMissed {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-    },
-    /// Relayed a storer's receipt for an inbound pushsync.
-    InboundRelayed { overlay: OverlayAddress },
-    /// Took custody of an inbound pushsync: stored and acknowledged with our own
-    /// signed receipt.
-    InboundStored { overlay: OverlayAddress },
-    /// Could not forward an inbound pushsync; substream reset.
-    InboundPushFailed {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-    },
-    /// Received a chunk from peer. `latency` is request-to-delivery, for scoring.
-    ChunkReceived {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-        chunk: AnyChunk,
-        stamp: Option<Stamp>,
-        latency: Duration,
-        /// Stamped from the per-substream request state: true for an origin
-        /// request, false for a forwarder relay leg.
-        originated: bool,
-    },
-    /// Received a receipt from peer. `latency` is request-to-receipt, for scoring.
-    ReceiptReceived {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-        latency: Duration,
-        /// Stamped from the per-substream request state: true for an origin
-        /// push, false for a forwarder relay leg.
-        originated: bool,
-    },
-    /// An outbound retrieval failed. The requester is already resolved through
-    /// its response channel; this feeds scoring and metrics. `kind` distinguishes
-    /// a malformed chunk from a plain failure.
-    RetrievalFailed {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-        error: String,
-        kind: FailureKind,
-    },
-    /// An outbound push failed. The pusher is already resolved through its
-    /// response channel; this feeds scoring and metrics.
-    PushFailed {
-        overlay: OverlayAddress,
-        address: ChunkAddress,
-        error: String,
-        kind: FailureKind,
-    },
-    /// A peer sent malformed data on an inbound substream (chunk or stamp
-    /// reconstruction failed at decode). Attributed to the sender; the chunk is
-    /// never relayed.
-    InboundInvalidData {
-        overlay: OverlayAddress,
-        protocol: &'static str,
+        event: PeerEvent,
     },
     /// Protocol error occurred.
     Error {
@@ -255,30 +169,37 @@ pub enum HandlerEvent {
         protocol: &'static str,
         error: String,
     },
-    /// Received pseudosettle payment from peer.
-    PseudosettleReceived {
-        overlay: OverlayAddress,
-        amount: U256,
-        request_id: u64,
-    },
-    /// Successfully sent pseudosettle payment.
-    PseudosettleSent {
-        overlay: OverlayAddress,
-        ack: PaymentAck,
-    },
-    /// Received a swap cheque from peer. `peer_rate` is from the headers exchange.
-    #[cfg(feature = "swap")]
-    SwapChequeReceived {
-        overlay: OverlayAddress,
-        cheque: SignedCheque,
-        peer_rate: U256,
-    },
-    /// Successfully sent a swap cheque. `peer_rate` is from the headers exchange.
-    #[cfg(feature = "swap")]
-    SwapChequeSent {
-        overlay: OverlayAddress,
-        peer_rate: U256,
-    },
+}
+
+impl From<InboundOutcome> for HandlerEvent {
+    fn from(outcome: InboundOutcome) -> Self {
+        match outcome {
+            InboundOutcome::Served { overlay } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundServed,
+            },
+            InboundOutcome::Forwarded { overlay } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundForwarded,
+            },
+            InboundOutcome::Missed { overlay, address } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundMissed { address },
+            },
+            InboundOutcome::Relayed { overlay } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundRelayed,
+            },
+            InboundOutcome::Stored { overlay } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundStored,
+            },
+            InboundOutcome::PushFailed { overlay, address } => HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::InboundPushFailed { address },
+            },
+        }
+    }
 }
 
 /// Handler state machine.
@@ -444,11 +365,12 @@ impl ClientHandler {
     ) {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
-            self.pending_events
-                .push_back(HandlerEvent::PricingReceived {
-                    overlay,
+            self.pending_events.push_back(HandlerEvent::Peer {
+                overlay,
+                event: PeerEvent::PricingReceived {
                     threshold: threshold.payment_threshold,
-                });
+                },
+            });
         } else {
             warn!(
                 threshold = %threshold.payment_threshold,
@@ -514,23 +436,6 @@ impl ClientHandler {
         self.inbound.push(Box::pin(serve::drive(op, responder)));
     }
 
-    /// Turn a resolved inbound outcome into a scoring/metrics event.
-    fn on_inbound_outcome(&mut self, outcome: InboundOutcome) {
-        let event = match outcome {
-            InboundOutcome::Served { overlay } => HandlerEvent::InboundServed { overlay },
-            InboundOutcome::Forwarded { overlay } => HandlerEvent::InboundForwarded { overlay },
-            InboundOutcome::Missed { overlay, address } => {
-                HandlerEvent::InboundMissed { overlay, address }
-            }
-            InboundOutcome::Relayed { overlay } => HandlerEvent::InboundRelayed { overlay },
-            InboundOutcome::Stored { overlay } => HandlerEvent::InboundStored { overlay },
-            InboundOutcome::PushFailed { overlay, address } => {
-                HandlerEvent::InboundPushFailed { overlay, address }
-            }
-        };
-        self.push_event(event);
-    }
-
     /// Handle retrieval response, resolving the caller's response channel.
     fn on_retrieval_response(
         &mut self,
@@ -550,11 +455,13 @@ impl ClientHandler {
                 // as a dial upgrade error.
                 debug!(?overlay, %address, "Retrieval failed");
                 if let Some(overlay) = overlay {
-                    self.push_event(HandlerEvent::RetrievalFailed {
+                    self.push_event(HandlerEvent::Peer {
                         overlay,
-                        address,
-                        error: "remote reported a failure".to_string(),
-                        kind: FailureKind::Protocol,
+                        event: PeerEvent::RetrievalFailed {
+                            address,
+                            error: "remote reported a failure".to_string(),
+                            kind: FailureKind::Protocol,
+                        },
                     });
                 }
                 let _ = response.send(Err(ChunkTransferError::NotFound(address)));
@@ -568,13 +475,15 @@ impl ClientHandler {
                     return;
                 };
                 debug!(%overlay, %address, "Received chunk");
-                self.push_event(HandlerEvent::ChunkReceived {
+                self.push_event(HandlerEvent::Peer {
                     overlay,
-                    address,
-                    chunk: chunk.clone(),
-                    stamp: stamp.clone(),
-                    latency,
-                    originated,
+                    event: PeerEvent::ChunkReceived {
+                        address,
+                        chunk: chunk.clone(),
+                        stamp: stamp.clone(),
+                        latency,
+                        originated,
+                    },
                 });
                 let delivered = response.send(Ok(RetrievalResult {
                     chunk,
@@ -608,11 +517,13 @@ impl ClientHandler {
                 // Remote reported a rejection (empty signature).
                 debug!(?overlay, %address, "Pushsync failed");
                 if let Some(overlay) = overlay {
-                    self.push_event(HandlerEvent::PushFailed {
+                    self.push_event(HandlerEvent::Peer {
                         overlay,
-                        address,
-                        error: "remote reported a failure".to_string(),
-                        kind: FailureKind::Protocol,
+                        event: PeerEvent::PushFailed {
+                            address,
+                            error: "remote reported a failure".to_string(),
+                            kind: FailureKind::Protocol,
+                        },
                     });
                 }
                 let _ = response.send(Err(ChunkTransferError::Remote));
@@ -631,11 +542,13 @@ impl ClientHandler {
                 match Receipt::reconstruct(receipt, self.config.network_id) {
                     Ok(receipt) => {
                         debug!(%overlay, address = %receipt_address, "Received receipt");
-                        self.push_event(HandlerEvent::ReceiptReceived {
+                        self.push_event(HandlerEvent::Peer {
                             overlay,
-                            address: receipt_address,
-                            latency,
-                            originated,
+                            event: PeerEvent::ReceiptReceived {
+                                address: receipt_address,
+                                latency,
+                                originated,
+                            },
                         });
                         let _ = response.send(Ok(receipt));
                     }
@@ -646,11 +559,13 @@ impl ClientHandler {
                             error = <&'static str>::from(&err),
                             "Rejected unrecoverable custody receipt at decode"
                         );
-                        self.push_event(HandlerEvent::PushFailed {
+                        self.push_event(HandlerEvent::Peer {
                             overlay,
-                            address: receipt_address,
-                            error: err.to_string(),
-                            kind: FailureKind::InvalidChunk,
+                            event: PeerEvent::PushFailed {
+                                address: receipt_address,
+                                error: err.to_string(),
+                                kind: FailureKind::InvalidChunk,
+                            },
                         });
                         let _ = response.send(Err(ChunkTransferError::Remote));
                     }
@@ -697,7 +612,7 @@ impl ConnectionHandler for ClientHandler {
 
         // Drain resolved inbound serving futures into scoring/metrics events.
         while let Poll::Ready(Some(outcome)) = self.inbound.poll_next_unpin(cx) {
-            self.on_inbound_outcome(outcome);
+            self.push_event(outcome.into());
             if let Some(event) = self.pending_events.pop_front() {
                 return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
             }
@@ -739,97 +654,117 @@ impl ConnectionHandler for ClientHandler {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }
                 }
-                HandlerCommand::AnnouncePricing { threshold } => {
-                    if !self.pricing_sent && !self.pricing_outbound_pending {
-                        self.pricing_outbound_pending = true;
-                        let announce =
-                            vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
-                        let upgrade = ClientOutboundUpgrade::pricing(announce);
+                HandlerCommand::Peer(command) => match command {
+                    PeerCommand::AnnouncePricing { threshold } => {
+                        if !self.pricing_sent && !self.pricing_outbound_pending {
+                            self.pricing_outbound_pending = true;
+                            let announce =
+                                vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
+                            let upgrade = ClientOutboundUpgrade::pricing(announce);
+                            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                                protocol: SubstreamProtocol::new(
+                                    upgrade,
+                                    ClientOutboundInfo::Pricing,
+                                )
+                                .with_timeout(self.config.timeout),
+                            });
+                        }
+                    }
+                    PeerCommand::RetrieveChunk {
+                        address,
+                        response,
+                        originated,
+                    } => {
+                        let upgrade = ClientOutboundUpgrade::retrieval(address);
                         return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                            protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Pricing)
+                            protocol: SubstreamProtocol::new(
+                                upgrade,
+                                ClientOutboundInfo::Retrieval {
+                                    address,
+                                    response,
+                                    requested_at: Instant::now(),
+                                    originated,
+                                },
+                            )
+                            .with_timeout(self.config.retrieval_timeout),
+                        });
+                    }
+                    PeerCommand::PushChunk {
+                        chunk,
+                        response,
+                        originated,
+                    } => {
+                        let address = *chunk.address();
+                        let delivery = vertex_swarm_net_pushsync::Delivery::new(chunk);
+                        let upgrade = ClientOutboundUpgrade::pushsync(delivery);
+                        return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                            protocol: SubstreamProtocol::new(
+                                upgrade,
+                                ClientOutboundInfo::Pushsync {
+                                    address,
+                                    response,
+                                    requested_at: Instant::now(),
+                                    originated,
+                                },
+                            )
+                            .with_timeout(self.config.pushsync_timeout),
+                        });
+                    }
+                    PeerCommand::SendPseudosettle { amount } => {
+                        let payment = vertex_swarm_net_pseudosettle::Payment::new(amount);
+                        let upgrade = ClientOutboundUpgrade::pseudosettle(payment);
+                        return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                            protocol: SubstreamProtocol::new(
+                                upgrade,
+                                ClientOutboundInfo::Pseudosettle { amount },
+                            )
+                            .with_timeout(self.config.timeout),
+                        });
+                    }
+                    #[cfg(feature = "swap")]
+                    PeerCommand::SendCheque { cheque } => {
+                        let upgrade =
+                            ClientOutboundUpgrade::swap(cheque, self.config.swap_exchange_rate);
+                        return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                            protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Swap)
                                 .with_timeout(self.config.timeout),
                         });
                     }
-                }
-                HandlerCommand::RetrieveChunk {
-                    address,
-                    response,
-                    originated,
-                } => {
-                    let upgrade = ClientOutboundUpgrade::retrieval(address);
-                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: SubstreamProtocol::new(
-                            upgrade,
-                            ClientOutboundInfo::Retrieval {
-                                address,
-                                response,
-                                requested_at: Instant::now(),
-                                originated,
-                            },
-                        )
-                        .with_timeout(self.config.retrieval_timeout),
-                    });
-                }
-                HandlerCommand::PushChunk {
-                    chunk,
-                    response,
-                    originated,
-                } => {
-                    let address = *chunk.address();
-                    let delivery = vertex_swarm_net_pushsync::Delivery::new(chunk);
-                    let upgrade = ClientOutboundUpgrade::pushsync(delivery);
-                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: SubstreamProtocol::new(
-                            upgrade,
-                            ClientOutboundInfo::Pushsync {
-                                address,
-                                response,
-                                requested_at: Instant::now(),
-                                originated,
-                            },
-                        )
-                        .with_timeout(self.config.pushsync_timeout),
-                    });
-                }
-                HandlerCommand::SendPseudosettle { amount } => {
-                    let payment = vertex_swarm_net_pseudosettle::Payment::new(amount);
-                    let upgrade = ClientOutboundUpgrade::pseudosettle(payment);
-                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: SubstreamProtocol::new(
-                            upgrade,
-                            ClientOutboundInfo::Pseudosettle { amount },
-                        )
-                        .with_timeout(self.config.timeout),
-                    });
-                }
-                #[cfg(feature = "swap")]
-                HandlerCommand::SendCheque { cheque } => {
-                    let upgrade =
-                        ClientOutboundUpgrade::swap(cheque, self.config.swap_exchange_rate);
-                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Swap)
-                            .with_timeout(self.config.timeout),
-                    });
-                }
-                HandlerCommand::AckPseudosettle { request_id, ack } => {
-                    if let Some(result) = self.take_response(request_id) {
-                        debug!(%request_id, amount = %ack.amount, "Sending pseudosettle ack");
-                        if self
-                            .response_sends
-                            .try_push(async move {
-                                result
-                                    .respond(ack)
-                                    .await
-                                    .map_err(|e| format!("pseudosettle ack: {e}"))
-                            })
-                            .is_err()
-                        {
-                            warn!("Response send queue full, dropping pseudosettle ack");
+                    PeerCommand::AckPseudosettle { request_id, ack } => {
+                        if let Some(result) = self.take_response(request_id) {
+                            // Convert the domain decision to the wire ack at the
+                            // boundary; the responder's sampled clock passes
+                            // through unchanged.
+                            let ack = wire_ack(ack);
+                            debug!(%request_id, amount = %ack.amount, "Sending pseudosettle ack");
+                            if self
+                                .response_sends
+                                .try_push(async move {
+                                    result
+                                        .respond(ack)
+                                        .await
+                                        .map_err(|e| format!("pseudosettle ack: {e}"))
+                                })
+                                .is_err()
+                            {
+                                warn!("Response send queue full, dropping pseudosettle ack");
+                            }
+                        } else {
+                            warn!(%request_id, "No pseudosettle responder found for request_id");
                         }
-                    } else {
-                        warn!(%request_id, "No pseudosettle responder found for request_id");
                     }
-                }
+                    // `PeerCommand` carries the swap variant when
+                    // `client-protocol/swap` is on, which Cargo feature
+                    // unification can turn on (a workspace build also compiling
+                    // `accounting-swap`) even when this crate's `swap` feature is
+                    // off. The swap wire is then not linked here, so drop the
+                    // command. The all-features build keeps full exhaustiveness.
+                    // Unreachable when nothing in the build enables
+                    // `client-protocol/swap`.
+                    #[cfg(not(feature = "swap"))]
+                    #[allow(unreachable_patterns)]
+                    _ => {}
+                },
             }
         }
 
@@ -916,11 +851,13 @@ impl ConnectionHandler for ClientHandler {
                         }
                         warn!(protocol = "retrieval", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
-                            self.push_event(HandlerEvent::RetrievalFailed {
+                            self.push_event(HandlerEvent::Peer {
                                 overlay,
-                                address,
-                                error: error.clone(),
-                                kind,
+                                event: PeerEvent::RetrievalFailed {
+                                    address,
+                                    error: error.clone(),
+                                    kind,
+                                },
                             });
                         }
                         let outcome = if timed_out {
@@ -950,11 +887,13 @@ impl ConnectionHandler for ClientHandler {
                         }
                         warn!(protocol = "pushsync", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
-                            self.push_event(HandlerEvent::PushFailed {
+                            self.push_event(HandlerEvent::Peer {
                                 overlay,
-                                address,
-                                error: error.clone(),
-                                kind,
+                                event: PeerEvent::PushFailed {
+                                    address,
+                                    error: error.clone(),
+                                    kind,
+                                },
                             });
                         }
                         let outcome = if timed_out {
@@ -997,7 +936,10 @@ impl ConnectionHandler for ClientHandler {
                             ClientUpgradeError::Retrieval(_) => RETRIEVAL_PROTOCOL,
                             _ => "unknown",
                         };
-                        self.push_event(HandlerEvent::InboundInvalidData { overlay, protocol });
+                        self.push_event(HandlerEvent::Peer {
+                            overlay,
+                            event: PeerEvent::InboundInvalidData { protocol },
+                        });
                     }
                     _ => {
                         self.push_event(HandlerEvent::Error {
@@ -1030,12 +972,13 @@ impl ClientHandler {
                 if let Some(overlay) = self.overlay() {
                     let request_id = self.next_request_id();
                     debug!(%overlay, amount = %result.payment.amount, %request_id, "Received pseudosettle payment");
-                    self.pending_events
-                        .push_back(HandlerEvent::PseudosettleReceived {
-                            overlay,
+                    self.pending_events.push_back(HandlerEvent::Peer {
+                        overlay,
+                        event: PeerEvent::PseudosettleReceived {
                             amount: result.payment.amount,
                             request_id,
-                        });
+                        },
+                    });
                     self.store_response(request_id, result);
                 }
             }
@@ -1043,10 +986,12 @@ impl ClientHandler {
             ClientInboundOutput::Swap(cheque, headers) => {
                 if let Some(overlay) = self.overlay() {
                     debug!(%overlay, peer_rate = %headers.exchange_rate, "Received swap cheque");
-                    self.push_event(HandlerEvent::SwapChequeReceived {
+                    self.push_event(HandlerEvent::Peer {
                         overlay,
-                        cheque,
-                        peer_rate: headers.exchange_rate,
+                        event: PeerEvent::SwapChequeReceived {
+                            cheque,
+                            peer_rate: headers.exchange_rate,
+                        },
                     });
                 }
             }
@@ -1059,8 +1004,10 @@ impl ClientHandler {
                 self.pricing_sent = true;
                 self.pricing_outbound_pending = false;
                 if let Some(overlay) = self.overlay() {
-                    self.pending_events
-                        .push_back(HandlerEvent::PricingSent { overlay });
+                    self.pending_events.push_back(HandlerEvent::Peer {
+                        overlay,
+                        event: PeerEvent::PricingSent,
+                    });
                 }
             }
             (
@@ -1102,17 +1049,22 @@ impl ClientHandler {
                         );
                     }
                     debug!(%overlay, %amount, ack_amount = %ack.amount, "Pseudosettle sent");
-                    self.pending_events
-                        .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
+                    let ack = domain_ack(ack);
+                    self.pending_events.push_back(HandlerEvent::Peer {
+                        overlay,
+                        event: PeerEvent::PseudosettleSent { ack },
+                    });
                 }
             }
             #[cfg(feature = "swap")]
             (ClientOutboundOutput::Swap(headers), ClientOutboundInfo::Swap) => {
                 if let Some(overlay) = self.overlay() {
                     debug!(%overlay, peer_rate = %headers.exchange_rate, "Swap cheque sent");
-                    self.push_event(HandlerEvent::SwapChequeSent {
+                    self.push_event(HandlerEvent::Peer {
                         overlay,
-                        peer_rate: headers.exchange_rate,
+                        event: PeerEvent::SwapChequeSent {
+                            peer_rate: headers.exchange_rate,
+                        },
                     });
                 }
             }
@@ -1120,6 +1072,27 @@ impl ClientHandler {
                 warn!(?output, ?info, "Mismatched outbound output and info");
             }
         }
+    }
+}
+
+/// Assemble the wire ack from the deciding service's domain decision.
+///
+/// The clock was sampled in the deciding service and is preserved verbatim; only
+/// the amount crosses the AU boundary here.
+fn wire_ack(ack: PseudosettleAck) -> PaymentAck {
+    PaymentAck::new(U256::from(ack.accepted.as_amount()), ack.timestamp)
+}
+
+/// Convert a decoded wire ack into the domain decision.
+///
+/// In-spec pseudosettle amounts fit in a `u64` of AU; a larger wire value is out
+/// of spec and saturates to the maximum AU so the deciding service still detects
+/// the over-acceptance in AU space rather than wrapping to a small amount. The
+/// responder's sampled timestamp passes through unchanged.
+fn domain_ack(ack: PaymentAck) -> PseudosettleAck {
+    PseudosettleAck {
+        accepted: Au::saturating_from_u256(ack.amount),
+        timestamp: ack.timestamp,
     }
 }
 
@@ -1153,5 +1126,32 @@ mod tests {
         let requested = *other.address();
         assert_ne!(*chunk.address(), requested);
         assert!(chunk.verify_answers(requested).is_err());
+    }
+
+    #[test]
+    fn ack_round_trip_saturates_amount_and_passes_timestamp() {
+        use alloy_primitives::U256;
+        use vertex_swarm_api::Au;
+        use vertex_swarm_client_protocol::PseudosettleAck;
+        use vertex_swarm_net_pseudosettle::PaymentAck;
+
+        use super::{domain_ack, wire_ack};
+
+        // An in-spec amount survives domain -> wire -> domain unchanged, and the
+        // sampled timestamp passes through verbatim.
+        let ack = PseudosettleAck {
+            accepted: Au::from_amount(4200),
+            timestamp: 987_654,
+        };
+        let round = domain_ack(wire_ack(ack));
+        assert_eq!(round.accepted, ack.accepted);
+        assert_eq!(round.timestamp, ack.timestamp);
+
+        // A wire amount beyond the u64 AU range saturates in AU space rather than
+        // wrapping to a small value; the timestamp still passes through.
+        let out_of_spec = PaymentAck::new(U256::MAX, -1);
+        let dom = domain_ack(out_of_spec);
+        assert_eq!(dom.accepted, Au::saturating_from_u256(U256::MAX));
+        assert_eq!(dom.timestamp, -1);
     }
 }

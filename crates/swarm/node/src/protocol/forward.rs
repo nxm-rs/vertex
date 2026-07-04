@@ -139,7 +139,7 @@ mod tests {
     use crate::dispatch::{NoLatencyHint, ProximityOnly, RetrievalTopology};
     use crate::inflight::PeerInflightLimiter;
     use crate::selection::SettlementTrigger;
-    use crate::{ClientCommand, ClientHandle, RetrievalResult};
+    use crate::{ClientCommand, ClientHandle, PeerCommand, RetrievalResult};
 
     const TEST_NET: NetworkId = NetworkId::MAINNET;
 
@@ -326,11 +326,14 @@ mod tests {
             rx,
             forwarder.retrieve(address, requester),
             move |cmd| match cmd {
-                ClientCommand::RetrieveChunk {
+                ClientCommand::Peer {
                     peer,
-                    address: requested,
-                    response,
-                    originated,
+                    command:
+                        PeerCommand::RetrieveChunk {
+                            address: requested,
+                            response,
+                            originated,
+                        },
                 } => {
                     assert!(!originated, "a relay leg is never an origin request");
                     assert_eq!(peer, closer, "the upstream leg targets the closer peer");
@@ -406,7 +409,10 @@ mod tests {
                 rx,
                 forwarder.retrieve(address, requester),
                 move |cmd| match cmd {
-                    ClientCommand::RetrieveChunk { response, .. } => {
+                    ClientCommand::Peer {
+                        command: PeerCommand::RetrieveChunk { response, .. },
+                        ..
+                    } => {
                         response
                             .send(Ok(RetrievalResult {
                                 chunk: chunk_for_answer,
@@ -474,16 +480,17 @@ mod tests {
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
-                ClientCommand::PushChunk {
+                ClientCommand::Peer {
                     peer,
-                    address: requested,
-                    chunk: pushed,
-                    response,
-                    originated,
+                    command:
+                        PeerCommand::PushChunk {
+                            chunk: pushed,
+                            response,
+                            originated,
+                        },
                 } => {
                     assert!(!originated, "a relay leg is never an origin push");
                     assert_eq!(peer, closer);
-                    assert_eq!(requested, address);
                     assert_eq!(*pushed.address(), address);
                     response.send(Ok(answer)).expect("receiver alive");
                 }
@@ -556,7 +563,10 @@ mod tests {
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
-                ClientCommand::PushChunk { response, .. } => {
+                ClientCommand::Peer {
+                    command: PeerCommand::PushChunk { response, .. },
+                    ..
+                } => {
                     response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
@@ -612,7 +622,10 @@ mod tests {
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
-                ClientCommand::PushChunk { response, .. } => {
+                ClientCommand::Peer {
+                    command: PeerCommand::PushChunk { response, .. },
+                    ..
+                } => {
                     response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
@@ -668,7 +681,10 @@ mod tests {
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
-                ClientCommand::PushChunk { response, .. } => {
+                ClientCommand::Peer {
+                    command: PeerCommand::PushChunk { response, .. },
+                    ..
+                } => {
                     response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
@@ -713,7 +729,10 @@ mod tests {
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
-                ClientCommand::PushChunk { response, .. } => {
+                ClientCommand::Peer {
+                    command: PeerCommand::PushChunk { response, .. },
+                    ..
+                } => {
                     response
                         .send(Err(crate::ChunkTransferError::Remote))
                         .expect("receiver alive");
@@ -776,7 +795,10 @@ mod tests {
             rx,
             forwarder.retrieve(address, requester),
             |cmd| match cmd {
-                ClientCommand::RetrieveChunk { response, .. } => {
+                ClientCommand::Peer {
+                    command: PeerCommand::RetrieveChunk { response, .. },
+                    ..
+                } => {
                     response
                         .send(Err(crate::ChunkTransferError::Remote))
                         .expect("receiver alive");
