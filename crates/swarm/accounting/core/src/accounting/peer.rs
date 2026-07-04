@@ -50,6 +50,8 @@ pub struct PeerState {
     payment_threshold: AtomicI64,
     settle_line: AtomicI64,
     disconnect_threshold: Au,
+    refresh_allowance: AtomicI64,
+    settlement_received: AtomicU64,
 }
 
 impl PeerState {
@@ -59,8 +61,15 @@ impl PeerState {
     /// before refusing service; the settle line is the debt we let ourselves owe
     /// the peer before settling, seeded from the local payment threshold and
     /// tightened by the peer's clamped announcement. The two are distinct fields
-    /// moving in opposite directions.
-    pub fn new(payment_threshold: Au, settle_line: Au, disconnect_threshold: Au) -> Self {
+    /// moving in opposite directions. The refresh allowance is the per-second
+    /// settlement rate extended to the peer, healed with the serve line once
+    /// the handshake node type is known.
+    pub fn new(
+        payment_threshold: Au,
+        settle_line: Au,
+        disconnect_threshold: Au,
+        refresh_allowance: Au,
+    ) -> Self {
         Self {
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
@@ -69,6 +78,8 @@ impl PeerState {
             payment_threshold: AtomicI64::new(payment_threshold.get()),
             settle_line: AtomicI64::new(settle_line.get()),
             disconnect_threshold,
+            refresh_allowance: AtomicI64::new(refresh_allowance.get()),
+            settlement_received: AtomicU64::new(0),
         }
     }
 
@@ -153,6 +164,41 @@ impl PeerState {
     pub fn disconnect_threshold(&self) -> Au {
         self.disconnect_threshold
     }
+
+    /// Get the per-second settlement allowance rate in AU.
+    pub fn refresh_allowance(&self) -> Au {
+        Au::new(self.refresh_allowance.load(Ordering::Relaxed))
+    }
+
+    /// Update the allowance rate; healed with the serve line at connect.
+    pub fn set_refresh_allowance(&self, rate: Au) {
+        self.refresh_allowance.store(rate.get(), Ordering::Relaxed);
+    }
+
+    /// Accumulate an accepted inbound settlement and return the new cumulative
+    /// total, saturating so a lifetime of repayment can never wrap the signal
+    /// threshold growth reads.
+    pub fn add_settlement_received(&self, amount: Au) -> Au {
+        let delta = amount.as_amount();
+        let mut current = self.settlement_received.load(Ordering::Relaxed);
+        loop {
+            let next = current.saturating_add(delta);
+            match self.settlement_received.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Au::from_amount(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Get the cumulative accepted inbound settlement in AU.
+    pub fn settlement_received(&self) -> Au {
+        Au::from_amount(self.settlement_received.load(Ordering::Relaxed))
+    }
 }
 
 impl SwarmPeerState for PeerState {
@@ -171,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_balance_operations() {
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
 
         assert_eq!(state.balance(), Au::ZERO);
 
@@ -186,13 +232,13 @@ mod tests {
     fn test_add_balance_saturates_instead_of_wrapping() {
         // Adding into the positive bound saturates rather than wrapping to a
         // negative balance (which would flip owed/owes).
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
         state.add_balance(Au::new(i64::MAX));
         state.add_balance(au(1000));
         assert_eq!(state.balance(), Au::new(i64::MAX));
 
         // The negative bound saturates too.
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
         state.add_balance(Au::new(i64::MIN));
         state.add_balance(au(-1000));
         assert_eq!(state.balance(), Au::new(i64::MIN));
@@ -200,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_reserved_operations() {
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
 
         assert_eq!(state.reserved_balance(), Au::ZERO);
 
@@ -213,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_sub_reserved_saturates_at_zero() {
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
 
         // Releasing more than is reserved must saturate at zero, never wrap to
         // a near-u64::MAX reserve that would read back as i64::MAX and jam the
@@ -229,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_thresholds() {
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
 
         assert_eq!(state.payment_threshold(), au(1000));
         assert_eq!(state.disconnect_threshold(), au(10000));
@@ -237,7 +283,7 @@ mod tests {
 
     #[test]
     fn set_payment_threshold_updates_the_serve_line() {
-        let state = PeerState::new(au(1000), au(1000), au(10000));
+        let state = PeerState::new(au(1000), au(1000), au(10000), au(100));
         assert_eq!(state.payment_threshold(), au(1000));
 
         state.set_payment_threshold(au(200));

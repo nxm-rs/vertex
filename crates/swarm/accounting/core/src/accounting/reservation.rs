@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn receive_apply_commits_balance_and_clears_reserve() {
-        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000)));
+        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_reserved(au(100));
 
         Reservation::<Receive>::new(Arc::clone(&state), au(100)).apply();
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn receive_drop_releases_reserve_only() {
-        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000)));
+        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_reserved(au(100));
 
         drop(Reservation::<Receive>::new(Arc::clone(&state), au(100)));
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn provide_apply_commits_balance_and_clears_shadow_reserve() {
-        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000)));
+        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
         Reservation::<Provide>::new(Arc::clone(&state), au(100)).apply();
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn provide_drop_releases_shadow_reserve_only() {
-        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000)));
+        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
         drop(Reservation::<Provide>::new(Arc::clone(&state), au(100)));
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn provide_forfeit_releases_shadow_reserve_and_accrues_ghost() {
-        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000)));
+        let state = Arc::new(PeerState::new(au(1000), au(1000), au(10000), au(100)));
         state.add_shadow_reserved(au(100));
 
         Reservation::<Provide>::new(Arc::clone(&state), au(100)).forfeit();

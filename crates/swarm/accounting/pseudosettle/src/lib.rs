@@ -116,17 +116,10 @@ pub fn create_pseudosettle_actor<A: SwarmAccounting + 'static>(
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
-    refresh_rate: Au,
 ) -> (PseudosettleService<A>, PseudosettleHandle) {
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    let service = PseudosettleService::new(
-        command_rx,
-        event_rx,
-        client_command_tx,
-        accounting,
-        refresh_rate,
-    );
+    let service = PseudosettleService::new(command_rx, event_rx, client_command_tx, accounting);
 
     let handle = PseudosettleHandle::new(command_tx);
 
@@ -191,6 +184,7 @@ mod tests {
             Au::from_amount(13_500_000),
             Au::from_amount(13_500_000),
             Au::from_amount(16_875_000),
+            Au::from_amount(4_500_000),
         );
         state.add_balance(Au::new(-10_000));
 
@@ -209,6 +203,7 @@ mod tests {
             Au::from_amount(13_500_000),
             Au::from_amount(13_500_000),
             Au::from_amount(16_875_000),
+            Au::from_amount(4_500_000),
         );
         state.add_balance(Au::new(1_000_000));
 

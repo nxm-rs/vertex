@@ -679,6 +679,12 @@ mod tests {
 
     impl SwarmPeerAccounting for MockPeerBandwidth {
         fn record(&self, _amount: Au, _direction: Direction) {}
+        fn settlement_received(&self, _amount: Au) -> Au {
+            Au::ZERO
+        }
+        fn refresh_allowance(&self) -> Au {
+            Au::ZERO
+        }
         fn balance(&self) -> Au {
             Au::ZERO
         }
