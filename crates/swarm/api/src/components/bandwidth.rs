@@ -218,8 +218,8 @@ pub trait SwarmAccounting: Send + Sync {
 /// could un-book debt for bytes the wire may still deliver. `debit_received`
 /// therefore commits in one step and `refund_received` reverses it only when
 /// the request provably reached no charge. An `Err` carries the
-/// disconnect-threshold breach the accounting already reported through its
-/// peer reporter.
+/// disconnect-threshold breach, a local pacing refusal that is not scored
+/// against the peer.
 pub trait OriginAccounting: Send + Sync {
     /// Band `price` against the peer's projected debt.
     fn admit(&self, peer: &OverlayAddress, price: Au) -> Admission;
