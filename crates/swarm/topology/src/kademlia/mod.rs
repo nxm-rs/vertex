@@ -9,6 +9,8 @@ mod limits;
 pub(crate) mod peer_selection;
 mod phase;
 mod routing;
+#[cfg(test)]
+mod sim;
 mod task;
 
 pub(crate) use admission::kademlia_admission_control;
