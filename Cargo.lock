@@ -8377,6 +8377,7 @@ dependencies = [
 name = "vertex-metrics"
 version = "0.1.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "metrics",
  "parking_lot",
  "strum 0.28.0",

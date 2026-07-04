@@ -1,13 +1,15 @@
 //! Topology metrics recording for Prometheus export.
 
+use std::num::NonZeroU32;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use metrics::{counter, gauge, histogram};
+use metrics::{Counter, Histogram, counter, gauge, histogram};
 use vertex_metrics::labels::outcome;
 use vertex_metrics::{
     CONNECTION_LIFETIME, DURATION_NETWORK, HistogramBucketConfig, LOCK_CONTENTION, LabelValue,
-    POLL_DURATION,
+    POLL_DURATION, lazy_counter, lazy_histogram,
 };
 use vertex_swarm_primitives::SwarmNodeType;
 
@@ -25,6 +27,18 @@ const PO_LABELS: [&str; 32] = [
 pub(crate) fn po_label(po: u8) -> &'static str {
     PO_LABELS.get(po as usize).copied().unwrap_or("overflow")
 }
+
+/// Cached handle for the per-poll duration histogram, sampled via
+/// [`vertex_metrics::TimingSampler`] to keep the poll hot path cheap.
+pub(crate) static POLL_DURATION_HISTOGRAM: LazyLock<Histogram> =
+    lazy_histogram!("topology_poll_duration_seconds");
+
+/// Cached handle for the per-poll processed-event counter.
+pub(crate) static POLL_EVENTS_TOTAL: LazyLock<Counter> =
+    lazy_counter!("topology_poll_events_total");
+
+/// Record one poll timing in this many polls.
+pub(crate) const POLL_SAMPLE_INTERVAL: NonZeroU32 = NonZeroU32::new(64).expect("nonzero");
 
 /// Histogram bucket configurations for topology metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[

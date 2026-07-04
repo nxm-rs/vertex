@@ -54,6 +54,7 @@ Guards ensure metrics are updated even on early returns or panics. Each guard ty
 |-------|-------------|-------------|---------|----------|
 | `GaugeGuard` | `GaugeGuard::increment(gauge)` | Gauge +1 | Gauge -1 | Tracking active/in-flight operations |
 | `TimingGuard` | `TimingGuard::new(histogram)` | Records start time | Records elapsed duration to histogram | Measuring operation duration |
+| `TimingSampler` | `TimingSampler::new(&LAZY_HISTOGRAM, interval)` | `start()` returns `Some(TimingGuard)` one call in `interval`, else `None` | Guard records on drop | Per-iteration timing in a hot loop, where the skip path (a decrement and branch, no clock read) keeps the untimed calls cheap |
 | `OperationGuard` | `OperationGuard::new(gauge, counter)` | Gauge +1 | Gauge -1, Counter +1 | Combined active tracking and completion counting |
 | `CounterGuard` | `CounterGuard::new(counter)` | Nothing | Counter +1 | Ensuring an event is counted even on panic |
 
