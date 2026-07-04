@@ -16,8 +16,8 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{
-    BootNode, ClientNode, ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts,
-    RunTaskFn, build_client_core_tail, single_task,
+    AssemblyContext, BootNode, ClientCoreTail, ClientNode, ClientNodeParts, ClientTailParams,
+    NativeChunkProvider, NodeRunParts, RunTaskFn, SettlementEventSenders, single_task,
 };
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
@@ -209,11 +209,7 @@ pub(crate) struct AssemblyInputs<'a> {
     pub(crate) identity: &'a Arc<Identity>,
     pub(crate) network: &'a NetworkConfig<KademliaConfig>,
     pub(crate) peer_store: Option<PeerStore>,
-    pub(crate) pseudosettle_event_sender:
-        tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::PseudosettleEvent>,
-    #[cfg(feature = "swap")]
-    pub(crate) swap_event_sender:
-        Option<tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>>,
+    pub(crate) senders: SettlementEventSenders,
 }
 
 /// The node-type-specific launch seam. The client assembly ([`ClientAssembly`])
@@ -270,9 +266,7 @@ impl NodeAssembly for ClientAssembly {
             inputs.network,
             node_store,
             inputs.peer_store,
-            inputs.pseudosettle_event_sender,
-            #[cfg(feature = "swap")]
-            inputs.swap_event_sender,
+            inputs.senders,
         )
         .await?;
         Ok((parts, ()))
@@ -283,9 +277,10 @@ impl NodeAssembly for ClientAssembly {
 ///
 /// Resolves the chain precondition, opens the database, and builds the peer
 /// store, then delegates the wasm-clean wiring (accounting, settlement, the
-/// chunk provider, service spawning) to [`build_client_core_tail`]. The
+/// chunk provider, service spawning) to [`ClientCoreTail`]. The
 /// node-type-specific local store and node assembly are injected through
-/// `assembly`, invoked by the tail over the prepared settlement event sinks.
+/// `assembly`, invoked between the tail's prepare and finish phases over the
+/// prepared settlement event sinks.
 pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
     ctx: &dyn InfrastructureContext,
     params: ClientNodeParams<'_>,
@@ -344,29 +339,28 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         swap: params.swap,
     };
 
-    let parts = build_client_core_tail(
-        ctx.executor(),
+    // SWAP carries the chain provider, so the tail accepts the resolved handle
+    // whenever swap is built.
+    let (tail, senders) = ClientCoreTail::prepare(
         tail_params,
-        // SWAP carries the chain provider, so the tail accepts the resolved
-        // handle whenever swap is built.
         #[cfg(feature = "swap")]
         chain_provider,
-        |events| {
-            assembly.assemble(
-                ctx,
-                AssemblyInputs {
-                    db,
-                    identity: params.identity,
-                    network: params.network,
-                    peer_store,
-                    pseudosettle_event_sender: events.pseudosettle,
-                    #[cfg(feature = "swap")]
-                    swap_event_sender: events.swap,
-                },
-            )
-        },
-    )
-    .await?;
+    );
+
+    let (parts, store) = assembly
+        .assemble(
+            ctx,
+            AssemblyInputs {
+                db,
+                identity: params.identity,
+                network: params.network,
+                peer_store,
+                senders,
+            },
+        )
+        .await?;
+
+    let parts = tail.finish(ctx.executor(), parts, store);
 
     info!(%node_type, "Node built successfully");
     Ok(parts)
@@ -378,18 +372,13 @@ async fn assemble_client_node(
     network: &NetworkConfig<KademliaConfig>,
     node_store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     peer_store: Option<PeerStore>,
-    pseudosettle_event_sender: tokio::sync::mpsc::UnboundedSender<
-        vertex_swarm_node::PseudosettleEvent,
-    >,
-    #[cfg(feature = "swap")] swap_event_sender: Option<
-        tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
-    >,
+    senders: SettlementEventSenders,
 ) -> Result<NodeRunParts, SwarmNodeError> {
     let node_builder = ClientNode::builder(identity.clone())
         .with_store(node_store)
-        .with_pseudosettle_events(pseudosettle_event_sender);
+        .with_pseudosettle_events(senders.pseudosettle);
     #[cfg(feature = "swap")]
-    let node_builder = match swap_event_sender {
+    let node_builder = match senders.swap {
         Some(tx) => node_builder.with_swap_events(tx),
         None => node_builder,
     };
@@ -399,7 +388,8 @@ async fn assemble_client_node(
         .map_err(|e| SwarmNodeError::Build(e.into()))?;
     let topology = node.topology_handle().clone();
 
-    let run: RunTaskFn = Box::new(move |accounting, engine| {
+    let run: RunTaskFn = Box::new(move |ctx: AssemblyContext| {
+        let AssemblyContext { accounting, engine } = ctx;
         node.enable_forwarding(engine, Arc::clone(&accounting));
         single_task(move |shutdown| async move {
             let _accounting = accounting;

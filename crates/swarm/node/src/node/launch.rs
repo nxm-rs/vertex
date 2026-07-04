@@ -5,7 +5,7 @@
 //! domain configs ([`NetworkConfig`], [`LocalStoreConfig`], and the plain-data
 //! [`SwapConfig`]) in a dial-only shape and delegates the shared client wiring
 //! (accounting, settlement, the chunk provider, service spawning) to
-//! [`build_client_core_tail`], the same tail the native builder uses, then spawns
+//! [`ClientCoreTail`], the same tail the native builder uses, then spawns
 //! the returned run task. It hands back a [`LaunchedClient`] with the handles a
 //! caller needs to observe the topology and issue chunk reads and writes.
 //! Settlement is pseudosettle (the chain-free path) by default; SWAP is
@@ -35,8 +35,8 @@ use super::client::ClientNode;
 #[cfg(feature = "swap")]
 use super::core::node_chain_provider;
 use super::core::{
-    ClientNodeParts, ClientTailParams, NativeChunkProvider, NodeRunParts, NodeRunTaskFn, RunTaskFn,
-    SharedAccounting, build_client_core_tail, single_task,
+    AssemblyContext, ClientCoreTail, ClientNodeParts, ClientTailParams, NativeChunkProvider,
+    NodeRunParts, NodeRunTaskFn, RunTaskFn, SharedAccounting, single_task,
 };
 use crate::ClientHandle;
 use crate::inflight::PeerInflightLimiter;
@@ -267,61 +267,57 @@ impl ClientLauncher {
 
         let executor = TaskExecutor::current();
 
-        // The dial-only client node is built inside the tail over the prepared
-        // settlement event sinks; the launcher carries no provider store, so it
-        // returns its overlay and peer id for the handles below.
-        let identity = Arc::clone(&self.identity);
-        let store_for_node = store.clone();
-
-        let parts: ClientNodeParts<(SwarmAddress, PeerId)> = build_client_core_tail(
-            &executor,
+        let (tail, senders) = ClientCoreTail::prepare(
             tail_params,
             #[cfg(feature = "swap")]
             chain_provider,
-            move |events| async move {
-                let node_builder = ClientNode::builder(identity)
-                    .with_kademlia_config(kademlia)
-                    .with_store(store_for_node)
-                    .with_pseudosettle_events(events.pseudosettle);
-                #[cfg(feature = "swap")]
-                let node_builder = match events.swap {
-                    Some(tx) => node_builder.with_swap_events(tx),
-                    None => node_builder,
-                };
-                let (mut node, client_service, client_handle) = node_builder
-                    .build(&config, None)
-                    .await
-                    .map_err(|e| eyre::eyre!("failed to build client node: {e}"))?;
+        );
 
-                let topology = node.topology_handle().clone();
-                let overlay = node.overlay_address();
-                let peer_id = *node.local_peer_id();
+        // The dial-only client node is built between the tail's two phases over the
+        // prepared settlement event sinks; the launcher carries no provider store,
+        // so it returns its overlay and peer id for the handles below.
+        let node_builder = ClientNode::builder(Arc::clone(&self.identity))
+            .with_kademlia_config(kademlia)
+            .with_store(store.clone())
+            .with_pseudosettle_events(senders.pseudosettle);
+        #[cfg(feature = "swap")]
+        let node_builder = match senders.swap {
+            Some(tx) => node_builder.with_swap_events(tx),
+            None => node_builder,
+        };
+        let (mut node, client_service, client_handle) = node_builder
+            .build(&config, None)
+            .await
+            .map_err(|e| eyre::eyre!("failed to build client node: {e}"))?;
 
-                // Forwarding is enabled inside the run task over the shared
-                // accounting the tail builds and the engine's relay role; the
-                // node then moves into the run loop.
-                let run: RunTaskFn = Box::new(move |accounting, engine| {
-                    node.enable_forwarding(engine, Arc::clone(&accounting));
-                    single_task(move |shutdown| async move {
-                        let _accounting = accounting;
-                        if let Err(e) = node.start_and_run(shutdown).await {
-                            tracing::error!(error = %e, "client node exited with error");
-                        }
-                    })
-                });
+        let topology = node.topology_handle().clone();
+        let overlay = node.overlay_address();
+        let peer_id = *node.local_peer_id();
 
-                Ok::<_, eyre::Report>((
-                    NodeRunParts {
-                        topology,
-                        client_service,
-                        client_handle,
-                        run,
-                    },
-                    (overlay, peer_id),
-                ))
+        // Forwarding is enabled inside the run task over the shared accounting the
+        // tail builds and the engine's relay role; the node then moves into the
+        // run loop.
+        let run: RunTaskFn = Box::new(move |ctx: AssemblyContext| {
+            let AssemblyContext { accounting, engine } = ctx;
+            node.enable_forwarding(engine, Arc::clone(&accounting));
+            single_task(move |shutdown| async move {
+                let _accounting = accounting;
+                if let Err(e) = node.start_and_run(shutdown).await {
+                    tracing::error!(error = %e, "client node exited with error");
+                }
+            })
+        });
+
+        let parts: ClientNodeParts<(SwarmAddress, PeerId)> = tail.finish(
+            &executor,
+            NodeRunParts {
+                topology,
+                client_service,
+                client_handle,
+                run,
             },
-        )
-        .await?;
+            (overlay, peer_id),
+        );
 
         let ClientNodeParts {
             task,
