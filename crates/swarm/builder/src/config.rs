@@ -14,13 +14,17 @@
 use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
+use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultAccountingConfig;
+use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
+use crate::error::SwarmNodeError;
+use crate::launch::CacheSeam;
 use crate::protocol::SwarmProtocol;
 
 /// Implement shared config getters: `spec()`, `identity()`, `network()`.
@@ -81,7 +85,6 @@ impl_common_config_getters!(BootnodeConfig);
 impl_builds_protocol!(BootnodeConfig, "Swarm Bootnode");
 
 /// Validated configuration for a Client node with bandwidth accounting.
-#[derive(Clone)]
 pub struct ClientConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
@@ -90,6 +93,7 @@ pub struct ClientConfig {
     local_store: LocalStoreConfig,
     chain: ChainConfig,
     swap: SwapConfig,
+    cache: Option<CacheSeam>,
 }
 
 impl ClientConfig {
@@ -110,7 +114,39 @@ impl ClientConfig {
             local_store,
             chain,
             swap,
+            cache: None,
         }
+    }
+
+    /// Override the cache with a pre-built local store, replacing the default
+    /// in-memory chunk store.
+    ///
+    /// On a client this is the full retrieval-serve view; on a storer only the
+    /// forwarding-cache layer of the cache-then-reserve view (read after the
+    /// reserve, written for out-of-AoR chunks, never for reserve admission).
+    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
+        self.cache = Some(CacheSeam::Ready(cache));
+        self
+    }
+
+    /// Override the cache with a factory invoked at build time.
+    ///
+    /// The factory receives the opened shared database (`None` in-memory) so the
+    /// cache can size or back itself from the same handle. The client-versus-storer
+    /// seam meaning of [`with_cache`](Self::with_cache) applies.
+    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.cache = Some(CacheSeam::Factory(Box::new(factory)));
+        self
+    }
+
+    pub(crate) fn take_cache(&mut self) -> Option<CacheSeam> {
+        self.cache.take()
     }
 
     pub fn bandwidth(&self) -> &DefaultAccountingConfig {

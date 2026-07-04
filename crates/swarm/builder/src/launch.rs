@@ -154,7 +154,7 @@ define_launch_types!(
     with_client
 );
 
-/// A cache override supplied through the builder. With no seam the launch path
+/// A cache override supplied through the config setters. With no seam the launch path
 /// builds the default in-memory [`vertex_swarm_localstore::ChunkStore`] sized
 /// from the local-store config.
 pub(crate) enum CacheSeam {
@@ -169,7 +169,8 @@ pub(crate) type CacheFactory = Box<
     dyn FnOnce(
             Option<Arc<RedbDatabase>>,
         ) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError>
-        + Send,
+        + Send
+        + Sync,
 >;
 
 /// Resolve a cache seam into a local store, defaulting to a byte-bounded in-memory
@@ -483,16 +484,15 @@ impl SwarmLaunchConfig for ClientConfig {
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        build_client(self, ctx, None).await
+        build_client(self, ctx).await
     }
 }
 
-/// Build a client node. `cache == None` builds the default in-memory cache, no
+/// Build a client node. With no cache seam the default in-memory cache is built, no
 /// reserve, so every pushsync relays and the opened database handle is ignored.
-pub(crate) async fn build_client(
-    config: ClientConfig,
+async fn build_client(
+    mut config: ClientConfig,
     ctx: &dyn InfrastructureContext,
-    cache: Option<CacheSeam>,
 ) -> Result<
     (
         NodeTaskFn,
@@ -500,6 +500,7 @@ pub(crate) async fn build_client(
     ),
     SwarmNodeError,
 > {
+    let cache = config.take_cache();
     let cache_budget = config.local_store().cache_budget_bytes();
     let soc_ttl = config.local_store().soc_cache_ttl();
     let parts = build_client_backed_node(
@@ -824,6 +825,54 @@ mod tests {
         assert!(
             Arc::ptr_eq(&cache, &store),
             "the supplied cache must reach the node store unchanged"
+        );
+    }
+
+    /// A test client config wired not to leave the process (OS port, no discovery).
+    fn test_client_config() -> crate::config::ClientConfig {
+        use vertex_swarm_localstore::LocalStoreConfig;
+        use vertex_swarm_node::args::{ChainConfig, SwapConfig};
+
+        let identity = test_identity_arc();
+        let spec = identity.spec().clone();
+        crate::config::ClientConfig::new(
+            spec,
+            identity,
+            test_network_config(),
+            DefaultAccountingConfig::default(),
+            LocalStoreConfig::default(),
+            ChainConfig::default(),
+            SwapConfig::default(),
+        )
+    }
+
+    /// A ready cache seam set on the config reaches the resolved node store unchanged.
+    #[test]
+    fn client_config_ready_cache_seam_reaches_resolve_cache() {
+        let cache: Arc<dyn vertex_swarm_api::SwarmLocalStore> = Arc::new(
+            vertex_swarm_localstore::ChunkStore::with_budget(4096, DEFAULT_SOC_CACHE_TTL_NS_TEST),
+        );
+        let mut config = test_client_config().with_cache(Arc::clone(&cache));
+        let store = resolve_cache(config.take_cache(), None, 0, 0).expect("seam cache is used");
+        assert!(
+            Arc::ptr_eq(&cache, &store),
+            "the config cache seam must reach the node store unchanged"
+        );
+    }
+
+    /// A cache factory set on the config is invoked by the launch path, returning the
+    /// factory-built store.
+    #[test]
+    fn client_config_cache_factory_reaches_resolve_cache() {
+        let built: Arc<dyn vertex_swarm_api::SwarmLocalStore> = Arc::new(
+            vertex_swarm_localstore::ChunkStore::with_budget(4096, DEFAULT_SOC_CACHE_TTL_NS_TEST),
+        );
+        let handed = Arc::clone(&built);
+        let mut config = test_client_config().with_cache_factory(move |_db| Ok(handed));
+        let store = resolve_cache(config.take_cache(), None, 0, 0).expect("factory cache is used");
+        assert!(
+            Arc::ptr_eq(&built, &store),
+            "the factory-built cache must reach the node store"
         );
     }
 

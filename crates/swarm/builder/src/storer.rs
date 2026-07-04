@@ -2,10 +2,10 @@
 //!
 //! Concentrates everything the storer node type adds over the default client: the
 //! persisting reserve, the neighbourhood puller, the pullsync and redistribution
-//! wiring, the cache-then-reserve serve view, and the storer config, builder, and
-//! launch path. The shared launch and builder code stays capability-agnostic and
-//! the storer plugs into it through the [`NodeAssembly`] seam and the
-//! [`StorerNodeBuilder`] wrapper around the client builder.
+//! wiring, the cache-then-reserve serve view, and the storer config and launch path.
+//! The shared launch code stays capability-agnostic and the storer plugs into it
+//! through the [`NodeAssembly`] seam, carrying its cache and reserve overrides as
+//! config setters.
 
 mod composite;
 mod pullsync;
@@ -19,9 +19,7 @@ use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{
     BinCursorStore, PeerReporter, PullChunkVerifier, PullStorage, ReserveStore, StorageRadius,
-    StorerComponents, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
-    SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig, SwarmPricingConfig,
-    SwarmRoutingConfig, SwarmStorageConfig, construct,
+    StorerComponents, SwarmLaunchConfig, SwarmLocalStore, SwarmNodeType, construct,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
@@ -38,16 +36,14 @@ use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::NodeTaskFn;
 
 use crate::error::SwarmNodeError;
-use crate::handle::{BuiltNode, BuiltStorer};
 use crate::launch::{
     AssemblyInputs, CacheSeam, ClientLaunchTypes, ClientNodeParams, NodeAssembly,
     build_client_backed_node, resolve_cache,
 };
-use crate::node::{ClientNodeBuilder, NodeBuilder};
 use crate::protocol::SwarmProtocol;
 use vertex_swarm_node::{NativeChunkProvider, NodeRunParts, RunTaskFn, single_task};
 
-/// A reserve override supplied through the builder. With no seam the storer launch
+/// A reserve override supplied through the config setters. With no seam the storer launch
 /// path builds the default admission-gated [`DbReserve`] over the shared database.
 pub(crate) enum ReserveSeam {
     /// A pre-built reserve, used as-is.
@@ -58,11 +54,12 @@ pub(crate) enum ReserveSeam {
 
 /// Builds a reserve from the opened shared database (if any).
 pub(crate) type ReserveFactory = Box<
-    dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError> + Send,
+    dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
+        + Send
+        + Sync,
 >;
 
 /// Validated configuration for storer (full) node with storage and redistribution.
-#[derive(Clone)]
 pub struct StorerConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
@@ -72,6 +69,8 @@ pub struct StorerConfig {
     storage: StorageConfig,
     chain: ChainConfig,
     swap: SwapConfig,
+    cache: Option<CacheSeam>,
+    reserve: Option<ReserveSeam>,
 }
 
 impl StorerConfig {
@@ -98,7 +97,61 @@ impl StorerConfig {
             storage,
             chain,
             swap,
+            cache: None,
+            reserve: None,
         }
+    }
+
+    /// Override the cache with a pre-built local store, replacing the default
+    /// in-memory forwarding cache of the cache-then-reserve serve view. Written for
+    /// out-of-AoR chunks, never for reserve admission.
+    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
+        self.cache = Some(CacheSeam::Ready(cache));
+        self
+    }
+
+    /// Override the cache with a factory invoked at build time. The factory receives
+    /// the opened shared database (`None` in-memory). See [`with_cache`](Self::with_cache).
+    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.cache = Some(CacheSeam::Factory(Box::new(factory)));
+        self
+    }
+
+    /// Override the storer reserve with a pre-built store.
+    ///
+    /// The reserve must implement [`BinCursorStore`] so the served reserve
+    /// capabilities can query per-bin counts and insertion cursors.
+    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
+        self.reserve = Some(ReserveSeam::Ready(reserve));
+        self
+    }
+
+    /// Override the storer reserve with a factory invoked at build time. The factory
+    /// receives the opened shared database (`None` in-memory) and must build a
+    /// [`BinCursorStore`].
+    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.reserve = Some(ReserveSeam::Factory(Box::new(factory)));
+        self
+    }
+
+    pub(crate) fn take_cache(&mut self) -> Option<CacheSeam> {
+        self.cache.take()
+    }
+
+    pub(crate) fn take_reserve(&mut self) -> Option<ReserveSeam> {
+        self.reserve.take()
     }
 
     pub fn spec(&self) -> &Arc<Spec> {
@@ -143,163 +196,6 @@ impl NodeBuildsProtocol for StorerConfig {
     }
 }
 
-/// Builder for storer nodes. Wraps the client builder, carrying the storage and
-/// reserve seams the storer build path consumes.
-pub struct StorerNodeBuilder<I, N, A, S, St>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
-    client: ClientNodeBuilder<I, N, A>,
-    local_store: S,
-    storage: St,
-    /// `None` builds the default admission-gated reserve over the shared database.
-    reserve: Option<ReserveSeam>,
-}
-
-impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
-    /// Wrap a client builder with the storer storage and reserve seams.
-    pub(crate) fn from_client(
-        client: ClientNodeBuilder<I, N, A>,
-        local_store: S,
-        storage: St,
-    ) -> Self {
-        Self {
-            client,
-            local_store,
-            storage,
-            reserve: None,
-        }
-    }
-
-    pub fn spec(&self) -> &Arc<Spec> {
-        self.client.spec()
-    }
-
-    /// Override the cache with a pre-built local store. See
-    /// [`ClientNodeBuilder::with_cache`].
-    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
-        self.client = self.client.with_cache(cache);
-        self
-    }
-
-    /// Override the cache with a factory. See
-    /// [`ClientNodeBuilder::with_cache_factory`].
-    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
-    where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
-            + Send
-            + 'static,
-    {
-        self.client = self.client.with_cache_factory(factory);
-        self
-    }
-
-    /// Override the storer reserve with a pre-built store.
-    ///
-    /// The reserve must implement [`BinCursorStore`] so the served reserve
-    /// capabilities can query per-bin counts and insertion cursors.
-    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
-        self.reserve = Some(ReserveSeam::Ready(reserve));
-        self
-    }
-
-    /// Override the storer reserve with a factory invoked at build time.
-    ///
-    /// The factory receives the opened shared database (`None` in-memory). The
-    /// reserve must implement [`BinCursorStore`].
-    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
-    where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
-            + Send
-            + 'static,
-    {
-        self.reserve = Some(ReserveSeam::Factory(Box::new(factory)));
-        self
-    }
-}
-
-/// Default storer builder.
-pub type DefaultStorerBuilder = StorerNodeBuilder<
-    Arc<Identity>,
-    NetworkConfig<KademliaConfig>,
-    DefaultAccountingConfig,
-    LocalStoreConfig,
-    StorageConfig,
->;
-
-impl DefaultStorerBuilder {
-    pub fn from_parts(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultAccountingConfig,
-        local_store: LocalStoreConfig,
-        storage: StorageConfig,
-    ) -> Self {
-        let client = NodeBuilder::new(spec, identity, network).with_accounting(bandwidth);
-        Self::from_client(client, local_store, storage)
-    }
-
-    pub fn from_config(config: StorerConfig) -> Self {
-        let chain = config.chain().clone();
-        let swap = config.swap().clone();
-        let mut builder = Self::from_parts(
-            config.spec().clone(),
-            config.identity().clone(),
-            config.network().clone(),
-            config.bandwidth().clone(),
-            config.local_store().clone(),
-            config.storage().clone(),
-        );
-        builder.client = builder.client.with_chain(chain).with_swap(swap);
-        builder
-    }
-
-    /// Convert to config for building.
-    pub fn into_config(self) -> StorerConfig {
-        StorerConfig::new(
-            self.client.base.spec,
-            self.client.base.identity,
-            self.client.base.network,
-            self.client.accounting,
-            self.local_store,
-            self.storage,
-            self.client.chain,
-            self.client.swap,
-        )
-    }
-
-    /// Build the storer node, honoring any cache or reserve seam set on the
-    /// builder.
-    pub async fn build(
-        mut self,
-        ctx: &dyn InfrastructureContext,
-    ) -> Result<BuiltStorer, SwarmNodeError> {
-        let cache = self.client.cache.take();
-        let reserve = self.reserve.take();
-        let config = self.into_config();
-        let (task, providers) = build_storer(config, ctx, cache, reserve).await?;
-        Ok(BuiltNode::new(task, providers))
-    }
-}
-
-impl From<StorerConfig> for DefaultStorerBuilder {
-    fn from(config: StorerConfig) -> Self {
-        Self::from_config(config)
-    }
-}
-
 impl SwarmLaunchConfig for StorerConfig {
     type Types = ClientLaunchTypes;
     type Providers = StorerProviders;
@@ -309,7 +205,7 @@ impl SwarmLaunchConfig for StorerConfig {
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        build_storer(self, ctx, None, None).await
+        build_storer(self, ctx).await
     }
 }
 
@@ -322,19 +218,18 @@ type StorerProviders = StorerComponents<
     Arc<dyn BinCursorStore>,
 >;
 
-/// Build a storer node, optionally overriding the cache and reserve through
-/// builder seams.
+/// Build a storer node, honouring any cache and reserve seams set on the config.
 ///
-/// Both `None` reproduces the default: the admission-gated [`DbReserve`] is the
+/// With neither seam set the default is built: the admission-gated [`DbReserve`] is the
 /// pushsync-ingest reserve, layered under a default in-memory forwarding cache for
 /// the retrieval-serve view. A reserve seam replaces the reserve; a cache seam
 /// replaces the forwarding cache.
 pub(crate) async fn build_storer(
-    config: StorerConfig,
+    mut config: StorerConfig,
     ctx: &dyn InfrastructureContext,
-    cache: Option<CacheSeam>,
-    reserve: Option<ReserveSeam>,
 ) -> Result<(NodeTaskFn, StorerProviders), SwarmNodeError> {
+    let cache = config.take_cache();
+    let reserve = config.take_reserve();
     // Reserve capacity is a consensus quantity read from the spec, not local disk:
     // a fixed power-of-two chunk count from which the redistribution game derives
     // storage radius and committed depth, so nodes covering one neighbourhood must
@@ -690,6 +585,7 @@ fn build_storer_reserve(
 mod tests {
     use super::*;
 
+    use vertex_swarm_api::SwarmIdentity;
     use vertex_swarm_test_utils::test_identity_arc;
 
     /// Test SOC cache TTL: any non-zero value works for the cache-shape tests.
@@ -749,6 +645,48 @@ mod tests {
         assert!(
             !store.contains(&address),
             "a rejected put leaves nothing in the reserve"
+        );
+    }
+
+    /// A test storer config carrying default sections; only the seams under test
+    /// matter to these cases.
+    fn test_storer_config(identity: Arc<Identity>) -> StorerConfig {
+        let spec = identity.spec().clone();
+        StorerConfig::new(
+            spec,
+            identity,
+            NetworkConfig::default(),
+            DefaultAccountingConfig::default(),
+            LocalStoreConfig::default(),
+            StorageConfig::new(false),
+            ChainConfig::default(),
+            SwapConfig::default(),
+        )
+    }
+
+    /// A reserve seam set on the config reaches the serve store as the ingest view.
+    #[test]
+    fn storer_config_reserve_seam_reaches_serve_store() {
+        let identity = test_identity_arc();
+        let seam_reserve = build_storer_reserve(None, &identity, 1 << 12)
+            .expect("reserve builds")
+            .reserve;
+        let mut config =
+            test_storer_config(identity.clone()).with_reserve(Arc::clone(&seam_reserve));
+
+        let serve = build_serve_store(
+            config.take_reserve(),
+            config.take_cache(),
+            None,
+            &identity,
+            1 << 12,
+            1 << 20,
+            DEFAULT_SOC_CACHE_TTL_NS_TEST,
+        )
+        .expect("seam reserve is used");
+        assert!(
+            Arc::ptr_eq(&seam_reserve, &serve.reserve),
+            "the config reserve seam must reach the serve store as the ingest view"
         );
     }
 

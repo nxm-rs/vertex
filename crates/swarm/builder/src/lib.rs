@@ -1,11 +1,12 @@
-//! Swarm node builder infrastructure.
+//! Swarm node launch infrastructure.
 //!
-//! Provides layered builders for constructing Swarm nodes:
-//! - [`NodeBuilder`] / [`DefaultNodeBuilder`] - Bootnode builder
-//! - [`ClientNodeBuilder`] / [`DefaultClientBuilder`] - Client node builder
-//! - [`StorerNodeBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
-//!
-//! Build returns [`BuiltNode`] which contains the task and RPC providers.
+//! Ships the validated launch configs ([`BootnodeConfig`], [`ClientConfig`], and
+//! `StorerConfig` behind the `reserve` feature) as the single carrier from the
+//! CLI or FFI to launch. Each config implements `SwarmLaunchConfig`, assembling its
+//! node type through the shared launch path. Cache and reserve overrides are config
+//! setters (`with_cache`, `with_cache_factory`, and on the storer `with_reserve`,
+//! `with_reserve_factory`); with no override the launch path builds the default
+//! in-memory cache and, for a storer, the admission-gated reserve.
 //!
 //! # Build modes
 //!
@@ -38,22 +39,14 @@
 mod chain;
 pub mod config;
 mod error;
-mod handle;
 mod launch;
-mod node;
 mod protocol;
 #[cfg(feature = "reserve")]
 mod storer;
 
-// Builders
-pub use node::{ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, NodeBuilder};
-
 // The Swarm `NodeProtocol` the node builder launches. Lives here so its serve
 // view can name the gRPC adapter.
 pub use protocol::SwarmProtocol;
-
-// Build outputs
-pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 // Chunk provider: the network retrieval/push provider lives in
 // `vertex-swarm-node` (the wasm-clean cone both client entry points share);
@@ -66,10 +59,10 @@ pub use config::{BootnodeConfig, ClientConfig};
 // Launch types (for SwarmLaunchConfig associated types)
 pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes};
 
-// The storer cone (builder and config) behind the `reserve` feature; its launch
-// types are the shared `ClientLaunchTypes`.
+// The storer config behind the `reserve` feature; its launch types are the shared
+// `ClientLaunchTypes`.
 #[cfg(feature = "reserve")]
-pub use storer::{DefaultStorerBuilder, StorerConfig, StorerNodeBuilder};
+pub use storer::StorerConfig;
 
 // Errors
 pub use error::SwarmNodeError;
