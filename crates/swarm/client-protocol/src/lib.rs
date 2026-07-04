@@ -165,13 +165,13 @@ pub enum FailureKind {
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     /// Received a payment threshold from the peer.
-    PricingReceived {
+    PaymentThresholdReceived {
         /// The payment threshold announced by the peer.
         threshold: U256,
     },
 
     /// Successfully sent our payment threshold.
-    PricingSent,
+    PaymentThresholdSent,
 
     /// We served an inbound retrieval request from our cache (scoring/metrics only).
     InboundServed,
@@ -335,7 +335,7 @@ pub enum ClientEvent {
 #[derive(Debug)]
 pub enum PeerCommand {
     /// Announce our payment threshold to the peer.
-    AnnouncePricing {
+    AnnouncePaymentThreshold {
         /// The payment threshold to announce.
         threshold: U256,
     },

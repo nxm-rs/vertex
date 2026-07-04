@@ -101,7 +101,7 @@ pub(crate) fn peer_ready_commands(
         {
             commands.push(ClientCommand::Peer {
                 peer: overlay,
-                command: PeerCommand::AnnouncePricing { threshold },
+                command: PeerCommand::AnnouncePaymentThreshold { threshold },
             });
         }
     }
@@ -149,7 +149,7 @@ mod announce_tests {
         ));
         assert!(matches!(
             &commands[1],
-            ClientCommand::Peer { peer, command: PeerCommand::AnnouncePricing { threshold } }
+            ClientCommand::Peer { peer, command: PeerCommand::AnnouncePaymentThreshold { threshold } }
                 if *peer == overlay && *threshold == U256::from(13_500_000u64)
         ));
     }

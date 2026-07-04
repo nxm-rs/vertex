@@ -463,8 +463,8 @@ impl ClientService {
                 peer_id,
                 event,
             } => match event {
-                PeerEvent::PricingReceived { threshold } => {
-                    debug!(%peer_id, %peer, %threshold, "Received pricing threshold");
+                PeerEvent::PaymentThresholdReceived { threshold } => {
+                    debug!(%peer_id, %peer, %threshold, "Received payment threshold");
                     if let Some(adopter) = &self.threshold_adopter {
                         // An out-of-spec value saturates to the maximum AU; the
                         // clamp inside accounting caps it at the local threshold.
@@ -473,8 +473,8 @@ impl ClientService {
                     }
                 }
 
-                PeerEvent::PricingSent => {
-                    debug!(%peer, "Pricing threshold sent");
+                PeerEvent::PaymentThresholdSent => {
+                    debug!(%peer, "Payment threshold sent");
                 }
 
                 PeerEvent::ChunkReceived {
@@ -747,14 +747,14 @@ mod tests {
     }
 
     #[test]
-    fn pricing_received_feeds_the_threshold_adopter() {
+    fn announced_threshold_feeds_the_settle_line_adopter() {
         use alloy_primitives::U256;
 
         let (service, calls) = service_with_adopter();
         service.process_event(ClientEvent::Peer {
             peer: peer(7),
             peer_id: libp2p::PeerId::random(),
-            event: PeerEvent::PricingReceived {
+            event: PeerEvent::PaymentThresholdReceived {
                 threshold: U256::from(9_000_000u64),
             },
         });
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn pricing_received_saturates_an_out_of_range_announcement() {
+    fn announced_threshold_saturates_out_of_range() {
         use alloy_primitives::U256;
 
         // A threshold beyond i64::MAX saturates to the maximum AU here; the clamp
@@ -773,7 +773,7 @@ mod tests {
         service.process_event(ClientEvent::Peer {
             peer: peer(8),
             peer_id: libp2p::PeerId::random(),
-            event: PeerEvent::PricingReceived {
+            event: PeerEvent::PaymentThresholdReceived {
                 threshold: U256::MAX,
             },
         });

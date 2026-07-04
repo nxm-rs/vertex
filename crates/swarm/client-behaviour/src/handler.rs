@@ -234,13 +234,13 @@ pub struct ClientHandler {
     next_request_id: u64,
     pending_commands: BoundedQueue<HandlerCommand>,
     pending_events: BoundedQueue<HandlerEvent>,
-    /// One pricing substream in flight at a time; each announcement (initial
+    /// One announce substream in flight at a time; each announcement (initial
     /// and checkpoint re-announcements) opens a fresh substream.
-    pricing_outbound_pending: bool,
+    announce_in_flight: bool,
     /// Latest outbound announcement superseded while one is in flight; sent
     /// once the in-flight substream resolves. Raises are monotonic, so only
     /// the newest line matters.
-    pending_announce: Option<U256>,
+    superseded_announce: Option<U256>,
     /// Self-contained inbound serving futures (retrieval and pushsync).
     inbound: OutcomeDriver<InboundOutcome>,
     /// Pseudosettle responders awaiting the service's ack, keyed by request_id.
@@ -249,11 +249,11 @@ pub struct ClientHandler {
     pending_responses: HashMap<u64, StoredResponse>,
     /// Bounded set for async pseudosettle ack sends (prevents blocking poll).
     response_sends: futures_bounded::FuturesSet<Result<(), String>>,
-    /// Latest pricing announcement received while dormant, flushed once the
+    /// Latest payment threshold received while dormant, flushed once the
     /// handler activates. A peer announces at connect, before the overlay
     /// round-trips through activation, so without this the connect-time
     /// announcement is dropped and never reaches accounting.
-    pending_pricing: Option<U256>,
+    pending_peer_threshold: Option<U256>,
 }
 
 impl ClientHandler {
@@ -284,15 +284,15 @@ impl ClientHandler {
             next_request_id: 0,
             pending_commands: BoundedQueue::new(max_pending_commands),
             pending_events: BoundedQueue::new(max_pending_events),
-            pricing_outbound_pending: false,
-            pending_announce: None,
+            announce_in_flight: false,
+            superseded_announce: None,
             inbound: OutcomeDriver::new(MAX_INBOUND_SERVING),
             pending_responses: HashMap::new(),
             response_sends: futures_bounded::FuturesSet::new(
                 RESPONSE_SEND_TIMEOUT,
                 MAX_CONCURRENT_RESPONSE_SENDS,
             ),
-            pending_pricing: None,
+            pending_peer_threshold: None,
         }
     }
 
@@ -354,15 +354,15 @@ impl ClientHandler {
             .map(|s| s.response)
     }
 
-    /// Re-enqueue an announcement superseded while a pricing substream was in
+    /// Re-enqueue an announcement superseded while an announce substream was in
     /// flight, so the newest line still reaches the peer.
-    fn requeue_pending_announce(&mut self) {
-        if let Some(threshold) = self.pending_announce.take()
+    fn requeue_superseded_announce(&mut self) {
+        if let Some(threshold) = self.superseded_announce.take()
             && self
                 .pending_commands
-                .push(HandlerCommand::Peer(PeerCommand::AnnouncePricing {
-                    threshold,
-                }))
+                .push(HandlerCommand::Peer(
+                    PeerCommand::AnnouncePaymentThreshold { threshold },
+                ))
                 .is_err()
         {
             warn!("Handler command queue full, dropping superseded announcement");
@@ -377,13 +377,13 @@ impl ClientHandler {
                 self.state = State::Active { overlay };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
-                // Flush a pricing announcement that arrived before activation, so
+                // Flush a payment threshold that arrived before activation, so
                 // a peer that announces at connect still reaches accounting.
-                if let Some(threshold) = self.pending_pricing.take() {
-                    debug!(%overlay, %threshold, "Flushing buffered pricing");
+                if let Some(threshold) = self.pending_peer_threshold.take() {
+                    debug!(%overlay, %threshold, "Flushing buffered payment threshold");
                     self.pending_events.push_back(HandlerEvent::Peer {
                         overlay,
-                        event: PeerEvent::PricingReceived { threshold },
+                        event: PeerEvent::PaymentThresholdReceived { threshold },
                     });
                 }
             }
@@ -393,25 +393,25 @@ impl ClientHandler {
         }
     }
 
-    /// Handle incoming pricing threshold.
-    fn on_pricing_received(
+    /// Handle an incoming payment threshold.
+    fn on_payment_threshold_received(
         &mut self,
         threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold,
     ) {
         if let Some(overlay) = self.overlay() {
-            debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
+            debug!(%overlay, threshold = %threshold.payment_threshold, "Received payment threshold");
             self.pending_events.push_back(HandlerEvent::Peer {
                 overlay,
-                event: PeerEvent::PricingReceived {
+                event: PeerEvent::PaymentThresholdReceived {
                     threshold: threshold.payment_threshold,
                 },
             });
         } else {
             debug!(
                 threshold = %threshold.payment_threshold,
-                "Buffering pricing received before activation"
+                "Buffering payment threshold received before activation"
             );
-            self.pending_pricing = Some(threshold.payment_threshold);
+            self.pending_peer_threshold = Some(threshold.payment_threshold);
         }
     }
 
@@ -691,11 +691,11 @@ impl ConnectionHandler for ClientHandler {
                     }
                 }
                 HandlerCommand::Peer(command) => match command {
-                    PeerCommand::AnnouncePricing { threshold } => {
-                        if self.pricing_outbound_pending {
-                            self.pending_announce = Some(threshold);
+                    PeerCommand::AnnouncePaymentThreshold { threshold } => {
+                        if self.announce_in_flight {
+                            self.superseded_announce = Some(threshold);
                         } else {
-                            self.pricing_outbound_pending = true;
+                            self.announce_in_flight = true;
                             let announce =
                                 vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
                             let upgrade = ClientOutboundUpgrade::pricing(announce);
@@ -857,8 +857,8 @@ impl ConnectionHandler for ClientHandler {
                 let error = e.error.to_string();
                 match e.info {
                     ClientOutboundInfo::Pricing => {
-                        self.pricing_outbound_pending = false;
-                        self.requeue_pending_announce();
+                        self.announce_in_flight = false;
+                        self.requeue_superseded_announce();
                         warn!(protocol = "pricing", %error, "Client dial upgrade error");
                         self.push_event(HandlerEvent::Error {
                             overlay: self.overlay(),
@@ -997,7 +997,7 @@ impl ClientHandler {
     fn handle_inbound_output(&mut self, output: ClientInboundOutput) {
         match output {
             ClientInboundOutput::Pricing(threshold) => {
-                self.on_pricing_received(threshold);
+                self.on_payment_threshold_received(threshold);
             }
             ClientInboundOutput::Retrieval(request, responder) => {
                 self.on_retrieval_request(request, responder);
@@ -1038,12 +1038,12 @@ impl ClientHandler {
     fn handle_outbound_output(&mut self, output: ClientOutboundOutput, info: ClientOutboundInfo) {
         match (output, info) {
             (ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing) => {
-                self.pricing_outbound_pending = false;
-                self.requeue_pending_announce();
+                self.announce_in_flight = false;
+                self.requeue_superseded_announce();
                 if let Some(overlay) = self.overlay() {
                     self.pending_events.push_back(HandlerEvent::Peer {
                         overlay,
-                        event: PeerEvent::PricingSent,
+                        event: PeerEvent::PaymentThresholdSent,
                     });
                 }
             }
@@ -1176,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn pricing_before_activation_is_buffered_and_flushed() {
+    fn payment_threshold_before_activation_is_buffered_and_flushed() {
         use alloy_primitives::U256;
         use vertex_swarm_client_protocol::PeerEvent;
         use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
@@ -1191,16 +1191,19 @@ mod tests {
             None,
         );
 
-        // A pricing announcement arriving while dormant is buffered, not dropped.
-        handler.on_pricing_received(vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(
-            U256::from(9_000_000u64),
-        ));
-        assert_eq!(handler.pending_pricing, Some(U256::from(9_000_000u64)));
+        // A payment threshold arriving while dormant is buffered, not dropped.
+        handler.on_payment_threshold_received(
+            vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(U256::from(9_000_000u64)),
+        );
+        assert_eq!(
+            handler.pending_peer_threshold,
+            Some(U256::from(9_000_000u64))
+        );
 
-        // Activation emits Activated first, then flushes the buffered pricing.
+        // Activation emits Activated first, then flushes the buffered payment threshold.
         let overlay = OverlayAddress::from([1u8; 32]);
         handler.activate(overlay, SwarmNodeType::Storer);
-        assert_eq!(handler.pending_pricing, None);
+        assert_eq!(handler.pending_peer_threshold, None);
 
         assert!(matches!(
             handler.pending_events.pop(),
@@ -1209,7 +1212,7 @@ mod tests {
         assert!(matches!(
             handler.pending_events.pop(),
             Some(HandlerEvent::Peer {
-                event: PeerEvent::PricingReceived { threshold },
+                event: PeerEvent::PaymentThresholdReceived { threshold },
                 ..
             }) if threshold == U256::from(9_000_000u64)
         ));
@@ -1236,9 +1239,11 @@ mod tests {
         use alloy_primitives::U256;
         use libp2p::swarm::ConnectionHandler;
         use vertex_swarm_client_protocol::PeerCommand;
-        handler.on_behaviour_event(super::HandlerCommand::Peer(PeerCommand::AnnouncePricing {
-            threshold: U256::from(threshold),
-        }));
+        handler.on_behaviour_event(super::HandlerCommand::Peer(
+            PeerCommand::AnnouncePaymentThreshold {
+                threshold: U256::from(threshold),
+            },
+        ));
     }
 
     fn active_handler() -> super::ClientHandler {
@@ -1283,11 +1288,11 @@ mod tests {
         assert!(polls_a_substream_request(&mut handler));
         announce(&mut handler, 18_000_000);
         assert!(!polls_a_substream_request(&mut handler));
-        assert_eq!(handler.pending_announce, Some(U256::from(18_000_000u64)));
+        assert_eq!(handler.superseded_announce, Some(U256::from(18_000_000u64)));
 
         // Completion re-enqueues the buffered newest line.
         handler.handle_outbound_output(ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing);
-        assert_eq!(handler.pending_announce, None);
+        assert_eq!(handler.superseded_announce, None);
         assert!(polls_a_substream_request(&mut handler));
     }
 

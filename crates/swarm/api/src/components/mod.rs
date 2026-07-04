@@ -1,6 +1,6 @@
 //! Component containers and access traits for Swarm nodes.
 
-mod bandwidth;
+mod accounting;
 mod localstore;
 mod peers;
 mod pricing;
@@ -8,7 +8,7 @@ mod pullsync;
 mod reserve;
 mod topology;
 
-pub use self::bandwidth::{
+pub use self::accounting::{
     Commit, CommitOnWrite, Direction, OriginAccounting, SettlementCredit, SwarmAccounting,
     SwarmAccountingConfig, SwarmClientAccounting, SwarmPeerAccounting, SwarmPeerState,
     SwarmSettlementProvider,

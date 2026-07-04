@@ -45,7 +45,7 @@ Located in `vertex-swarm-peer`: `serialize_multiaddrs()` / `deserialize_multiadd
 |----------|:--------:|-----------|---------|-------|
 | handshake | No | Bidirectional | Peer identity exchange, overlay address verification | `vertex-swarm-net-handshake` |
 | hive | Yes | Request/Response | Peer discovery, neighbour lists | `vertex-swarm-net-hive` |
-| pricing | Yes | Bidirectional | Bandwidth price negotiation | `vertex-swarm-net-pricing` |
+| pricing | Yes | Bidirectional | Payment threshold announcement | `vertex-swarm-net-pricing` |
 | pseudosettle | Yes | Bidirectional | Bandwidth settlement (soft accounting) | `vertex-swarm-net-pseudosettle` |
 | retrieval | Yes | Request/Response | Fetch chunks by address | `vertex-swarm-net-retrieval` |
 | pushsync | Yes | Request/Response | Push chunks to responsible peers | `vertex-swarm-net-pushsync` |

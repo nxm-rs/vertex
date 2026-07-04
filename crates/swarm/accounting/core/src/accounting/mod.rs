@@ -134,7 +134,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     ) -> Result<Reservation<Provide>, AccountingError> {
         let state = self.peer_state(peer);
 
-        let payment_threshold = state.payment_threshold();
+        let serve_line = state.serve_line();
         // Sign-safe exposure: the debt the peer owes us once this provide
         // commits. Reasoning in `Debt` keeps the comparison sign-safe, mirroring
         // the receive gate.
@@ -144,11 +144,11 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             state.ghost_balance(),
             price,
         );
-        if exposure.exceeds(payment_threshold) {
+        if exposure.exceeds(serve_line) {
             return Err(AccountingError::PaymentThreshold {
                 peer,
                 balance: exposure.into(),
-                threshold: payment_threshold,
+                threshold: serve_line,
             });
         }
 
@@ -176,7 +176,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
                 // Seed the settle line with the full local payment threshold, not
                 // the client serve line: an un-announced peer must settle on
                 // exactly today's config-derived timing. A peer announcement
-                // tightens it later through adopt_payment_threshold.
+                // tightens it later through adopt_settle_line.
                 Arc::new(PeerState::new(
                     self.config.client_payment_threshold(),
                     self.config.payment_threshold(),
@@ -191,7 +191,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     /// the REMOTE's type from the unscaled base, regardless of our own type: a
     /// storer remote gets the full base line, a client remote the
     /// client-only-factor-scaled base line.
-    fn provide_line(&self, node_type: SwarmNodeType) -> Au {
+    fn serve_line(&self, node_type: SwarmNodeType) -> Au {
         match node_type {
             SwarmNodeType::Storer => self.config.base_payment_threshold(),
             SwarmNodeType::Client | SwarmNodeType::Bootnode => {
@@ -312,13 +312,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmAccounting for Accounting<
         // default and repayment toward the next raise is earned afresh.
         let state = self.peer_state(peer);
         let rate = self.allowance_rate(node_type);
-        state.set_payment_threshold(self.provide_line(node_type));
-        state.set_refresh_allowance(rate);
+        state.set_serve_line(self.serve_line(node_type));
+        state.set_allowance_rate(rate);
         state.reset_settlement_growth(rate);
-        state.payment_threshold()
+        state.serve_line()
     }
 
-    fn adopt_payment_threshold(&self, peer: OverlayAddress, announced: Au) {
+    fn adopt_settle_line(&self, peer: OverlayAddress, announced: Au) {
         // Single-writer on the settle line, disjoint from connect_peer's serve
         // line, so the two compose with no write-write race on shared state.
         self.adopt_announced(peer, announced);
@@ -435,18 +435,18 @@ impl SwarmPeerAccounting for AccountingPeerHandle {
 
     fn settlement_received(&self, amount: Au) -> SettlementCredit {
         self.state.add_balance(-amount);
-        let total = self.state.add_settlement_received(amount);
+        let cumulative_repayment = self.state.add_repayment(amount);
         let raised_serve_line = self
             .state
-            .grow_serve_line(total, self.state.refresh_allowance());
+            .grow_serve_line(cumulative_repayment, self.state.allowance_rate());
         SettlementCredit {
-            total,
+            cumulative_repayment,
             raised_serve_line,
         }
     }
 
-    fn refresh_allowance(&self) -> Au {
-        self.state.refresh_allowance()
+    fn allowance_rate(&self) -> Au {
+        self.state.allowance_rate()
     }
 
     fn balance(&self) -> Au {
@@ -955,8 +955,8 @@ mod tests {
         assert!(config.disconnect_threshold() < Au::from_amount(DEFAULT_PAYMENT_THRESHOLD));
 
         let accounting = Accounting::new(config, test_identity());
-        let storer_line = accounting.provide_line(SwarmNodeType::Storer);
-        let client_line = accounting.provide_line(SwarmNodeType::Client);
+        let storer_line = accounting.serve_line(SwarmNodeType::Storer);
+        let client_line = accounting.serve_line(SwarmNodeType::Client);
 
         assert_eq!(storer_line, Au::from_amount(DEFAULT_PAYMENT_THRESHOLD));
         assert_eq!(
@@ -1222,7 +1222,7 @@ mod tests {
         let accounting = test_accounting();
         let peer = test_peer();
 
-        accounting.adopt_payment_threshold(peer, au(9_000_000));
+        accounting.adopt_settle_line(peer, au(9_000_000));
 
         assert_eq!(accounting.peer_state(peer).settle_line(), au(9_000_000));
         assert_eq!(Ledger::settle_trigger(&accounting, &peer), au(4_500_000));
@@ -1235,7 +1235,7 @@ mod tests {
         let accounting = test_accounting();
         let peer = test_peer();
 
-        accounting.adopt_payment_threshold(peer, au(1));
+        accounting.adopt_settle_line(peer, au(1));
 
         assert_eq!(accounting.peer_state(peer).settle_line(), au(9_000_000));
     }
@@ -1247,7 +1247,7 @@ mod tests {
         let accounting = test_accounting();
         let peer = test_peer();
 
-        accounting.adopt_payment_threshold(peer, au(100_000_000));
+        accounting.adopt_settle_line(peer, au(100_000_000));
 
         assert_eq!(accounting.peer_state(peer).settle_line(), au(13_500_000));
     }
@@ -1279,11 +1279,11 @@ mod tests {
         let accounting = Accounting::new(small_config(), test_identity());
         let peer = test_peer();
         accounting.connect_peer(peer, SwarmNodeType::Client);
-        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(200));
+        assert_eq!(accounting.peer_state(peer).serve_line(), au(200));
 
-        accounting.adopt_payment_threshold(peer, au(1_000_000_000));
+        accounting.adopt_settle_line(peer, au(1_000_000_000));
 
-        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(200));
+        assert_eq!(accounting.peer_state(peer).serve_line(), au(200));
         assert!(accounting.prepare_provide(peer, au(200)).is_ok());
         assert!(matches!(
             accounting.prepare_provide(peer, au(201)),
@@ -1302,16 +1302,16 @@ mod tests {
 
         // adopt then connect: settle line survives, serve line rises to storer.
         let a = OverlayAddress::from([1u8; 32]);
-        accounting.adopt_payment_threshold(a, au(500));
+        accounting.adopt_settle_line(a, au(500));
         assert_eq!(accounting.peer_state(a).settle_line(), au(500));
         accounting.connect_peer(a, SwarmNodeType::Storer);
         assert_eq!(accounting.peer_state(a).settle_line(), au(500));
-        assert_eq!(accounting.peer_state(a).payment_threshold(), au(1000));
+        assert_eq!(accounting.peer_state(a).serve_line(), au(1000));
 
         // connect then adopt: serve line survives the adoption.
         let b = OverlayAddress::from([2u8; 32]);
         accounting.connect_peer(b, SwarmNodeType::Storer);
-        accounting.adopt_payment_threshold(b, au(500));
+        accounting.adopt_settle_line(b, au(500));
         assert_eq!(accounting.peer_state(b).settle_line(), au(500));
         assert!(accounting.prepare_provide(b, au(1000)).is_ok());
         assert!(matches!(
@@ -1331,13 +1331,16 @@ mod tests {
         handle.record(au(1000), Direction::Upload);
 
         let credit = handle.settlement_received(au(300));
-        assert_eq!(credit.total, au(300));
+        assert_eq!(credit.cumulative_repayment, au(300));
         assert_eq!(credit.raised_serve_line, None);
         assert_eq!(handle.balance(), au(700));
 
-        assert_eq!(handle.settlement_received(au(200)).total, au(500));
+        assert_eq!(
+            handle.settlement_received(au(200)).cumulative_repayment,
+            au(500)
+        );
         assert_eq!(handle.balance(), au(500));
-        assert_eq!(accounting.peer_state(peer).settlement_received(), au(500));
+        assert_eq!(accounting.peer_state(peer).cumulative_repayment(), au(500));
     }
 
     #[test]
@@ -1361,7 +1364,7 @@ mod tests {
             handle.settlement_received(au(1_000)).raised_serve_line,
             None
         );
-        assert_eq!(accounting.peer_state(peer).payment_threshold(), au(1_000));
+        assert_eq!(accounting.peer_state(peer).serve_line(), au(1_000));
 
         // One past it: raised by one rate step and enforced by the provide gate
         // (the balance is fully repaid, so the exposure is the price alone).
@@ -1433,7 +1436,7 @@ mod tests {
             au(1_000)
         );
         let state = accounting.peer_state(peer);
-        assert_eq!(state.settlement_received(), Au::ZERO);
+        assert_eq!(state.cumulative_repayment(), Au::ZERO);
         assert_eq!(state.growth_checkpoint(), au(1_000));
 
         // The same crossing must be re-earned on the new connection.
@@ -1458,15 +1461,9 @@ mod tests {
         accounting.connect_peer(storer, SwarmNodeType::Storer);
         accounting.connect_peer(client, SwarmNodeType::Client);
 
-        assert_eq!(
-            accounting.for_peer(storer).refresh_allowance(),
-            au(4_500_000)
-        );
-        assert_eq!(accounting.for_peer(client).refresh_allowance(), au(450_000));
-        assert_eq!(
-            accounting.for_peer(unknown).refresh_allowance(),
-            au(450_000)
-        );
+        assert_eq!(accounting.for_peer(storer).allowance_rate(), au(4_500_000));
+        assert_eq!(accounting.for_peer(client).allowance_rate(), au(450_000));
+        assert_eq!(accounting.for_peer(unknown).allowance_rate(), au(450_000));
     }
 
     #[test]
@@ -1477,10 +1474,7 @@ mod tests {
         let storer = OverlayAddress::from([1u8; 32]);
         accounting.connect_peer(storer, SwarmNodeType::Storer);
 
-        assert_eq!(
-            accounting.for_peer(storer).refresh_allowance(),
-            au(4_500_000)
-        );
+        assert_eq!(accounting.for_peer(storer).allowance_rate(), au(4_500_000));
     }
 
     #[test]
@@ -1493,7 +1487,7 @@ mod tests {
         let adopted = OverlayAddress::from([1u8; 32]);
         let control = OverlayAddress::from([2u8; 32]);
 
-        accounting.adopt_payment_threshold(adopted, au(9_000_000));
+        accounting.adopt_settle_line(adopted, au(9_000_000));
 
         assert_eq!(accounting.admit(&control, au(5_000_000)), Admission::Admit);
         assert_eq!(

@@ -25,7 +25,7 @@
 
 extern crate alloc;
 
-mod accounting;
+mod au;
 mod components;
 mod config;
 mod error;
@@ -36,7 +36,7 @@ mod spec;
 mod swarm;
 mod types;
 
-pub use self::accounting::{Admission, Au, AuConversionError, Debt};
+pub use self::au::{Admission, Au, AuConversionError, Debt};
 pub use self::components::{
     BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Commit, CommitOnWrite,
     Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology, IntervalStore,
