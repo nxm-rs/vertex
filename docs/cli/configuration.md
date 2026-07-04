@@ -37,7 +37,7 @@ The `SwarmSpec` provides network-level constants (network ID, bootnodes, contrac
 | **Bandwidth** | `--bandwidth.*` | Client, Storer | Accounting mode, pricing, thresholds |
 | **Storage** | `--storage.*` | Storer | Reserve capacity, cache size, redistribution |
 | **Identity** | `--password`, `--nonce`, etc. | All | Keystore, overlay nonce, ephemeral mode |
-| **Database** | `--db.*` | All | Opt-in database persistence and cache size |
+| **Database** | `--db.*` | All | Database persistence (per-node-type default) and cache size |
 | **Network selection** | `--mainnet`, `--testnet` | All | Which Swarm network to join |
 | **Logging** | `-v`/`-q`, `--log.json` | All | Console verbosity and format |
 | **Metrics** | `--metrics`, `--metrics.*` | All | Prometheus endpoint, address, port, prefix |
@@ -59,12 +59,13 @@ This ensures operators can set base configuration in a file and selectively over
 
 ## Database Persistence
 
-The node database is in-memory by default: nothing is written to disk and all database state is lost on shutdown. Persistence is opt-in:
+The database default depends on the node type: a storer persists at the default location so a restart re-converges from the address book it already knew, while a client and a bootnode stay in-memory, writing nothing to disk and losing all database state on shutdown. The flags override that default:
 
 | Flag | Effect |
 |------|--------|
 | `--db.persist` | Persist the database at the default location `<datadir>/<network>/db/vertex.redb` |
 | `--db.path <PATH>` | Persist the database at a custom file path (implies `--db.persist`) |
+| `--db.in-memory` | Force an in-memory database, overriding the per-node-type default (conflicts with `--db.persist` and `--db.path`) |
 | `--db.cache <MB>` | Database cache size in megabytes |
 
 When both `--db.path` and `--db.persist` are given, the explicit path wins.

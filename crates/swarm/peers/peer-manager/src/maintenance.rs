@@ -130,19 +130,21 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Seed the peer set from the snapshot store.
     ///
-    /// Called once during construction. Entries that would exceed the
-    /// per-bin cap are dropped; rediscovery via gossip refills them if they
-    /// are still alive.
+    /// Called once during construction. Records are inserted freshest-first by
+    /// `last_seen` so that when entries exceed the per-bin cap the freshest are
+    /// kept and bias the dial queue; rediscovery via gossip refills any that
+    /// were dropped and are still alive.
     pub(crate) fn load_from_store(&self) {
         let Some(ref store) = self.store else { return };
 
-        let records = match store.load() {
+        let mut records = match store.load() {
             Ok(records) => records,
             Err(e) => {
                 warn!(error = %e, "failed to load peer snapshot");
                 return;
             }
         };
+        records.sort_unstable_by_key(|r| std::cmp::Reverse(r.last_seen));
 
         let total = records.len();
         let mut loaded = 0usize;

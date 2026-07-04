@@ -119,7 +119,7 @@ If a dial guided by a stored record completes a handshake asserting a *different
 
 ## Persistence
 
-Persistence is an opt-in, identity-only snapshot over the shared node database, which is in-memory by default: without `--db.persist` or `--db.path` no snapshot store exists and the peer set lives purely in memory. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
+Persistence is an identity-only snapshot over the shared node database. The database default is per node type: a storer persists by default so a restart re-converges from the address book it already knew, while a client and a bootnode stay in-memory (no snapshot store, the peer set lives purely in memory). `--db.persist`/`--db.path` force persistence on; `--db.in-memory` opts a storer out. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`. At startup the loaded records are sorted freshest-first by last-seen so the per-bin admission cap keeps the freshest and biases the dial queue toward them.
 
 | Store | Use Case |
 |-------|----------|

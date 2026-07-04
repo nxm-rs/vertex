@@ -1,8 +1,10 @@
 //! Database CLI arguments.
 //!
-//! The database is in-memory by default. Persistence is opt-in: `--db.path`
-//! selects an explicit database file, while `--db.persist` uses the
-//! conventional default location under the network data directory.
+//! Persistence is opt-in per flag: `--db.path` selects an explicit database
+//! file, while `--db.persist` uses the conventional default location under the
+//! network data directory. The caller may also default persistence on (see
+//! [`DatabaseArgs::database_config`]); `--db.in-memory` forces in-memory
+//! regardless of that default.
 
 use std::path::PathBuf;
 
@@ -23,6 +25,10 @@ pub struct DatabaseArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
 
+    /// Force an in-memory database, overriding any per-node-type persistence default.
+    #[arg(long = "db.in-memory", conflicts_with_all = ["persist", "path"])]
+    pub in_memory: bool,
+
     /// Database cache size in megabytes.
     #[arg(long = "db.cache", value_name = "MB")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,15 +47,23 @@ pub struct DatabaseConfig {
 impl DatabaseArgs {
     /// Build a resolved database configuration.
     ///
-    /// `--db.path` takes precedence. Otherwise `--db.persist` selects
-    /// `default_path`. With neither flag the path is `None` and the
-    /// database is in-memory.
-    pub fn database_config(&self, default_path: PathBuf) -> DatabaseConfig {
-        DatabaseConfig {
-            path: self
-                .path
+    /// `--db.in-memory` forces `None`. Otherwise `--db.path` takes precedence,
+    /// then `--db.persist` or `persist_by_default` selects `default_path`. With
+    /// none of these the path is `None` and the database is in-memory.
+    pub fn database_config(
+        &self,
+        default_path: PathBuf,
+        persist_by_default: bool,
+    ) -> DatabaseConfig {
+        let path = if self.in_memory {
+            None
+        } else {
+            self.path
                 .clone()
-                .or_else(|| self.persist.then_some(default_path)),
+                .or_else(|| (self.persist || persist_by_default).then_some(default_path))
+        };
+        DatabaseConfig {
+            path,
             cache_size_mb: self.cache_size_mb,
         }
     }
@@ -73,14 +87,49 @@ mod tests {
     #[test]
     fn no_flags_resolves_in_memory() {
         let cli = TestCli::try_parse_from(["test"]).expect("default should parse");
-        let config = cli.database.database_config(default_path());
+        let config = cli.database.database_config(default_path(), false);
         assert_eq!(config.path, None, "no flags means in-memory");
+    }
+
+    #[test]
+    fn persist_by_default_resolves_default_path() {
+        let cli = TestCli::try_parse_from(["test"]).expect("default should parse");
+        let config = cli.database.database_config(default_path(), true);
+        assert_eq!(
+            config.path,
+            Some(default_path()),
+            "persist-by-default selects the default path with no flags"
+        );
+    }
+
+    #[test]
+    fn in_memory_flag_overrides_persist_by_default() {
+        let cli = TestCli::try_parse_from(["test", "--db.in-memory"]).expect("flag should parse");
+        let config = cli.database.database_config(default_path(), true);
+        assert_eq!(config.path, None, "--db.in-memory forces in-memory");
+    }
+
+    #[test]
+    fn in_memory_flag_conflicts_with_persist() {
+        assert!(
+            TestCli::try_parse_from(["test", "--db.in-memory", "--db.persist"]).is_err(),
+            "--db.in-memory must conflict with --db.persist"
+        );
+    }
+
+    #[test]
+    fn in_memory_flag_conflicts_with_path() {
+        assert!(
+            TestCli::try_parse_from(["test", "--db.in-memory", "--db.path", "/custom/db.redb"])
+                .is_err(),
+            "--db.in-memory must conflict with --db.path"
+        );
     }
 
     #[test]
     fn persist_flag_resolves_default_path() {
         let cli = TestCli::try_parse_from(["test", "--db.persist"]).expect("flag should parse");
-        let config = cli.database.database_config(default_path());
+        let config = cli.database.database_config(default_path(), false);
         assert_eq!(config.path, Some(default_path()));
     }
 
@@ -88,7 +137,7 @@ mod tests {
     fn path_flag_resolves_custom_path() {
         let cli = TestCli::try_parse_from(["test", "--db.path", "/custom/db.redb"])
             .expect("flag should parse");
-        let config = cli.database.database_config(default_path());
+        let config = cli.database.database_config(default_path(), false);
         assert_eq!(config.path, Some(PathBuf::from("/custom/db.redb")));
     }
 
@@ -96,14 +145,14 @@ mod tests {
     fn path_flag_wins_over_persist() {
         let cli = TestCli::try_parse_from(["test", "--db.persist", "--db.path", "/custom/db.redb"])
             .expect("flags should parse");
-        let config = cli.database.database_config(default_path());
+        let config = cli.database.database_config(default_path(), false);
         assert_eq!(config.path, Some(PathBuf::from("/custom/db.redb")));
     }
 
     #[test]
     fn cache_size_carries_through() {
         let cli = TestCli::try_parse_from(["test", "--db.cache", "256"]).expect("should parse");
-        let config = cli.database.database_config(default_path());
+        let config = cli.database.database_config(default_path(), false);
         assert_eq!(config.cache_size_mb, Some(256));
     }
 }
