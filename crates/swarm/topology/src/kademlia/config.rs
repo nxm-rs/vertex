@@ -42,6 +42,15 @@ const DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 /// (slow) capacity loss go unreported for long.
 const DEFAULT_DEPTH_LOWER_WINDOW: Duration = Duration::from_secs(30);
 
+/// Default window a marginal saturation dip must persist before the
+/// neighborhood-stability clock clears.
+///
+/// A neighborhood shortfall of at most one peer is the signature of a single
+/// churning boundary peer; holding the clock through it mirrors the
+/// depth-lowering window above, so one flapping peer cannot repeatedly zero
+/// the readiness clock. A deeper shortfall clears immediately.
+const DEFAULT_SATURATION_DIP_WINDOW: Duration = Duration::from_secs(30);
+
 /// Configuration for Kademlia routing.
 #[derive(Debug, Clone)]
 pub struct KademliaConfig {
@@ -58,6 +67,10 @@ pub struct KademliaConfig {
     /// the saturation deficit is a single peer (see
     /// [`Self::with_depth_lower_window`]).
     pub(crate) depth_lower_window: Duration,
+    /// Window a marginal (one-peer) saturation dip must persist before the
+    /// neighborhood-stability clock clears (see
+    /// [`Self::with_saturation_dip_window`]).
+    pub(crate) saturation_dip_window: Duration,
     /// How long the neighborhood depth must hold still (with a saturated
     /// neighborhood) before the topology phase machine reports
     /// [`super::TopologyPhase::Stable`]. Any depth movement inside the
@@ -74,6 +87,7 @@ impl Default for KademliaConfig {
             max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
             neighborhood_stability_window: DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW,
             depth_lower_window: DEFAULT_DEPTH_LOWER_WINDOW,
+            saturation_dip_window: DEFAULT_SATURATION_DIP_WINDOW,
             phase_stability_window: DEFAULT_PHASE_STABILITY_WINDOW,
         }
     }
@@ -103,9 +117,10 @@ impl KademliaConfig {
     /// The window is how long the neighborhood (bins at and above the current
     /// depth) must stay saturated without the depth moving before
     /// `ReadinessSnapshot::is_neighborhood_ready` reports true. Any depth
-    /// change or saturation dip restarts the clock. Pull-syncing is the
-    /// intended consumer: it should start against a settled neighborhood,
-    /// not a transiently well-connected one.
+    /// change restarts the clock; a saturation dip clears it, damped by
+    /// [`Self::with_saturation_dip_window`] when the shortfall is a single
+    /// peer. Pull-syncing is the intended consumer: it should start against
+    /// a settled neighborhood, not a transiently well-connected one.
     pub fn with_neighborhood_stability_window(mut self, window: Duration) -> Self {
         self.neighborhood_stability_window = window;
         self
@@ -122,6 +137,21 @@ impl KademliaConfig {
     /// depth stays below the published depth for the whole window.
     pub fn with_depth_lower_window(mut self, window: Duration) -> Self {
         self.depth_lower_window = window;
+        self
+    }
+
+    /// Set the window a marginal saturation dip must persist before the
+    /// neighborhood-stability clock clears.
+    ///
+    /// A neighborhood shortfall of at most one connected peer holds the
+    /// clock for this window and clears it only if the dip persists for the
+    /// whole window; re-saturation in the meantime cancels the pending
+    /// clear. A deeper shortfall, or the loss of the depth boundary itself,
+    /// clears immediately. This mirrors the depth-lowering window so one
+    /// churning boundary peer can flap neither the published depth nor the
+    /// readiness clock.
+    pub fn with_saturation_dip_window(mut self, window: Duration) -> Self {
+        self.saturation_dip_window = window;
         self
     }
 

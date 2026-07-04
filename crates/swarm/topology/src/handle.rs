@@ -803,9 +803,10 @@ mod tests {
         saturate_to_depth_one(&h);
         tokio::time::advance(Duration::from_secs(20)).await;
 
-        // Drop the neighborhood (9 connected at depth 1) below the
-        // threshold (8): the clock must clear, not pause.
-        for n in [0x40, 0x41] {
+        // Drop the neighborhood (9 connected at depth 1) two peers below the
+        // threshold (8): a shortfall beyond the one-peer dip tolerance must
+        // clear the clock immediately, not pause it.
+        for n in [0x40, 0x41, 0x42] {
             let overlay = test_overlay(n);
             SwarmRouting::on_peer_disconnected(&*h.routing, &overlay);
             h.peer_manager
@@ -819,6 +820,7 @@ mod tests {
         // Recovering restarts the clock from zero, not the pre-dip anchor.
         h.connect(0x40, SwarmNodeType::Storer);
         h.connect(0x41, SwarmNodeType::Storer);
+        h.connect(0x42, SwarmNodeType::Storer);
         tokio::time::advance(Duration::from_secs(15)).await;
         let s = h.handle.readiness();
         assert_eq!(s.neighborhood_stable_for, Some(Duration::from_secs(15)));
@@ -826,6 +828,40 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(15)).await;
         assert!(h.handle.readiness().is_neighborhood_ready());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neighborhood_ready_survives_boundary_peer_flap() {
+        // With the neighborhood at exactly the threshold, one flapping
+        // boundary peer dips the count by a single peer each cycle. The dip
+        // damping holds the clock through every cycle, so the readiness gate
+        // still opens once the stability window is served.
+        let h = harness(SwarmNodeType::Storer, 64);
+        saturate_to_depth_one(&h);
+        let trimmed = test_overlay(0x40);
+        SwarmRouting::on_peer_disconnected(&*h.routing, &trimmed);
+        h.peer_manager
+            .on_peer_disconnected(&trimmed, crate::DisconnectReason::RemoteClose);
+        assert_eq!(h.handle.readiness().neighborhood_connected, 8);
+
+        let flapper = test_overlay(0x41);
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(5)).await;
+            SwarmRouting::on_peer_disconnected(&*h.routing, &flapper);
+            h.peer_manager
+                .on_peer_disconnected(&flapper, crate::DisconnectReason::RemoteClose);
+            assert!(
+                h.handle.readiness().neighborhood_stable_for.is_some(),
+                "a one-peer dip must not zero the readiness clock"
+            );
+            h.connect(0x41, SwarmNodeType::Storer);
+        }
+
+        tokio::time::advance(Duration::from_secs(15)).await;
+        assert!(
+            h.handle.readiness().is_neighborhood_ready(),
+            "readiness fires despite the boundary flap"
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -60,7 +60,8 @@ pub(crate) struct EvictionCandidate {
 /// Held while the neighborhood (bins at and above `depth`) collectively
 /// holds at least the saturation threshold in connected peers. A depth
 /// change replaces the anchor (restarting the clock); a saturation dip
-/// clears it.
+/// clears it, damped by the dip window when the shortfall is marginal
+/// (see [`KademliaRouting::update_neighborhood_stability_at`]).
 struct NeighborhoodStable {
     /// The depth at which the neighborhood became saturated.
     depth: NeighborhoodDepth,
@@ -70,6 +71,11 @@ struct NeighborhoodStable {
     /// tests can drive the stability window deterministically; outside a
     /// tokio runtime it falls back to the real clock.
     since: Instant,
+    /// Start of a pending marginal saturation dip. `Some` while the
+    /// neighborhood sits within [`SATURATION_DIP_TOLERANCE`] below the
+    /// saturation threshold; the clock clears only if the dip persists for
+    /// the dip window, and re-saturation cancels it.
+    dip_since: Option<Instant>,
 }
 
 fn atomic_inc(vec: &[AtomicUsize], bin: Bin) {
@@ -165,6 +171,12 @@ fn select_trim_victims<R: Ord>(
 /// for the stability window instead of being published immediately.
 const DEPTH_LOWER_DEFICIT_TOLERANCE: usize = 1;
 
+/// Neighborhood saturation shortfall (in peers) up to which a dip is treated
+/// as churn noise and held for the dip window instead of clearing the
+/// stability clock immediately. The counterpart of
+/// [`DEPTH_LOWER_DEFICIT_TOLERANCE`] on the readiness path.
+const SATURATION_DIP_TOLERANCE: usize = 1;
+
 /// Kademlia-based peer routing table.
 pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     identity: I,
@@ -194,9 +206,10 @@ pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     /// inbound flood cannot switch off honest outbound dialling.
     outbound_counts: Vec<AtomicUsize>,
     connection_phases: RwLock<HashMap<OverlayAddress, ConnectionPhase>>,
-    /// Stability clock for the saturated neighborhood; `None` while the
-    /// neighborhood is below saturation. Updated on every routing-table
-    /// mutation so dips between snapshots are never missed.
+    /// Stability clock for the saturated neighborhood; `None` once a
+    /// saturation dip clears it (marginal dips are damped, see
+    /// [`Self::update_neighborhood_stability_at`]). Updated on every
+    /// routing-table mutation so dips between snapshots are never missed.
     neighborhood_stability: Mutex<Option<NeighborhoodStable>>,
     topology_phase: Mutex<PhaseTracker>,
 }
@@ -495,7 +508,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// can drive the stability window and re-anchoring deterministically.
     fn refresh_depth_at(&self, now: Instant) {
         if self.publish_depth_at(now) {
-            self.update_neighborhood_stability();
+            self.update_neighborhood_stability_at(now);
         }
     }
 
@@ -651,26 +664,63 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// so the clock and the depth can never disagree about saturation.
     ///
     /// The clock survives mutations that keep both the depth and the
-    /// saturated state unchanged; a depth change restarts it and a dip
-    /// below saturation clears it.
+    /// saturated state unchanged; a depth change restarts it. A dip below
+    /// saturation clears it, damped: a shortfall within
+    /// [`SATURATION_DIP_TOLERANCE`] at the anchored depth is held for the
+    /// dip window (the signature of a single churning boundary peer, the
+    /// same regression the depth-lowering window absorbs) and clears only
+    /// if it persists; re-saturation cancels the pending clear without
+    /// restarting the clock. A deeper shortfall, a depth change while
+    /// dipped, or the loss of the depth boundary clears immediately.
     fn update_neighborhood_stability(&self) {
+        self.update_neighborhood_stability_at(Instant::now());
+    }
+
+    /// [`Self::update_neighborhood_stability`] against an explicit clock, so
+    /// paused-time tests can drive the dip window deterministically.
+    fn update_neighborhood_stability_at(&self, now: Instant) {
         let depth = self.depth();
-        let saturated = depth > NeighborhoodDepth::ZERO
-            && self.neighborhood_connected(depth) >= self.config.limits.saturation();
+        let connected = self.neighborhood_connected(depth);
+        let saturation = self.config.limits.saturation();
 
         let mut state = self.neighborhood_stability.lock();
-        if !saturated {
+        if depth > NeighborhoodDepth::ZERO && connected >= saturation {
+            match state.as_mut() {
+                Some(stable) if stable.depth == depth => stable.dip_since = None,
+                _ => {
+                    *state = Some(NeighborhoodStable {
+                        depth,
+                        since: now,
+                        dip_since: None,
+                    });
+                }
+            }
+            return;
+        }
+
+        let Some(stable) = state.as_mut() else {
+            return;
+        };
+        let marginal = depth > NeighborhoodDepth::ZERO
+            && stable.depth == depth
+            && saturation.saturating_sub(connected) <= SATURATION_DIP_TOLERANCE;
+        if !marginal {
             *state = None;
-        } else if state.as_ref().is_none_or(|stable| stable.depth != depth) {
-            *state = Some(NeighborhoodStable {
-                depth,
-                since: Instant::now(),
-            });
+            return;
+        }
+        match stable.dip_since {
+            None => stable.dip_since = Some(now),
+            Some(since) if now.duration_since(since) >= self.config.saturation_dip_window => {
+                *state = None;
+            }
+            Some(_) => {}
         }
     }
 
-    /// How long the neighborhood has been continuously saturated at an
-    /// unchanged depth, or `None` while it is below saturation.
+    /// How long the neighborhood has been saturated at an unchanged depth,
+    /// or `None` once a dip has cleared the clock. The clock keeps running
+    /// through a marginal one-peer dip until the dip window expires, the
+    /// same holding the published depth grants a marginal deficit.
     pub(crate) fn neighborhood_stable_for(&self) -> Option<Duration> {
         self.neighborhood_stability
             .lock()
@@ -854,10 +904,11 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let bin = self.bin_for(&peer);
 
         if self.connected_peers.add(peer).is_ok() {
+            let now = Instant::now();
             let old_depth = self.depth();
-            self.publish_depth_at(Instant::now());
+            self.publish_depth_at(now);
             let new_depth = self.depth();
-            self.update_neighborhood_stability();
+            self.update_neighborhood_stability_at(now);
 
             debug!(
                 %peer,
@@ -882,10 +933,11 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         if self.connected_peers.remove(peer) {
             let bin = self.bin_for(peer);
 
+            let now = Instant::now();
             let old_depth = self.depth();
-            self.publish_depth_at(Instant::now());
+            self.publish_depth_at(now);
             let new_depth = self.depth();
-            self.update_neighborhood_stability();
+            self.update_neighborhood_stability_at(now);
 
             debug!(
                 %peer,
@@ -1419,17 +1471,19 @@ mod tests {
             "saturated neighborhood must carry a stability clock"
         );
 
-        // Disconnecting two neighborhood peers (9 -> 7) drops below the
-        // saturation threshold (8) and clears the clock.
+        // Disconnecting three neighborhood peers (9 -> 6) leaves a shortfall
+        // beyond the one-peer dip tolerance: the clock clears immediately.
         SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
         SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 1));
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 2));
         assert!(routing.neighborhood_stable_for().is_none());
     }
 
     #[test]
     fn test_neighborhood_stability_cleared_by_remove_peer() {
         // remove_peer (the ban path) bypasses the disconnect bookkeeping but
-        // still shrinks the neighborhood; the clock must observe it.
+        // still shrinks the neighborhood; the clock must observe it. Three
+        // removals (9 -> 6) exceed the dip tolerance and clear immediately.
         let base = SwarmAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
@@ -1438,7 +1492,92 @@ mod tests {
 
         SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 0));
         SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 1));
+        SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 2));
         assert!(routing.neighborhood_stable_for().is_none());
+    }
+
+    /// A single boundary peer flapping around the saturation threshold must
+    /// not zero the stability clock: each marginal dip is held by the dip
+    /// window and each re-saturation cancels the pending clear without
+    /// restarting the anchor.
+    #[test]
+    fn test_stability_clock_survives_boundary_peer_flap() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        saturate_to_depth_one(&routing);
+
+        // Trim the neighborhood from 9 to exactly the threshold (8) so one
+        // more disconnect is a load-bearing, marginal dip.
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        let anchor = routing
+            .neighborhood_stability
+            .lock()
+            .as_ref()
+            .map(|stable| stable.since)
+            .expect("clock must survive a dip that keeps saturation");
+
+        let flapper = addr_in_bin(1, 1);
+        for _ in 0..10 {
+            SwarmRouting::on_peer_disconnected(&*routing, &flapper);
+            assert!(
+                routing.neighborhood_stable_for().is_some(),
+                "a marginal dip must hold the clock"
+            );
+            SwarmRouting::connected(&*routing, flapper);
+            assert!(routing.neighborhood_stable_for().is_some());
+        }
+
+        let state = routing.neighborhood_stability.lock();
+        let stable = state.as_ref().expect("clock still anchored");
+        assert_eq!(stable.since, anchor, "flapping must not restart the anchor");
+        assert!(
+            stable.dip_since.is_none(),
+            "re-saturation must cancel the pending dip"
+        );
+    }
+
+    /// A marginal dip that persists for the whole dip window clears the
+    /// clock: the damping is a delay, not a mask.
+    #[test]
+    fn test_marginal_dip_clears_after_window_expiry() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        saturate_to_depth_one(&routing);
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 1));
+        assert!(
+            routing.neighborhood_stable_for().is_some(),
+            "a one-peer shortfall starts a pending dip, not a clear"
+        );
+
+        let after_window = Instant::now() + routing.config.saturation_dip_window;
+        routing.update_neighborhood_stability_at(after_window);
+        assert!(
+            routing.neighborhood_stable_for().is_none(),
+            "a dip outlasting the window must clear the clock"
+        );
+    }
+
+    /// Re-saturation while a marginal dip is pending cancels the pending
+    /// clear: a later check past the original window must not clear the
+    /// clock, and the anchor keeps its original start.
+    #[test]
+    fn test_resaturation_cancels_pending_dip() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        saturate_to_depth_one(&routing);
+        let peer = addr_in_bin(1, 0);
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 1));
+        SwarmRouting::on_peer_disconnected(&*routing, &peer);
+        assert!(routing.neighborhood_stability.lock().is_some());
+
+        SwarmRouting::connected(&*routing, peer);
+        let after_window = Instant::now() + routing.config.saturation_dip_window;
+        routing.update_neighborhood_stability_at(after_window);
+        assert!(
+            routing.neighborhood_stable_for().is_some(),
+            "a cancelled dip must not clear the clock after the stale window"
+        );
     }
 
     /// A depth lowering published by the periodic tick (no connect or
