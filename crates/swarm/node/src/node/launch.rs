@@ -19,10 +19,12 @@ use std::time::Duration;
 use eyre::Result;
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
+use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{SwarmLocalStore, SwarmNodeType};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::{ChunkStore, LocalStoreConfig};
+use vertex_swarm_peer_manager::PeerSnapshot;
 use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
@@ -70,6 +72,9 @@ pub struct ClientLauncher {
     local_store: LocalStoreConfig,
     /// Caller-supplied client cache. `None` builds the default in-memory cache.
     store: Option<Arc<dyn SwarmLocalStore>>,
+    /// Caller-supplied peer snapshot store. `None` keeps the peer set
+    /// runtime-only, re-learnt from the bootnodes on every launch.
+    peer_store: Option<super::builder::PeerStore>,
     /// SWAP settlement parameters.
     #[cfg(feature = "swap")]
     swap: SwapConfig,
@@ -89,6 +94,7 @@ impl ClientLauncher {
             bandwidth: DefaultAccountingConfig::default(),
             local_store: LocalStoreConfig::default(),
             store: None,
+            peer_store: None,
             #[cfg(feature = "swap")]
             swap: SwapConfig::default(),
             #[cfg(feature = "swap-chequebook")]
@@ -161,6 +167,15 @@ impl ClientLauncher {
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Supply the peer snapshot store so the address book survives a restart.
+    /// Defaults to none: the peer set is runtime-only and re-learnt from the
+    /// bootnodes on every launch.
+    #[must_use]
+    pub fn with_peer_store(mut self, store: Arc<dyn PeerSnapshotStore<PeerSnapshot>>) -> Self {
+        self.peer_store = Some(store);
         self
     }
 
@@ -286,7 +301,7 @@ impl ClientLauncher {
             None => node_builder,
         };
         let (mut node, client_service, client_handle) = node_builder
-            .build(&config, None)
+            .build(&config, self.peer_store)
             .await
             .map_err(|e| eyre::eyre!("failed to build client node: {e}"))?;
 
@@ -424,6 +439,21 @@ impl LaunchedClient {
     /// The node's libp2p peer id.
     pub fn local_peer_id(&self) -> PeerId {
         self.peer_id
+    }
+}
+
+#[cfg(test)]
+mod peer_store_tests {
+    use super::*;
+    use vertex_net_peer_store::MemoryPeerStore;
+
+    #[test]
+    fn with_peer_store_forwards() {
+        let spec = vertex_swarm_spec::init_testnet();
+        let identity = Arc::new(Identity::random(spec, SwarmNodeType::Client));
+        let store = Arc::new(MemoryPeerStore::<PeerSnapshot>::new());
+        let launcher = ClientLauncher::new(identity).with_peer_store(store);
+        assert!(launcher.peer_store.is_some());
     }
 }
 
