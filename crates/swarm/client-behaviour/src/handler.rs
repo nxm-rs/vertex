@@ -234,8 +234,13 @@ pub struct ClientHandler {
     next_request_id: u64,
     pending_commands: BoundedQueue<HandlerCommand>,
     pending_events: BoundedQueue<HandlerEvent>,
-    pricing_sent: bool,
+    /// One pricing substream in flight at a time; each announcement (initial
+    /// and checkpoint re-announcements) opens a fresh substream.
     pricing_outbound_pending: bool,
+    /// Latest outbound announcement superseded while one is in flight; sent
+    /// once the in-flight substream resolves. Raises are monotonic, so only
+    /// the newest line matters.
+    pending_announce: Option<U256>,
     /// Self-contained inbound serving futures (retrieval and pushsync).
     inbound: OutcomeDriver<InboundOutcome>,
     /// Pseudosettle responders awaiting the service's ack, keyed by request_id.
@@ -279,8 +284,8 @@ impl ClientHandler {
             next_request_id: 0,
             pending_commands: BoundedQueue::new(max_pending_commands),
             pending_events: BoundedQueue::new(max_pending_events),
-            pricing_sent: false,
             pricing_outbound_pending: false,
+            pending_announce: None,
             inbound: OutcomeDriver::new(MAX_INBOUND_SERVING),
             pending_responses: HashMap::new(),
             response_sends: futures_bounded::FuturesSet::new(
@@ -347,6 +352,22 @@ impl ClientHandler {
         self.pending_responses
             .remove(&request_id)
             .map(|s| s.response)
+    }
+
+    /// Re-enqueue an announcement superseded while a pricing substream was in
+    /// flight, so the newest line still reaches the peer.
+    fn requeue_pending_announce(&mut self) {
+        if let Some(threshold) = self.pending_announce.take()
+            && self
+                .pending_commands
+                .push(HandlerCommand::Peer(PeerCommand::AnnouncePricing {
+                    threshold,
+                }))
+                .is_err()
+        {
+            warn!("Handler command queue full, dropping superseded announcement");
+            metrics::counter!("swarm.client.handler.commands_dropped").increment(1);
+        }
     }
 
     fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
@@ -671,7 +692,9 @@ impl ConnectionHandler for ClientHandler {
                 }
                 HandlerCommand::Peer(command) => match command {
                     PeerCommand::AnnouncePricing { threshold } => {
-                        if !self.pricing_sent && !self.pricing_outbound_pending {
+                        if self.pricing_outbound_pending {
+                            self.pending_announce = Some(threshold);
+                        } else {
                             self.pricing_outbound_pending = true;
                             let announce =
                                 vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
@@ -835,6 +858,7 @@ impl ConnectionHandler for ClientHandler {
                 match e.info {
                     ClientOutboundInfo::Pricing => {
                         self.pricing_outbound_pending = false;
+                        self.requeue_pending_announce();
                         warn!(protocol = "pricing", %error, "Client dial upgrade error");
                         self.push_event(HandlerEvent::Error {
                             overlay: self.overlay(),
@@ -1014,8 +1038,8 @@ impl ClientHandler {
     fn handle_outbound_output(&mut self, output: ClientOutboundOutput, info: ClientOutboundInfo) {
         match (output, info) {
             (ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing) => {
-                self.pricing_sent = true;
                 self.pricing_outbound_pending = false;
+                self.requeue_pending_announce();
                 if let Some(overlay) = self.overlay() {
                     self.pending_events.push_back(HandlerEvent::Peer {
                         overlay,
@@ -1189,6 +1213,82 @@ mod tests {
                 ..
             }) if threshold == U256::from(9_000_000u64)
         ));
+    }
+
+    /// Drive the handler until it requests an outbound substream, ignoring
+    /// behaviour notifications on the way. Returns whether a substream was
+    /// requested before the handler went idle.
+    fn polls_a_substream_request(handler: &mut super::ClientHandler) -> bool {
+        use libp2p::swarm::{ConnectionHandler, ConnectionHandlerEvent};
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match handler.poll(&mut cx) {
+                std::task::Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                    ..
+                }) => return true,
+                std::task::Poll::Ready(_) => continue,
+                std::task::Poll::Pending => return false,
+            }
+        }
+    }
+
+    fn announce(handler: &mut super::ClientHandler, threshold: u64) {
+        use alloy_primitives::U256;
+        use libp2p::swarm::ConnectionHandler;
+        use vertex_swarm_client_protocol::PeerCommand;
+        handler.on_behaviour_event(super::HandlerCommand::Peer(PeerCommand::AnnouncePricing {
+            threshold: U256::from(threshold),
+        }));
+    }
+
+    fn active_handler() -> super::ClientHandler {
+        use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+        let mut handler = super::ClientHandler::new(
+            super::Config::default(),
+            std::sync::Arc::new(NoopStore),
+            std::sync::Arc::new(crate::forward::StubForwarder),
+            None,
+        );
+        handler.activate(OverlayAddress::from([1u8; 32]), SwarmNodeType::Storer);
+        handler
+    }
+
+    #[test]
+    fn re_announcement_opens_a_fresh_pricing_substream() {
+        use crate::upgrade::{ClientOutboundInfo, ClientOutboundOutput};
+
+        let mut handler = active_handler();
+
+        // Initial announcement goes out.
+        announce(&mut handler, 13_500_000);
+        assert!(polls_a_substream_request(&mut handler));
+
+        // The substream resolves; a checkpoint re-announcement then opens a
+        // fresh substream instead of being latched away.
+        handler.handle_outbound_output(ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing);
+        announce(&mut handler, 18_000_000);
+        assert!(polls_a_substream_request(&mut handler));
+    }
+
+    #[test]
+    fn announcement_superseded_in_flight_is_sent_on_completion() {
+        use crate::upgrade::{ClientOutboundInfo, ClientOutboundOutput};
+        use alloy_primitives::U256;
+
+        let mut handler = active_handler();
+
+        // One announcement in flight; a second arriving meanwhile is buffered,
+        // not sent concurrently and not dropped.
+        announce(&mut handler, 13_500_000);
+        assert!(polls_a_substream_request(&mut handler));
+        announce(&mut handler, 18_000_000);
+        assert!(!polls_a_substream_request(&mut handler));
+        assert_eq!(handler.pending_announce, Some(U256::from(18_000_000u64)));
+
+        // Completion re-enqueues the buffered newest line.
+        handler.handle_outbound_output(ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing);
+        assert_eq!(handler.pending_announce, None);
+        assert!(polls_a_substream_request(&mut handler));
     }
 
     #[test]

@@ -9,8 +9,9 @@ mod reserve;
 mod topology;
 
 pub use self::bandwidth::{
-    Commit, CommitOnWrite, Direction, OriginAccounting, SwarmAccounting, SwarmAccountingConfig,
-    SwarmClientAccounting, SwarmPeerAccounting, SwarmPeerState, SwarmSettlementProvider,
+    Commit, CommitOnWrite, Direction, OriginAccounting, SettlementCredit, SwarmAccounting,
+    SwarmAccountingConfig, SwarmClientAccounting, SwarmPeerAccounting, SwarmPeerState,
+    SwarmSettlementProvider,
 };
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
 pub use self::peers::SwarmPeerResolver;

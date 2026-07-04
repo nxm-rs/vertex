@@ -285,8 +285,23 @@ impl<A: SwarmAccounting + 'static> PseudosettleService<A> {
                 if acceptable.is_positive() {
                     // Credit the ledger and accumulate the peer's repayment
                     // total through the one settlement-received seam.
-                    handle.settlement_received(acceptable);
+                    let credit = handle.settlement_received(acceptable);
                     self.last_settlement.insert(peer, now);
+
+                    // A crossed growth checkpoint raised the serve line;
+                    // re-announce it on the pricing stream so the peer paces
+                    // against the credit actually extended.
+                    if let Some(line) = credit.raised_serve_line {
+                        debug!(%peer, %line, "Re-announcing the raised payment threshold");
+                        if let Err(e) = self.command_tx.send(ClientCommand::Peer {
+                            peer,
+                            command: PeerCommand::AnnouncePricing {
+                                threshold: wire_from_au(line),
+                            },
+                        }) {
+                            warn!(%peer, error = ?e, "Failed to send threshold re-announcement");
+                        }
+                    }
                 }
 
                 // Ack with accepted amount. The timestamp is sampled here, at the
@@ -907,6 +922,61 @@ mod tests {
         let state = svc.accounting.peer_state(peer);
         assert_eq!(state.balance(), owed - ack.accepted);
         assert_eq!(state.settlement_received(), ack.accepted);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_crossing_re_announces_the_raised_line() {
+        // Default config, storer remote: rate 4_500_000, first checkpoint
+        // 450_000_000, serve line 13_500_000. A refreshment carrying the
+        // accumulator past the checkpoint emits the ack AND exactly one pricing
+        // re-announcement with the line raised one rate step.
+        let (svc, mut rx) = build_service_with_rx();
+        let peer = test_peer();
+        svc.accounting.connect_peer(peer, SwarmNodeType::Storer);
+        svc.accounting
+            .for_peer(peer)
+            .record(Au::from_amount(1_000_000_000_000), Direction::Upload);
+
+        let mut svc = svc;
+        // 200s of allowance (900M) admits a 500M claim, which strictly exceeds
+        // the 450M checkpoint in one event.
+        svc.last_settlement.insert(peer, current_timestamp() - 200);
+        svc.handle_event(PseudosettleEvent::Received {
+            peer,
+            amount: U256::from(500_000_000u64),
+            request_id: 11,
+        })
+        .await;
+
+        let mut ack = None;
+        let mut announced = None;
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                ClientCommand::Peer {
+                    command: PeerCommand::AckPseudosettle { ack: a, .. },
+                    ..
+                } => assert!(ack.replace(a).is_none(), "exactly one ack"),
+                ClientCommand::Peer {
+                    command: PeerCommand::AnnouncePricing { threshold },
+                    ..
+                } => assert!(announced.replace(threshold).is_none(), "one announce"),
+                other => panic!("unexpected command {other:?}"),
+            }
+        }
+        assert_eq!(ack.unwrap().accepted, Au::from_amount(500_000_000));
+        assert_eq!(announced.unwrap(), U256::from(18_000_000u64));
+
+        // A follow-up refreshment below the next checkpoint acks without
+        // re-announcing.
+        svc.last_settlement.insert(peer, current_timestamp() - 10);
+        svc.handle_event(PseudosettleEvent::Received {
+            peer,
+            amount: U256::from(1_000_000u64),
+            request_id: 12,
+        })
+        .await;
+        let ack = drain_single_ack(&mut rx);
+        assert_eq!(ack.accepted, Au::from_amount(1_000_000));
     }
 
     #[tokio::test]

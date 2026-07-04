@@ -75,8 +75,9 @@ pub(crate) type AccountingConnect = std::sync::Arc<
 /// initial payment-threshold announcement when accounting is wired. The connect
 /// hook runs first (a dispatch task may already have created the peer lazily on
 /// the client line) and the announcement carries the serve line it returns, so
-/// the peer adopts exactly the line the provide gate enforces. One announcement
-/// per connection; the handler buffers it while still dormant.
+/// the peer adopts exactly the line the provide gate enforces. One initial
+/// announcement per connection; repayment past a growth checkpoint re-announces
+/// the raised line from the settlement path.
 pub(crate) fn peer_ready_commands(
     accounting_connect: Option<&AccountingConnect>,
     peer_id: libp2p::PeerId,
