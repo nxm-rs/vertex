@@ -74,6 +74,10 @@ cluster = [
     "dep:tokio",
     "dep:eyre",
 ]
+# Adds the storer role to the cluster harness. Additive over `cluster`: it pulls
+# the storer/reserve cone into `vertex-swarm-node`, so it is a separate feature
+# rather than fattening `cluster`, which stays a bare-client rig by default.
+cluster-storer = ["cluster", "vertex-swarm-node/storer"]
 # Vertex harness over `libp2p-swarm-test`: seeded identities, connect-and-activate,
 # drive helpers, and panic-safe spawning for behaviour-level tests. Dev-only, so
 # it is behaviour-agnostic and never enters a shipped cone.

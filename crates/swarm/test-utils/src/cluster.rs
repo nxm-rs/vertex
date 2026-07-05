@@ -1,30 +1,38 @@
 //! In-process multi-node cluster harness for integration tests.
 //!
-//! Spins up one [`vertex_swarm_node::BootNode`] and N
-//! [`vertex_swarm_node::ClientNode`]s on the local loopback interface with
-//! hermetic networking (ephemeral TCP ports, in-memory peer stores, isolated
-//! `network_id`). Each node owns its own libp2p swarm and event loop; the
-//! harness exposes [`vertex_swarm_topology::TopologyHandle`]s and bookkeeping
+//! Spins up one [`vertex_swarm_node::BootNode`] plus N
+//! [`vertex_swarm_node::ClientNode`]s (and, behind the `cluster-storer`
+//! feature, [`vertex_swarm_node::StorerNode`]s) sharing one process, each
+//! owning its own libp2p swarm and event loop. The harness exposes
+//! [`vertex_swarm_topology::TopologyHandle`]s and per-node bookkeeping
 //! ([`PeerId`], listen [`Multiaddr`]) so tests can subscribe to
 //! [`vertex_swarm_topology::TopologyEvent`]s without poking at private state.
+//!
+//! # Transport modes
+//!
+//! - [`Transport::Memory`] (the default) injects a channel-based memory
+//!   transport into every node through the builders'
+//!   [`with_transport`](vertex_swarm_node::ClientNodeBuilder::with_transport)
+//!   seam. No OS sockets are bound, so a cluster scales to tens of nodes in
+//!   process, and paused virtual time (`#[tokio::test(start_paused = true)]`)
+//!   drives convergence: the transport wakes tasks through channels, never
+//!   real timers, so an idle runtime auto-advances the clock. Memory addresses
+//!   sidestep the dial-eligibility filter's IP-capability gate, so no
+//!   bootnode-dial kick is needed.
+//! - [`Transport::Tcp`] binds `127.0.0.1` on OS-assigned ports for the rare
+//!   test that needs real sockets. Real I/O means wall-clock
+//!   `tokio::time::timeout` rather than paused time, and the first
+//!   `ConnectBootnodes` races the swarm's own `NewListenAddr`, so this mode
+//!   re-issues the dial until each node connects.
 //!
 //! # Design constraints
 //!
 //! - **Persistent identity.** Each node is constructed from a single
-//!   [`Identity`] generated up front and cloned into the builder. This
-//!   models a bootnode whose overlay address survives restarts.
-//! - **TCP transport.** The node builders expose a
-//!   [`with_transport`](vertex_swarm_node::ClientNodeBuilder::with_transport)
-//!   seam that swaps the default TCP stack for an injected one (a memory
-//!   transport for hermetic tests). This harness still binds `127.0.0.1` with
-//!   OS-assigned ports because adopting the memory transport also needs the
-//!   dial-eligibility filter to admit `/memory/` addresses, tracked
-//!   separately.
-//! - **Wall-clock timeouts.** Because real TCP I/O is involved, integration
-//!   tests use bounded `tokio::time::timeout` rather than
-//!   `tokio::time::pause()`; pause would freeze timers without freezing the
-//!   OS network stack. Total runtime is bounded by the test (the cluster
-//!   test caps itself well under 30 seconds).
+//!   [`Identity`] generated up front. This models a bootnode whose overlay
+//!   address survives restarts.
+//! - **Per-node shutdown and panic surfacing.** Each node's `run` future is
+//!   spawned on the [`TaskManager`], and a panic in one is surfaced as an
+//!   `eyre` error out of [`Cluster::shutdown`] rather than lost.
 //!
 //! # Example
 //!
@@ -45,7 +53,8 @@
 //! ```
 
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use eyre::{Result, WrapErr};
@@ -54,10 +63,23 @@ use nectar_primitives::SwarmAddress;
 use tokio::task::JoinHandle;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_node::TransportOverride;
 use vertex_swarm_spec::Spec;
 use vertex_tasks::TaskManager;
 
 use crate::spec::TEST_NETWORK_ID;
+
+/// Transport the cluster nodes run over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Transport {
+    /// In-process channel-based memory transport. Hermetic and virtual-time
+    /// friendly; the default.
+    #[default]
+    Memory,
+    /// Real TCP on `127.0.0.1` with OS-assigned ports.
+    Tcp,
+}
 
 /// Role a node plays inside the cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +89,9 @@ pub enum NodeRole {
     Bootnode,
     /// Client: topology + client protocols.
     Client,
+    /// Storer: topology + client + storer protocols.
+    #[cfg(feature = "cluster-storer")]
+    Storer,
 }
 
 /// Live handle to a cluster node.
@@ -81,7 +106,7 @@ pub struct ClusterNodeHandle {
     pub overlay: SwarmAddress,
     /// libp2p peer id (stable for the lifetime of the cluster).
     pub peer_id: PeerId,
-    /// Loopback listen multiaddr including `/p2p/<peer_id>`.
+    /// Listen multiaddr including `/p2p/<peer_id>`.
     pub listen_addr: Multiaddr,
     /// Live topology handle (clonable; queries reflect current state).
     pub topology: vertex_swarm_topology::TopologyHandle<Identity>,
@@ -103,9 +128,16 @@ impl std::fmt::Debug for ClusterNodeHandle {
 /// Builder for the in-process cluster.
 pub struct ClusterBuilder {
     spec: Arc<Spec>,
+    transport: Transport,
     has_bootnode: bool,
     client_count: usize,
+    #[cfg(feature = "cluster-storer")]
+    storer_count: usize,
+    max_peers: usize,
 }
+
+/// Default connection admission cap, generous enough for a ~50-node star.
+const DEFAULT_MAX_PEERS: usize = 256;
 
 impl Default for ClusterBuilder {
     fn default() -> Self {
@@ -114,12 +146,13 @@ impl Default for ClusterBuilder {
 }
 
 impl ClusterBuilder {
-    /// Start a fresh cluster blueprint on the isolated test network.
+    /// Start a fresh cluster blueprint on the isolated test network over the
+    /// default [`Transport::Memory`].
     ///
     /// The default spec has *no* bootnodes baked in, so each node only ever
     /// dials addresses we hand it explicitly. `test_spec_isolated()` would
-    /// inherit testnet's dnsaddr bootnodes — dialling real testnet bootnodes
-    /// from an integration test is both flaky and slow.
+    /// inherit testnet's dnsaddr bootnodes, and dialling real testnet
+    /// bootnodes from an integration test is both flaky and slow.
     pub fn new() -> Self {
         let spec = Arc::new(
             vertex_swarm_spec::SpecBuilder::testnet()
@@ -129,14 +162,31 @@ impl ClusterBuilder {
         );
         Self {
             spec,
+            transport: Transport::default(),
             has_bootnode: false,
             client_count: 0,
+            #[cfg(feature = "cluster-storer")]
+            storer_count: 0,
+            max_peers: DEFAULT_MAX_PEERS,
         }
     }
 
     /// Use a custom [`Spec`] (e.g. real testnet network id).
     pub fn with_spec(mut self, spec: Arc<Spec>) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Select the transport the nodes run over. Defaults to
+    /// [`Transport::Memory`].
+    pub fn with_transport_mode(mut self, transport: Transport) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// Override the per-node connection admission cap.
+    pub fn with_max_peers(mut self, max_peers: usize) -> Self {
+        self.max_peers = max_peers;
         self
     }
 
@@ -153,94 +203,158 @@ impl ClusterBuilder {
         self
     }
 
+    /// Add `n` storer nodes to the cluster.
+    #[cfg(feature = "cluster-storer")]
+    pub fn with_storers(mut self, n: usize) -> Self {
+        self.storer_count = n;
+        self
+    }
+
     /// Build and start the cluster.
     ///
-    /// Each node binds to `127.0.0.1` on an OS-assigned ephemeral port and
-    /// begins its event loop. Client nodes are pre-configured with the
-    /// bootnode's listen multiaddr as their sole bootstrap entry.
-    ///
-    /// Requires an active Tokio runtime; installs a [`TaskManager`] if one
-    /// is not already current.
+    /// Each node begins its event loop with the bootnode's listen multiaddr as
+    /// its sole bootstrap entry. Requires an active Tokio runtime; installs a
+    /// [`TaskManager`] if one is not already current.
     pub async fn build(self) -> Result<Cluster> {
-        // The topology stack expects a global TaskExecutor; install one if
-        // the test process has not already done so. The handle is held by
-        // the returned [`Cluster`] so the executor outlives the nodes.
+        // The topology stack expects a global TaskExecutor; install one if the
+        // test process has not already done so. The handle is held by the
+        // returned [`Cluster`] so the executor outlives the nodes.
         let task_manager = match vertex_tasks::TaskExecutor::try_current() {
             Ok(_) => None,
             Err(_) => Some(TaskManager::current()),
         };
-
-        // Reserve every port upfront, holding the placeholder TcpListeners
-        // across the whole build. This makes the harness safe against
-        // itself: by the time we drop placeholder N to start node N's
-        // libp2p listener, every other node's placeholder is still held,
-        // so a sibling cannot reuse the same OS-assigned port. The
-        // residual race is only against external processes.
-        let total_nodes = usize::from(self.has_bootnode) + self.client_count;
-        let mut reservations: Vec<PortReservation> = Vec::with_capacity(total_nodes);
-        for _ in 0..total_nodes {
-            reservations.push(reserve_ephemeral_port()?);
-        }
-        let mut reservations = reservations.into_iter();
 
         let mut bootnode = None;
         let mut bootnode_addrs: Vec<Multiaddr> = Vec::new();
 
         if self.has_bootnode {
             let identity = persistent_identity(&self.spec, SwarmNodeType::Bootnode);
-            let reservation = reservations.next().expect("one port per node");
-            let listen_addr = reservation.listen_addr()?;
-            // Drop the placeholder immediately before libp2p binds the port.
-            drop(reservation);
-            let handle = spawn_bootnode(identity, listen_addr, &[]).await?;
+            let listen = self.reserve_listen_addr()?;
+            let handle =
+                spawn_bootnode(identity, listen, &[], self.transport, self.max_peers).await?;
             bootnode_addrs.push(handle.listen_addr.clone());
             bootnode = Some(handle);
         }
 
+        // Subscribe to the bootnode's topology stream BEFORE any peer is
+        // spawned: the earliest a `PeerReady` can fire is when a client
+        // connects, and no client exists yet, so this cannot miss an event.
+        // `broadcast::Sender::subscribe` does not replay past events.
+        let bootnode_events = bootnode.as_ref().map(|bn| bn.topology.subscribe());
+
         let mut clients = Vec::with_capacity(self.client_count);
         for _ in 0..self.client_count {
             let identity = persistent_identity(&self.spec, SwarmNodeType::Client);
-            let reservation = reservations.next().expect("one port per node");
-            let listen_addr = reservation.listen_addr()?;
-            drop(reservation);
-            let handle = spawn_client(identity, listen_addr, &bootnode_addrs).await?;
+            let listen = self.reserve_listen_addr()?;
+            let handle = spawn_client(
+                identity,
+                listen,
+                &bootnode_addrs,
+                self.transport,
+                self.max_peers,
+            )
+            .await?;
             clients.push(handle);
         }
 
-        // Subscribe to the bootnode's topology event stream BEFORE kicking
-        // any dial: on fast loopback both client handshakes can complete in
-        // the window between `build` returning and a caller calling
-        // `subscribe`, and `broadcast::Sender::subscribe` does not replay
-        // past events. Stash the receiver so the caller can read it via
-        // [`Cluster::bootnode_events`].
-        let bootnode_events = bootnode.as_ref().map(|bn| bn.topology.subscribe());
+        #[cfg(feature = "cluster-storer")]
+        let mut storers = Vec::with_capacity(self.storer_count);
+        #[cfg(feature = "cluster-storer")]
+        for _ in 0..self.storer_count {
+            let identity = persistent_identity(&self.spec, SwarmNodeType::Storer);
+            let listen = self.reserve_listen_addr()?;
+            let handle = spawn_storer(
+                identity,
+                listen,
+                &bootnode_addrs,
+                self.transport,
+                self.max_peers,
+            )
+            .await?;
+            storers.push(handle);
+        }
 
-        // The production builder issues `ConnectBootnodes` *before* libp2p
-        // has observed its own listen addresses, so the first dial trips
-        // the "capability unknown → no reachable addresses" guard in
-        // `vertex_net_local::is_dialable`. Re-issue the command until at
-        // least one peer is connected on each client; idempotent because
-        // already-connected peers are skipped via `is_peer_tracked`.
-        kick_bootnode_dial(&clients).await;
+        // Under real TCP the production builder issues `ConnectBootnodes`
+        // before libp2p has observed its own listen addresses, so the first
+        // dial trips the "capability unknown -> no reachable addresses" guard
+        // in `vertex_net_local::is_dialable`. Re-issue until each node
+        // connects. Memory addresses carry no IP, so that guard never trips and
+        // no kick is required.
+        if self.transport == Transport::Tcp {
+            #[cfg(feature = "cluster-storer")]
+            let dialers: Vec<&ClusterNodeHandle> = clients.iter().chain(storers.iter()).collect();
+            #[cfg(not(feature = "cluster-storer"))]
+            let dialers: Vec<&ClusterNodeHandle> = clients.iter().collect();
+            kick_bootnode_dial(&dialers).await;
+        }
 
         Ok(Cluster {
             bootnode,
             bootnode_events,
             clients,
+            #[cfg(feature = "cluster-storer")]
+            storers,
             task_manager,
         })
+    }
+
+    /// Allocate the listen multiaddr for one node under the selected transport.
+    ///
+    /// Memory nodes take a process-unique `/memory/<port>` picked up front so
+    /// the address (with the peer id appended after build) can seed clients
+    /// before the node's loop is polled. TCP nodes reserve an ephemeral
+    /// loopback port, held until libp2p binds it.
+    fn reserve_listen_addr(&self) -> Result<ListenReservation> {
+        match self.transport {
+            Transport::Memory => Ok(ListenReservation::Memory(next_memory_addr())),
+            Transport::Tcp => reserve_ephemeral_port().map(ListenReservation::Tcp),
+        }
+    }
+}
+
+/// A reserved listen multiaddr, resolved just before the node binds it.
+enum ListenReservation {
+    /// A process-unique `/memory/<port>` address.
+    Memory(Multiaddr),
+    /// A placeholder [`TcpListener`] holding an ephemeral loopback port so a
+    /// sibling in the same harness cannot reuse it.
+    Tcp(TcpListener),
+}
+
+impl ListenReservation {
+    /// The multiaddr the node should listen on, releasing any placeholder
+    /// socket so libp2p can bind it.
+    fn into_listen_addr(self) -> Result<Multiaddr> {
+        match self {
+            Self::Memory(addr) => Ok(addr),
+            Self::Tcp(listener) => {
+                let port = listener
+                    .local_addr()
+                    .wrap_err("ephemeral TCP socket has no local address")?
+                    .port();
+                // Drop the placeholder immediately before libp2p binds the
+                // port; only that one-call window is racy, and only against
+                // external processes.
+                drop(listener);
+                format!("/ip4/127.0.0.1/tcp/{port}")
+                    .parse()
+                    .wrap_err("listen multiaddr is well-formed")
+            }
+        }
     }
 }
 
 /// Running cluster handle.
 pub struct Cluster {
     bootnode: Option<ClusterNodeHandle>,
-    /// Receiver subscribed inside [`ClusterBuilder::build`] BEFORE any dial
-    /// is kicked. Callers should consume this rather than calling
+    /// Receiver subscribed inside [`ClusterBuilder::build`] before any peer is
+    /// spawned. Callers should consume this rather than calling
     /// `bootnode().topology.subscribe()` themselves, which races with
-    /// handshake completion on fast loopback.
+    /// handshake completion.
     bootnode_events: Option<tokio::sync::broadcast::Receiver<vertex_swarm_topology::TopologyEvent>>,
     clients: Vec<ClusterNodeHandle>,
+    #[cfg(feature = "cluster-storer")]
+    storers: Vec<ClusterNodeHandle>,
     /// Held to keep the global executor alive for the duration of the test
     /// and consumed by [`Cluster::shutdown`] to fire the [`Shutdown`] signal.
     /// `None` when the test runtime already installed a [`TaskManager`]
@@ -272,11 +386,23 @@ impl Cluster {
         self.clients.len()
     }
 
+    /// Get a reference to the storer handles.
+    #[cfg(feature = "cluster-storer")]
+    pub fn storers(&self) -> &[ClusterNodeHandle] {
+        &self.storers
+    }
+
+    /// Number of storers in the cluster.
+    #[cfg(feature = "cluster-storer")]
+    pub fn storer_count(&self) -> usize {
+        self.storers.len()
+    }
+
     /// Take the pre-subscribed bootnode topology event receiver. Subscription
-    /// happens inside [`ClusterBuilder::build`] before any dial is kicked,
-    /// so the caller is guaranteed to see every event the bootnode emits.
-    /// Returns `None` if the cluster has no bootnode or if the receiver has
-    /// already been taken.
+    /// happens inside [`ClusterBuilder::build`] before any peer is spawned, so
+    /// the caller is guaranteed to see every event the bootnode emits. Returns
+    /// `None` if the cluster has no bootnode or if the receiver has already
+    /// been taken.
     pub fn take_bootnode_events(
         &mut self,
     ) -> Option<tokio::sync::broadcast::Receiver<vertex_swarm_topology::TopologyEvent>> {
@@ -293,18 +419,14 @@ impl Cluster {
         // - If the cluster installed its *own* [`TaskManager`] (no executor
         //   was current before [`ClusterBuilder::build`]), we own it and can
         //   call [`TaskManager::graceful_shutdown`] directly. That consumes
-        //   the manager and drops its `Signal`, which fires the
-        //   `Shutdown` future every node holds. Because that call blocks
-        //   on a `Condvar`, we run it on the blocking pool.
+        //   the manager and drops its `Signal`, which fires the `Shutdown`
+        //   future every node holds. Because that call blocks on a `Condvar`,
+        //   we run it on the blocking pool.
         //
-        // - If the manager was created elsewhere (typical inside
-        //   `#[tokio::test]` that wraps `cluster::build`), we can only
-        //   signal via [`TaskExecutor::initiate_graceful_shutdown`], which
-        //   relies on the outer manager being polled. The integration test
-        //   in `tests/bootnode_cluster.rs` is structured to drop the
-        //   `Cluster` (and therefore its `TaskManager`, if any) before
-        //   `#[tokio::test]` tears the runtime down, so this branch is
-        //   safe in practice.
+        // - If the manager was created elsewhere (typical inside a
+        //   `#[tokio::test]` that wraps `cluster::build`), we can only signal
+        //   via [`TaskExecutor::initiate_graceful_shutdown`], which relies on
+        //   the outer manager being polled.
         if let Some(manager) = self.task_manager.take() {
             tokio::task::spawn_blocking(move || {
                 // Bounded so a stuck node does not wedge the test runner.
@@ -324,6 +446,12 @@ impl Cluster {
         }
         for mut client in self.clients.drain(..) {
             if let Some(handle) = client.join.take() {
+                joins.push(handle);
+            }
+        }
+        #[cfg(feature = "cluster-storer")]
+        for mut storer in self.storers.drain(..) {
+            if let Some(handle) = storer.join.take() {
                 joins.push(handle);
             }
         }
@@ -348,10 +476,8 @@ impl Cluster {
 /// Construct an [`Identity`] that is reused across the test cluster lifetime.
 ///
 /// Uses [`Identity::new`] (the persistent constructor) so the bootnode
-/// builder's `assert_persistent_identity` check passes; the signer and
-/// nonce are random per cluster instance but stable for the cluster's
-/// lifetime, which mirrors how a keystore-backed identity looks from the
-/// rest of the topology stack.
+/// builder's `assert_persistent_identity` check passes; the signer and nonce
+/// are random per cluster instance but stable for the cluster's lifetime.
 fn persistent_identity(spec: &Arc<Spec>, node_type: SwarmNodeType) -> Identity {
     use alloy_signer_local::LocalSigner;
     use vertex_swarm_primitives::Nonce;
@@ -363,85 +489,101 @@ fn persistent_identity(spec: &Arc<Spec>, node_type: SwarmNodeType) -> Identity {
     )
 }
 
-/// Workaround for the bootnode race in `vertex_swarm_node::node::builder`.
+/// Process-unique memory port allocator.
 ///
-/// Each client's first `ConnectBootnodes` command races against the libp2p
-/// swarm emitting its own `NewListenAddr` events; until at least one listen
-/// address has been observed, `vertex_net_local::is_dialable` rejects every
-/// candidate address. The production builder issues `ConnectBootnodes` from
-/// inside `build_base_node`, before the swarm has been polled, so the first
-/// dial fails silently. We mitigate by re-sending the command after a short
-/// yield; the underlying dial path is idempotent.
-async fn kick_bootnode_dial(clients: &[ClusterNodeHandle]) {
+/// Seeded once with a random high base so concurrent clusters, and the
+/// swarm-test harness that listens on `/memory/0`, never collide on a port
+/// within one process.
+static NEXT_MEMORY_PORT: LazyLock<AtomicU64> =
+    LazyLock::new(|| AtomicU64::new(u64::from(rand::random::<u32>()) + 1));
+
+fn next_memory_addr() -> Multiaddr {
+    let port = NEXT_MEMORY_PORT.fetch_add(1, Ordering::Relaxed);
+    format!("/memory/{port}")
+        .parse()
+        .expect("literal /memory addr is well-formed")
+}
+
+/// A memory [`TransportOverride`] for one node: an authenticated, multiplexed
+/// channel transport in place of the default TCP stack.
+fn memory_transport() -> TransportOverride {
+    Box::new(|keypair: &libp2p::identity::Keypair| {
+        use libp2p::Transport as _;
+        use libp2p::core::transport::MemoryTransport;
+        use libp2p::core::upgrade::Version;
+        use libp2p::{noise, yamux};
+
+        let transport = MemoryTransport::default()
+            .upgrade(Version::V1)
+            .authenticate(noise::Config::new(keypair)?)
+            .multiplex(yamux::Config::default())
+            .boxed();
+        Ok(transport)
+    })
+}
+
+/// The transport override for a given mode: memory injects a channel transport,
+/// TCP leaves the default stack in place.
+fn transport_override(transport: Transport) -> Option<TransportOverride> {
+    match transport {
+        Transport::Memory => Some(memory_transport()),
+        Transport::Tcp => None,
+    }
+}
+
+/// Re-issue `connect_bootnodes` on each dialer until it is connected, bounded
+/// by a real timeout. Only used under [`Transport::Tcp`]: the first
+/// `connect_bootnodes` races libp2p's first `NewListenAddr`, and if it wins,
+/// `vertex_net_local::is_dialable` rejects the candidate because the node's IP
+/// capability is still unknown, so the dial dies silently.
+async fn kick_bootnode_dial(dialers: &[&ClusterNodeHandle]) {
     use vertex_swarm_api::{SwarmTopologyCommands as _, SwarmTopologyStats as _};
 
-    // Re-issue `connect_bootnodes` until each client is actually connected to
-    // a peer, bounded by a real timeout. The initial `connect_bootnodes` call
-    // in the production builder races with libp2p's first `NewListenAddr`
-    // emission — if it fires first, `vertex_net_local::is_dialable` rejects
-    // the candidate and the dial dies silently. Polling for the observable
-    // outcome (peer count > 0) is faster on the common path than the old
-    // fixed sleep and remains correct under load.
     const POLL_BUDGET: Duration = Duration::from_secs(2);
     const POLL_INTERVAL: Duration = Duration::from_millis(25);
     let deadline = tokio::time::Instant::now() + POLL_BUDGET;
     loop {
-        for client in clients {
-            let _ = client.topology.connect_bootnodes().await;
+        for dialer in dialers {
+            let _ = dialer.topology.connect_bootnodes().await;
         }
-        if clients
+        if dialers
             .iter()
-            .all(|c| c.topology.connected_peers_count() > 0)
+            .all(|d| d.topology.connected_peers_count() > 0)
         {
             return;
         }
         if tokio::time::Instant::now() >= deadline {
-            // Best-effort: any remaining missing handshakes will surface
-            // downstream as a clearer test failure.
+            // Best-effort: any remaining missing handshakes surface downstream
+            // as a clearer test failure.
             return;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 
-/// Holds the placeholder [`TcpListener`] for a reserved ephemeral port so the
-/// port cannot be reassigned to a sibling node in the same harness. The
-/// caller drops the reservation immediately before libp2p binds the port;
-/// only that one-call window is racy, and only against external processes.
-struct PortReservation {
-    listener: TcpListener,
-}
-
-impl PortReservation {
-    fn listen_addr(&self) -> Result<Multiaddr> {
-        let port = self
-            .listener
-            .local_addr()
-            .wrap_err("ephemeral TCP socket has no local address")?
-            .port();
-        format!("/ip4/127.0.0.1/tcp/{port}")
-            .parse()
-            .wrap_err("listen multiaddr is well-formed")
-    }
-}
-
-fn reserve_ephemeral_port() -> Result<PortReservation> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .wrap_err("failed to bind ephemeral TCP port on loopback")?;
-    Ok(PortReservation { listener })
+fn reserve_ephemeral_port() -> Result<TcpListener> {
+    TcpListener::bind("127.0.0.1:0").wrap_err("failed to bind ephemeral TCP port on loopback")
 }
 
 async fn spawn_bootnode(
     identity: Identity,
-    listen_addr: Multiaddr,
+    listen: ListenReservation,
     bootnodes: &[Multiaddr],
+    transport: Transport,
+    max_peers: usize,
 ) -> Result<ClusterNodeHandle> {
     use vertex_swarm_node::BootNode;
 
-    let network_config = TestNetworkConfig::new(vec![listen_addr.clone()], bootnodes.to_vec());
+    let listen_addr = listen.into_listen_addr()?;
+    let network_config =
+        TestNetworkConfig::new(vec![listen_addr.clone()], bootnodes.to_vec(), max_peers);
 
     let overlay = identity.overlay_address();
-    let mut bootnode = BootNode::builder(identity)
+    let mut builder = BootNode::builder(identity);
+    if let Some(override_fn) = transport_override(transport) {
+        builder = builder.with_transport(override_fn);
+    }
+    let mut bootnode = builder
         .build(&network_config, None)
         .await
         .wrap_err("failed to build bootnode")?;
@@ -469,15 +611,23 @@ async fn spawn_bootnode(
 
 async fn spawn_client(
     identity: Identity,
-    listen_addr: Multiaddr,
+    listen: ListenReservation,
     bootnodes: &[Multiaddr],
+    transport: Transport,
+    max_peers: usize,
 ) -> Result<ClusterNodeHandle> {
     use vertex_swarm_node::ClientNode;
 
-    let network_config = TestNetworkConfig::new(vec![listen_addr.clone()], bootnodes.to_vec());
+    let listen_addr = listen.into_listen_addr()?;
+    let network_config =
+        TestNetworkConfig::new(vec![listen_addr.clone()], bootnodes.to_vec(), max_peers);
 
     let overlay = identity.overlay_address();
-    let (mut client, _service, _handle) = ClientNode::builder(identity)
+    let mut builder = ClientNode::builder(identity);
+    if let Some(override_fn) = transport_override(transport) {
+        builder = builder.with_transport(override_fn);
+    }
+    let (mut client, _service, _handle) = builder
         .build(&network_config, None)
         .await
         .wrap_err("failed to build client node")?;
@@ -503,9 +653,62 @@ async fn spawn_client(
     })
 }
 
-/// Spawn a node's `run` future on the executor with a graceful-shutdown
-/// signal, and project its `Result<()>` out through a bridging task so we
-/// can join on a typed handle.
+#[cfg(feature = "cluster-storer")]
+async fn spawn_storer(
+    identity: Identity,
+    listen: ListenReservation,
+    bootnodes: &[Multiaddr],
+    transport: Transport,
+    max_peers: usize,
+) -> Result<ClusterNodeHandle> {
+    use vertex_swarm_node::StorerNode;
+
+    use crate::storage::MockStorage;
+
+    let listen_addr = listen.into_listen_addr()?;
+    let network_config =
+        TestNetworkConfig::new(vec![listen_addr.clone()], bootnodes.to_vec(), max_peers);
+
+    // A read-only in-memory reserve snapshot: the storer participates in
+    // topology and gossip without a persistent store behind it.
+    let store = Arc::new(MockStorage::default());
+
+    let overlay = identity.overlay_address();
+    let mut builder = StorerNode::builder(identity)
+        .with_store(store.clone())
+        .with_pullsync_storage(store);
+    if let Some(override_fn) = transport_override(transport) {
+        builder = builder.with_transport(override_fn);
+    }
+    let (mut storer, _service, _handle, _pullsync) = builder
+        .build(&network_config, None)
+        .await
+        .wrap_err("failed to build storer node")?;
+    storer
+        .start_listening()
+        .wrap_err("storer failed to start listening")?;
+
+    let peer_id = *storer.local_peer_id();
+    let topology = storer.topology_handle().clone();
+    let listen_with_peer = listen_addr.with(libp2p::multiaddr::Protocol::P2p(peer_id));
+
+    let join = spawn_node_task("cluster-storer", move |graceful| async move {
+        storer.run(graceful).await
+    });
+
+    Ok(ClusterNodeHandle {
+        role: NodeRole::Storer,
+        overlay,
+        peer_id,
+        listen_addr: listen_with_peer,
+        topology,
+        join: Some(join),
+    })
+}
+
+/// Spawn a node's `run` future on the executor with a graceful-shutdown signal,
+/// and project its `Result<()>` out through a bridging task so we can join on a
+/// typed handle. A panic in the run future is surfaced as an `eyre` error.
 fn spawn_node_task<F, Fut>(name: &'static str, f: F) -> JoinHandle<Result<()>>
 where
     F: FnOnce(vertex_tasks::GracefulShutdown) -> Fut + Send + 'static,
@@ -516,15 +719,14 @@ where
 
     let spawn = executor.spawn_with_graceful_shutdown_signal(name, move |graceful| async move {
         let res = f(graceful).await;
-        // The receiver is held by the bridging task below — on send failure
-        // the bridge has already been dropped (test aborted), so silently
-        // discard the result.
+        // The receiver is held by the bridging task below; on send failure the
+        // bridge has already been dropped (test aborted), so silently discard.
         let _ = result_tx.send(res);
     });
 
     tokio::spawn(async move {
-        // If the spawned task panicked, surface the panic message rather
-        // than masking it as "task dropped without producing a result".
+        // If the spawned task panicked, surface the panic message rather than
+        // masking it as "task dropped without producing a result".
         match spawn.await {
             Ok(()) => {}
             Err(join_err) if join_err.is_panic() => {
@@ -555,17 +757,19 @@ struct TestNetworkConfig {
     bootnodes: Vec<Multiaddr>,
     trusted_peers: Vec<Multiaddr>,
     nat_addrs: Vec<Multiaddr>,
+    max_peers: usize,
     peer: TestPeerConfig,
     routing: vertex_swarm_topology::KademliaConfig,
 }
 
 impl TestNetworkConfig {
-    fn new(listen_addrs: Vec<Multiaddr>, bootnodes: Vec<Multiaddr>) -> Self {
+    fn new(listen_addrs: Vec<Multiaddr>, bootnodes: Vec<Multiaddr>, max_peers: usize) -> Self {
         Self {
             listen_addrs,
             bootnodes,
             trusted_peers: Vec::new(),
             nat_addrs: Vec::new(),
+            max_peers,
             peer: TestPeerConfig,
             routing: vertex_swarm_topology::KademliaConfig::default(),
         }
@@ -586,7 +790,7 @@ impl vertex_swarm_api::SwarmNetworkConfig for TestNetworkConfig {
         true
     }
     fn max_peers(&self) -> usize {
-        16
+        self.max_peers
     }
     fn idle_timeout(&self) -> Duration {
         Duration::from_secs(30)
