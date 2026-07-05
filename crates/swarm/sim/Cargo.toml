@@ -25,6 +25,7 @@ turmoil.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-net-handshake.workspace = true
+vertex-swarm-peer.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-test-utils = { workspace = true, features = ["harness"] }

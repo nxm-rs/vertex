@@ -9,5 +9,5 @@ mod script;
 pub use invariant::Invariants;
 pub use schedule::{Fault, FaultSchedule};
 pub use script::{
-    PeerScript, Placement, Scenario, ScriptedPeer, handshake_summary, placement_nonce,
+    PeerScript, Placement, Scenario, ScriptedPeer, handshake_summary, placement_nonce, slot_of,
 };
