@@ -158,24 +158,31 @@ async fn build_storer_base<I, C>(
     network_config: &C,
     store: Arc<dyn SwarmLocalStore>,
     pullsync_storage: Arc<dyn PullStorage>,
+    transport: Option<super::builder::TransportOverride>,
 ) -> Result<BaseNode<I, StorerNodeBehaviour<I>>>
 where
     I: SwarmIdentity + Clone,
     C: SwarmNetworkConfig,
 {
     let limits = super::base::build_admission_limits(network_config);
-    super::builder::build_base_node(infra, network_config, "Storer node", move |pk, topology| {
-        let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
-        StorerNodeBehaviour::from_parts(
-            pk,
-            topology,
-            nat,
-            limits,
-            store,
-            pullsync_storage,
-            network_config.agent_version(),
-        )
-    })
+    super::builder::build_base_node(
+        infra,
+        network_config,
+        "Storer node",
+        transport,
+        move |pk, topology| {
+            let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+            StorerNodeBehaviour::from_parts(
+                pk,
+                topology,
+                nat,
+                limits,
+                store,
+                pullsync_storage,
+                network_config.agent_version(),
+            )
+        },
+    )
     .await
 }
 
@@ -586,6 +593,7 @@ pub struct StorerNodeBuilder<I: SwarmIdentity + Clone> {
     kademlia_config: Option<KademliaConfig>,
     store: Option<Arc<dyn SwarmLocalStore>>,
     pullsync_storage: Option<Arc<dyn PullStorage>>,
+    transport: Option<super::builder::TransportOverride>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     #[cfg(feature = "swap")]
     swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
@@ -598,6 +606,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             kademlia_config: None,
             store: None,
             pullsync_storage: None,
+            transport: None,
             pseudosettle_event_tx: None,
             #[cfg(feature = "swap")]
             swap_event_tx: None,
@@ -618,6 +627,14 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
     /// Inject the reserve snapshot the inbound pullsync syncer serves from.
     pub fn with_pullsync_storage(mut self, storage: Arc<dyn PullStorage>) -> Self {
         self.pullsync_storage = Some(storage);
+        self
+    }
+
+    /// Replace the default TCP transport with an injected one. Tests supply a
+    /// memory transport so paused time drives the node; production leaves this
+    /// unset and keeps the default stack.
+    pub fn with_transport(mut self, transport: super::builder::TransportOverride) -> Self {
+        self.transport = Some(transport);
         self
     }
 
@@ -678,8 +695,14 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             ))
         });
 
-        let mut base =
-            build_storer_base(infra, network_config, Arc::clone(&store), pullsync_storage).await?;
+        let mut base = build_storer_base(
+            infra,
+            network_config,
+            Arc::clone(&store),
+            pullsync_storage,
+            self.transport,
+        )
+        .await?;
 
         base.swarm
             .behaviour()

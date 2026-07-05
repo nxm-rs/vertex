@@ -34,7 +34,7 @@ pub(crate) mod task;
 pub use base::BaseNode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use bootnode::{BootNode, BootNodeBuilder};
-pub use builder::BuiltInfrastructure;
+pub use builder::{BuiltInfrastructure, NodeTransport, TransportOverride};
 pub use client::{ClientNode, ClientNodeBuilder};
 pub use core::{
     AssemblyContext, ClientCore, ClientCoreCtx, ClientCoreTail, ClientNodeParts, ClientTailParams,

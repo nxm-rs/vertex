@@ -279,6 +279,7 @@ pub struct BootNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
+    transport: Option<super::builder::TransportOverride>,
 }
 
 impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
@@ -287,6 +288,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             identity,
             infra: None,
             kademlia_config: None,
+            transport: None,
         }
     }
 
@@ -297,6 +299,14 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
 
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
         self.kademlia_config = Some(kademlia_config);
+        self
+    }
+
+    /// Replace the default TCP transport with an injected one. Tests supply a
+    /// memory transport so paused time drives the node; production leaves this
+    /// unset and keeps the default stack.
+    pub fn with_transport(mut self, transport: super::builder::TransportOverride) -> Self {
+        self.transport = Some(transport);
         self
     }
 }
@@ -338,6 +348,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             infra,
             network_config,
             "Bootnode",
+            self.transport,
             move |pk, topology| {
                 let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
                 BootnodeBehaviour::from_parts(

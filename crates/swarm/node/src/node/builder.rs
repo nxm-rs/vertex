@@ -3,7 +3,10 @@
 use std::time::Duration;
 
 use eyre::{Result, WrapErr};
-use libp2p::{Multiaddr, Swarm, identity::PublicKey, swarm::NetworkBehaviour};
+use libp2p::core::muxing::StreamMuxerBox;
+use libp2p::core::transport::Boxed;
+use libp2p::identity::Keypair;
+use libp2p::{Multiaddr, PeerId, Swarm, identity::PublicKey, swarm::NetworkBehaviour};
 use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_api::{
@@ -36,6 +39,26 @@ pub(crate) fn identify_config(
 }
 
 pub(crate) type PeerStore = std::sync::Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
+
+/// An authenticated, multiplexed transport the swarm dials and listens on.
+/// Names the output shape a [`TransportOverride`] must produce; the default
+/// native (TCP with DNS) and browser (secure websocket) stacks build one of
+/// these internally.
+pub type NodeTransport = Boxed<(PeerId, StreamMuxerBox)>;
+
+/// Swarm transport injection point. Given the freshly generated node keypair,
+/// yields the transport the swarm runs over. Production leaves this unset and
+/// gets the default stack unchanged; an in-process test supplies a
+/// channel-based memory transport so paused time drives the whole node.
+///
+/// Only the native swarm assembly consults it; the browser stack is fixed.
+pub type TransportOverride = Box<
+    dyn FnOnce(
+            &Keypair,
+        )
+            -> std::result::Result<NodeTransport, Box<dyn std::error::Error + Send + Sync>>
+        + Send,
+>;
 
 /// Pre-built infrastructure components ready for swarm assembly.
 pub struct BuiltInfrastructure<I: SwarmIdentity + Clone> {
@@ -190,6 +213,7 @@ pub(crate) async fn build_base_node<I, B, C, F>(
     mut infra: BuiltInfrastructure<I>,
     network_config: &C,
     node_type_name: &str,
+    transport: Option<TransportOverride>,
     behaviour_fn: F,
 ) -> Result<BaseNode<I, B>>
 where
@@ -218,7 +242,7 @@ where
         ))
     };
 
-    let swarm = build_swarm(idle_timeout, behaviour_builder)?;
+    let swarm = build_swarm(idle_timeout, transport, behaviour_builder)?;
 
     let local_peer_id = *swarm.local_peer_id();
     info!(%local_peer_id, "{} peer ID", node_type_name);
@@ -236,10 +260,20 @@ where
     })
 }
 
-/// Assemble the libp2p [`Swarm`] for native targets over a TCP transport with
-/// DNS resolution, Noise authentication, and Yamux multiplexing.
+/// Assemble the libp2p [`Swarm`] for native targets.
+///
+/// With no override this is a TCP transport with DNS resolution, Noise
+/// authentication, and Yamux multiplexing; production always takes this path,
+/// so its bytes are unchanged. A [`TransportOverride`] (tests only) replaces
+/// the TCP stack wholesale with the supplied transport, which is why
+/// [`TransportCapability::platform`](vertex_net_local::TransportCapability::platform)
+/// keeps mirroring the default TCP stack rather than the override.
 #[cfg(not(target_arch = "wasm32"))]
-fn build_swarm<B, F>(idle_timeout: Duration, behaviour_builder: F) -> Result<Swarm<B>>
+fn build_swarm<B, F>(
+    idle_timeout: Duration,
+    transport: Option<TransportOverride>,
+    behaviour_builder: F,
+) -> Result<Swarm<B>>
 where
     B: NetworkBehaviour,
     F: FnOnce(
@@ -247,6 +281,16 @@ where
     ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
 {
     use libp2p::{SwarmBuilder, noise, tcp, yamux};
+
+    if let Some(transport) = transport {
+        let swarm = SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_other_transport(transport)?
+            .with_behaviour(behaviour_builder)?
+            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
+            .build();
+        return Ok(swarm);
+    }
 
     let swarm = SwarmBuilder::with_new_identity()
         .with_tokio()
@@ -284,7 +328,11 @@ where
 /// regular `V1` response, so this stays wire-compatible; it only removes the
 /// synchronous flush barrier the browser transport cannot satisfy.
 #[cfg(target_arch = "wasm32")]
-fn build_swarm<B, F>(idle_timeout: Duration, behaviour_builder: F) -> Result<Swarm<B>>
+fn build_swarm<B, F>(
+    idle_timeout: Duration,
+    transport: Option<TransportOverride>,
+    behaviour_builder: F,
+) -> Result<Swarm<B>>
 where
     B: NetworkBehaviour,
     F: FnOnce(
@@ -292,6 +340,10 @@ where
     ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
 {
     use libp2p::{SwarmBuilder, Transport as _, core::upgrade::Version, noise, yamux};
+
+    // The browser assembles a fixed websocket stack with no injection point,
+    // so an override (only ever supplied by native tests) is ignored here.
+    let _ = transport;
 
     let swarm = SwarmBuilder::with_new_identity()
         .with_wasm_bindgen()
@@ -310,6 +362,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use libp2p::identity::Keypair;
     use vertex_swarm_api::SwarmNetworkConfig;
@@ -332,5 +385,73 @@ mod tests {
         let network = NetworkConfig::default();
         let config = identify_config(pk, network.agent_version());
         assert_eq!(config.agent_version(), identify::AGENT_VERSION);
+    }
+
+    /// The injection seam: a supplied transport replaces the default TCP stack
+    /// wholesale, so two swarms built through it connect over channel-based
+    /// memory addresses with no OS sockets bound.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn injected_memory_transport_connects_two_swarms() {
+        use std::time::Duration;
+
+        use futures::StreamExt;
+        use libp2p::swarm::{SwarmEvent, dummy};
+        use libp2p::{Multiaddr, Transport as _, core::upgrade::Version, noise, yamux};
+
+        use super::{TransportOverride, build_swarm};
+
+        fn memory_override() -> TransportOverride {
+            Box::new(|keypair: &Keypair| {
+                let transport = libp2p::core::transport::MemoryTransport::default()
+                    .upgrade(Version::V1)
+                    .authenticate(noise::Config::new(keypair)?)
+                    .multiplex(yamux::Config::default())
+                    .boxed();
+                Ok(transport)
+            })
+        }
+
+        let idle = Duration::from_secs(5);
+        let mut listener = build_swarm(idle, Some(memory_override()), |_kp| Ok(dummy::Behaviour))
+            .expect("listener swarm builds over the injected transport");
+        let mut dialer = build_swarm(idle, Some(memory_override()), |_kp| Ok(dummy::Behaviour))
+            .expect("dialer swarm builds over the injected transport");
+
+        listener
+            .listen_on("/memory/0".parse::<Multiaddr>().unwrap())
+            .expect("listen on a memory address");
+
+        let listen_addr = loop {
+            match listener.select_next_some().await {
+                SwarmEvent::NewListenAddr { address, .. } => break address,
+                _ => continue,
+            }
+        };
+
+        dialer.dial(listen_addr).expect("dial the memory address");
+
+        let mut dialer_up = false;
+        let mut listener_up = false;
+        let converge = async {
+            while !(dialer_up && listener_up) {
+                tokio::select! {
+                    event = listener.select_next_some() => {
+                        if let SwarmEvent::ConnectionEstablished { .. } = event {
+                            listener_up = true;
+                        }
+                    }
+                    event = dialer.select_next_some() => {
+                        if let SwarmEvent::ConnectionEstablished { .. } = event {
+                            dialer_up = true;
+                        }
+                    }
+                }
+            }
+        };
+
+        tokio::time::timeout(Duration::from_secs(5), converge)
+            .await
+            .expect("both swarms establish the memory connection");
     }
 }
