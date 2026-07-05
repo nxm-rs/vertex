@@ -42,7 +42,7 @@ fn converges_from_cold_start() {
         }
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
 
     let converged = run_until(

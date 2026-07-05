@@ -46,7 +46,7 @@ fn one_peer_flap_never_moves_depth() {
         }
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
     let converged = run_until(
         &mut world,
@@ -57,10 +57,10 @@ fn one_peer_flap_never_moves_depth() {
     assert!(converged, "fixture never converged (seed={seed})");
 
     // Three flap cycles: bounce one frontier peer, hold the published depth
-    // through the whole dip, confirm the peer is re-dialled. The peer has
-    // served the node, so its drop is blameless churn, not a failing dial.
+    // through the whole dip, confirm the peer is re-dialled. A bounce that
+    // catches the connection young arms the early-disconnect backoff, which
+    // expires under virtual advance inside the recovery window.
     for cycle in 0..3 {
-        common::mark_productive(&handle, &scenario);
         world.bounce("bin1-0");
         let deadline = world.elapsed() + Duration::from_secs(8);
         while world.elapsed() < deadline {

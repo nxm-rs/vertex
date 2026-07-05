@@ -63,7 +63,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
         }
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
     let converged = run_until(
         &mut world,
@@ -91,9 +91,10 @@ fn partition_collapses_then_heals_by_rediscovery() {
         handle.routing_stats()
     );
 
-    // The severed peers stay known, so the evaluator re-dials them; every
-    // dial fails and arms backoff. With no reachable supply the collapse
-    // holds.
+    // The severed peers stay known, so the evaluator re-dials them whenever
+    // a backoff window expires; every attempt fails against the crashed
+    // hosts and re-arms a doubled window. With no reachable supply the
+    // collapse holds.
     let deadline = world.elapsed() + Duration::from_secs(120);
     while world.elapsed() < deadline {
         world
@@ -106,7 +107,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
     }
 
     // Heal: gossip a fresh population on the far side. Depth re-climbs from
-    // the new supply alone (the severed peers hold in dial backoff).
+    // the new supply alone (re-dials of the severed supply keep failing).
     gossip(&handle, &mut scenario, &heal);
     let healed = run_until(
         &mut world,

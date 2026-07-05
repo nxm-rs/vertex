@@ -54,7 +54,7 @@ fn handshake_failure_releases_the_reservation() {
     #[allow(clippy::expect_used)]
     let failer = scenario.peer("failer").expect("registered").overlay;
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
 
     // The dial reaches the failer's transport (the reservation is really
@@ -90,9 +90,11 @@ fn handshake_failure_releases_the_reservation() {
     );
     assert!(converged, "fixture never converged (seed={seed})");
 
-    // The failure never leaks into later rounds: the failer stays excluded
-    // under backoff, only the honest peers count, and no dialing or
-    // handshaking counter is left behind in any bin.
+    // The failure never leaks into later rounds: only the honest peers
+    // count, and no dialing or handshaking counter is left behind in any
+    // bin. Re-dial attempts after the backoff window expires abort against
+    // the connection the failed exchange left open, so the failer never
+    // re-enters any phase.
     let deadline = world.elapsed() + Duration::from_secs(120);
     while world.elapsed() < deadline {
         world
@@ -118,7 +120,7 @@ fn handshake_failure_releases_the_reservation() {
     }
     assert!(
         handle.peer_manager().peer_is_in_backoff(&failer),
-        "the failer stays excluded under backoff (seed={seed})"
+        "the failer's dial backoff stays armed: no handshake ever reset it (seed={seed})"
     );
     assert_eq!(handle.routing_stats().connected_peers_total, 11);
 }

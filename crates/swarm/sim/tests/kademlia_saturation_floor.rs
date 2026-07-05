@@ -57,7 +57,7 @@ fn saturation_floor_survives_hostile_taper() {
         names.push(name);
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
     let converged = run_until(
         &mut world,
@@ -85,9 +85,9 @@ fn saturation_floor_survives_hostile_taper() {
     }
 
     // A churned frontier peer is refilled toward the floor, not toward the
-    // raw taper target the hostile configuration asked for. The peer has
-    // served the node, so the bounce reads as churn, not a failing dial.
-    common::mark_productive(&handle, &scenario);
+    // raw taper target the hostile configuration asked for. If the bounce
+    // reads as an early disconnect, the armed backoff expires under virtual
+    // advance inside the refill window.
     world.bounce("bin0-0");
     let refilled = run_until(
         &mut world,
