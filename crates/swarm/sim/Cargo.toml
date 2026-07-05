@@ -18,11 +18,13 @@ alloy-signer-local.workspace = true
 futures.workspace = true
 libp2p = { workspace = true, features = ["plaintext"] }
 parking_lot.workspace = true
+rand.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 turmoil.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
+vertex-swarm-net-handshake.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-test-utils = { workspace = true, features = ["harness"] }
@@ -30,6 +32,5 @@ vertex-swarm-topology.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
-vertex-swarm-net-handshake.workspace = true
 vertex-swarm-node = { workspace = true, features = ["storer"] }
 vertex-tasks.workspace = true

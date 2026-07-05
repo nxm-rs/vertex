@@ -42,6 +42,7 @@ pub struct SimNetworkConfig {
     trusted_peers: Vec<Multiaddr>,
     nat_addrs: Vec<Multiaddr>,
     max_peers: usize,
+    idle_timeout: Duration,
     peer: SimPeerConfig,
     routing: vertex_swarm_topology::KademliaConfig,
 }
@@ -55,9 +56,19 @@ impl SimNetworkConfig {
             trusted_peers: Vec::new(),
             nat_addrs: Vec::new(),
             max_peers,
+            idle_timeout: Duration::from_secs(30),
             peer: SimPeerConfig,
             routing: vertex_swarm_topology::KademliaConfig::default(),
         }
+    }
+
+    /// Override the idle-connection timeout.
+    ///
+    /// Scenario runs hold otherwise-quiet connections across long virtual
+    /// horizons, so the timeout must outlive the scenario schedule.
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
     }
 }
 
@@ -88,7 +99,7 @@ impl vertex_swarm_api::SwarmNetworkConfig for SimNetworkConfig {
         self.max_peers
     }
     fn idle_timeout(&self) -> Duration {
-        Duration::from_secs(30)
+        self.idle_timeout
     }
     fn nat_addrs(&self) -> &[Multiaddr] {
         &self.nat_addrs
