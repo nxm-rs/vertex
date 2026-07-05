@@ -18,7 +18,7 @@
     reason = "conformance test over fixed-shape reference oracle fixtures"
 )]
 
-use alloy_primitives::{B256, hex};
+use alloy_primitives::B256;
 use serde::Deserialize;
 
 use vertex_swarm_redistribution::{
@@ -32,6 +32,7 @@ use nectar_primitives::{
 };
 
 use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
+use vertex_swarm_test_utils::vectors::{assert_bytes_eq_hex, hex_array, hex_vec};
 
 /// A deterministic synthetic stamp for fixture item `slot`, distinct per slot so
 /// the exact-stamp witness test can confirm each slot carries its own. The stamp
@@ -60,18 +61,18 @@ fn cac_transformed_address_matches_reference_vector() {
     }
 
     let chunk = DefaultContentChunk::new(content).unwrap();
-    assert_eq!(
-        hex::encode(chunk.address().as_slice()),
-        WANT_CHUNK_ADDR,
+    assert_bytes_eq_hex(
         "chunk address must match the reference vector",
+        chunk.address().as_slice(),
+        WANT_CHUNK_ADDR,
     );
 
     let any: DefaultAnyChunk = chunk.into();
     let tr = any.transformed_address(ANCHOR_CAC);
-    assert_eq!(
-        hex::encode(tr.as_slice()),
-        WANT_TRANSFORMED,
+    assert_bytes_eq_hex(
         "transformed address must match the reference vector",
+        tr.as_slice(),
+        WANT_TRANSFORMED,
     );
 }
 
@@ -129,7 +130,7 @@ fn load_oracle() -> Oracle {
 }
 
 fn h(s: &str) -> B256 {
-    B256::from_slice(&hex::decode(s.trim_start_matches("0x")).expect("hex"))
+    B256::from(hex_array::<32>(s))
 }
 
 fn sample_anchor(oracle: &Oracle) -> SampleAnchor {
@@ -143,7 +144,7 @@ fn claim_anchor(oracle: &Oracle) -> ClaimAnchor {
 /// Parse one oracle item's raw wire bytes into a typed [`AnyChunk`]. A `CAC` is
 /// `span || payload`; a `SOC` is `id || signature || span || payload`.
 fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
-    let bytes = hex::decode(&it.chunk_data).expect("chunk data hex");
+    let bytes = hex_vec(&it.chunk_data);
     if it.chunk_type == "SOC" {
         DefaultSingleOwnerChunk::try_from(bytes.as_slice())
             .expect("SOC chunk parses")
@@ -165,18 +166,20 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
         .enumerate()
         .map(|(slot, it)| {
             let chunk = parse_chunk(it);
-            assert_eq!(
-                hex::encode(chunk.address().as_slice()),
-                it.chunk_address.trim_start_matches("0x"),
+            assert_bytes_eq_hex(
                 "parsed chunk address must match the reference",
+                chunk.address().as_slice(),
+                &it.chunk_address,
             );
 
             let item = SampleItem::with_stamp(sample, chunk, fixture_stamp(slot));
-            assert_eq!(
-                hex::encode(item.transformed_address.as_slice()),
-                it.transformed_address.trim_start_matches("0x"),
-                "recomputed transformed address must match the reference for {}",
-                it.chunk_address,
+            assert_bytes_eq_hex(
+                format!(
+                    "recomputed transformed address must match the reference for {}",
+                    it.chunk_address,
+                ),
+                item.transformed_address.as_slice(),
+                &it.transformed_address,
             );
             item
         })
@@ -222,10 +225,10 @@ fn reserve_commitment_chunk_address_matches_reference() {
     hasher.update(&content);
     let addr = hasher.sum();
 
-    assert_eq!(
-        hex::encode(addr.as_slice()),
-        oracle.sample_chunk_address.trim_start_matches("0x"),
+    assert_bytes_eq_hex(
         "reserve-commitment (sample) chunk address must match the reference",
+        addr.as_slice(),
+        &oracle.sample_chunk_address,
     );
 }
 
@@ -403,10 +406,10 @@ fn assert_proof(
     label: &str,
 ) {
     // RC: proofSegments / proveSegment.
-    assert_eq!(
-        got.rc_proof.segment,
-        h(&want.prove_segment),
-        "{label}: RC prove segment",
+    assert_bytes_eq_hex(
+        format!("{label}: RC prove segment"),
+        got.rc_proof.segment.as_slice(),
+        &want.prove_segment,
     );
     assert_segments(
         &got.rc_proof.proof_segments,
@@ -416,10 +419,10 @@ fn assert_proof(
     );
 
     // OG (plain BMT): proofSegments2 / proveSegment2 / chunkSpan.
-    assert_eq!(
-        got.og_proof.segment,
-        h(&want.prove_segment2),
-        "{label}: OG prove segment",
+    assert_bytes_eq_hex(
+        format!("{label}: OG prove segment"),
+        got.og_proof.segment.as_slice(),
+        &want.prove_segment2,
     );
     assert_segments(
         &got.og_proof.proof_segments,
@@ -431,10 +434,10 @@ fn assert_proof(
 
     // TR (anchor-prefixed BMT): proofSegments3, proving the same segment content
     // as OG.
-    assert_eq!(
-        got.tr_proof.segment,
-        h(&want.prove_segment2),
-        "{label}: TR prove segment (same content as OG)",
+    assert_bytes_eq_hex(
+        format!("{label}: TR prove segment (same content as OG)"),
+        got.tr_proof.segment.as_slice(),
+        &want.prove_segment2,
     );
     assert_segments(
         &got.tr_proof.proof_segments,
@@ -451,7 +454,11 @@ fn assert_segments(got: &[B256], want: &[String], label: &str, which: &str) {
         "{label}: {which} proof segment count",
     );
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert_eq!(*g, h(w), "{label}: {which} proof segment {i}");
+        assert_bytes_eq_hex(
+            format!("{label}: {which} proof segment {i}"),
+            g.as_slice(),
+            w,
+        );
     }
 }
 

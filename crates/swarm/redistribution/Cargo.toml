@@ -36,6 +36,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 alloy-signer-local.workspace = true
 criterion.workspace = true
+vertex-swarm-test-utils.workspace = true
 
 [[bench]]
 name = "redistribution"

@@ -29,6 +29,7 @@ pub mod identity;
 pub mod peer;
 pub mod spec;
 pub mod topology;
+pub mod vectors;
 
 // Re-exports for convenience
 pub use identity::{MockIdentity, test_identity, test_identity_arc, test_identity_with_type};
@@ -38,6 +39,10 @@ pub use peer::{
 };
 pub use spec::{TEST_NETWORK_ID, test_spec, test_spec_isolated, test_spec_with_network_id};
 pub use topology::MockTopology;
+pub use vectors::{
+    Vector, assert_bytes_eq, assert_bytes_eq_hex, check_each, hex_array, hex_vec, push_uvarint,
+    uvarint,
+};
 
 // Re-export commonly used types for convenience
 pub use vertex_swarm_identity::Identity;

@@ -8732,6 +8732,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-chain",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]
@@ -9176,6 +9177,7 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
  "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]
@@ -9246,6 +9248,7 @@ dependencies = [
  "vertex-swarm-accounting-chequebook",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]
@@ -9344,6 +9347,7 @@ dependencies = [
  "vertex-swarm-identity",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]
@@ -9457,6 +9461,7 @@ dependencies = [
  "thiserror 2.0.18",
  "vertex-swarm-api",
  "vertex-swarm-postage",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]

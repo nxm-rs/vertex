@@ -46,6 +46,7 @@ rand.workspace = true
 postcard = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 vertex-swarm-identity.workspace = true
+vertex-swarm-test-utils.workspace = true
 
 [lints]
 workspace = true
