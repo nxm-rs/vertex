@@ -80,7 +80,7 @@ vertex-net-dnsaddr.workspace = true
 # `vertex-net-dnsaddr-doh` (DNS-over-HTTPS) with the embedded wss snapshot as
 # the fallback.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "570774ff4368b8401040825f5da9efda8211e929", default-features = false, features = [
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73", default-features = false, features = [
     "noise",
     "yamux",
     "macros",
