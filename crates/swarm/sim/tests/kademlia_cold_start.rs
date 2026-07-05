@@ -23,6 +23,8 @@ fn converges_from_cold_start() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     let sat = usize::from(DEFAULT_SATURATION_PEERS);
     let mut scenario = Scenario::new(&world, spec());
@@ -34,7 +36,7 @@ fn converges_from_cold_start() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             names.push(name);
         }
@@ -51,7 +53,7 @@ fn converges_from_cold_start() {
     );
     assert!(
         converged,
-        "honest population never converged to the anchored depth (seed={SEED}): {:?}",
+        "honest population never converged to the anchored depth (seed={seed}): {:?}",
         handle.routing_stats()
     );
 
@@ -64,5 +66,5 @@ fn converges_from_cold_start() {
     Invariants::new()
         .phase_counters_consistent()
         .saturation_floor(sat)
-        .assert(&stats, SEED);
+        .assert(&stats, seed);
 }

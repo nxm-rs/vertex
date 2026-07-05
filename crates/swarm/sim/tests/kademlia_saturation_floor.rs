@@ -28,12 +28,14 @@ fn saturation_floor_survives_hostile_taper() {
     // total_target 4 gives a raw taper of one to two peers per below-depth
     // bin; only the saturation floor lets the frontier form.
     let probe = launch_node(&mut world, KademliaConfig::default().with_total_target(4));
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     // Every balanced-bin peer shares sub-prefix slot 0, so a refill can only
     // come through the count-deficit path the floor governs, never through
     // the empty-slot diversity pass.
     let sat = usize::from(DEFAULT_SATURATION_PEERS);
-    let anchor = node_overlay(SEED);
+    let anchor = node_overlay(seed);
     let slot0 =
         |bin: u8| Some(Placement::new(anchor, Bin::new(bin).unwrap_or(Bin::MAX)).in_slot(0));
     let mut scenario = Scenario::new(&world, spec());
@@ -65,7 +67,7 @@ fn saturation_floor_survives_hostile_taper() {
     );
     assert!(
         converged,
-        "the saturation floor must let depth climb despite the hostile taper (seed={SEED}): {:?}",
+        "the saturation floor must let depth climb despite the hostile taper (seed={seed}): {:?}",
         handle.routing_stats()
     );
 
@@ -74,11 +76,11 @@ fn saturation_floor_survives_hostile_taper() {
         .phase_counters_consistent()
         .saturation_floor(sat);
     let stats = handle.routing_stats();
-    floor.assert(&stats, SEED);
+    floor.assert(&stats, seed);
     for bin in 0..2u8 {
         assert!(
             connected_in_bin(&stats, bin) >= sat,
-            "below-depth bin {bin} fell under saturation (seed={SEED}): {stats:?}"
+            "below-depth bin {bin} fell under saturation (seed={seed}): {stats:?}"
         );
     }
 
@@ -95,7 +97,7 @@ fn saturation_floor_survives_hostile_taper() {
     );
     assert!(
         refilled,
-        "the floored bin was never refilled after churn (seed={SEED}): {:?}",
+        "the floored bin was never refilled after churn (seed={seed}): {:?}",
         handle.routing_stats()
     );
     assert_eq!(
@@ -103,5 +105,5 @@ fn saturation_floor_survives_hostile_taper() {
         2,
         "depth holds through the churn"
     );
-    floor.assert(&handle.routing_stats(), SEED);
+    floor.assert(&handle.routing_stats(), seed);
 }

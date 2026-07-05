@@ -24,6 +24,8 @@ fn one_peer_flap_never_moves_depth() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     // Bins 0 and 1 sit exactly at saturation, so one bounced bin-1 peer dips
     // the bin exactly one peer below the frontier: the marginal deficit the
@@ -38,7 +40,7 @@ fn one_peer_flap_never_moves_depth() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             names.push(name);
         }
@@ -52,7 +54,7 @@ fn one_peer_flap_never_moves_depth() {
         Duration::from_secs(2),
         || handle.routing_stats().depth == 2,
     );
-    assert!(converged, "fixture never converged (seed={SEED})");
+    assert!(converged, "fixture never converged (seed={seed})");
 
     // Three flap cycles: bounce one frontier peer, hold the published depth
     // through the whole dip, confirm the peer is re-dialled. The peer has
@@ -68,7 +70,7 @@ fn one_peer_flap_never_moves_depth() {
             assert_eq!(
                 handle.routing_stats().depth,
                 2,
-                "a one-peer flap moved the published depth (cycle {cycle}, seed={SEED})"
+                "a one-peer flap moved the published depth (cycle {cycle}, seed={seed})"
             );
         }
         let recovered = run_until(
@@ -79,7 +81,7 @@ fn one_peer_flap_never_moves_depth() {
         );
         assert!(
             recovered,
-            "the flapped peer was never re-dialled (cycle {cycle}, seed={SEED}): {:?}",
+            "the flapped peer was never re-dialled (cycle {cycle}, seed={seed}): {:?}",
             handle.routing_stats()
         );
     }
