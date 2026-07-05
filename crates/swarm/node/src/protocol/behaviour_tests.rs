@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use alloy_primitives::{B256, Signature};
 use alloy_signer_local::PrivateKeySigner;
-use futures::StreamExt;
 use libp2p::{PeerId, Swarm};
 use nectar_postage::Stamp;
 use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};
@@ -23,7 +22,8 @@ use vertex_swarm_localstore::{ChunkStore, Clock};
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
 use vertex_swarm_test_utils::MockReserve;
 use vertex_swarm_test_utils::harness::{
-    HarnessNode, NodeContext, connect_and_activate, seeded_identity,
+    CommandPump, DrivableSwarm, HarnessNode, NodeContext, connect_and_activate, drive_until_signal,
+    seeded_identity,
 };
 
 use crate::ChunkTransferError;
@@ -115,16 +115,8 @@ async fn drive_until_retrieved(
     server: &mut Swarm<ClientBehaviour>,
     mut rx: oneshot::Receiver<Result<RetrievalResult, ChunkTransferError>>,
 ) -> Result<RetrievalResult, ChunkTransferError> {
-    let drive = async {
-        loop {
-            tokio::select! {
-                _ = client.select_next_some() => {}
-                _ = server.select_next_some() => {}
-                res = &mut rx => return res.expect("sender not dropped"),
-            }
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(10), drive)
+    let mut drivables: [&mut dyn DrivableSwarm; 2] = [client, server];
+    drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
         .await
         .expect("retrieval resolved within timeout")
 }
@@ -327,16 +319,8 @@ async fn inbound_pushsync_resets_with_stub_forwarder() {
             },
         });
 
-    let drive = async {
-        loop {
-            tokio::select! {
-                _ = client.swarm.select_next_some() => {}
-                _ = server.swarm.select_next_some() => {}
-                res = &mut rx => return res.expect("sender not dropped"),
-            }
-        }
-    };
-    let result = tokio::time::timeout(Duration::from_secs(10), drive)
+    let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut client, &mut server];
+    let result = drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
         .await
         .expect("push resolved within timeout");
     assert!(
@@ -441,16 +425,8 @@ async fn responsible_storer_stores_and_signs_a_receipt() {
             },
         });
 
-    let drive = async {
-        loop {
-            tokio::select! {
-                _ = pusher.swarm.select_next_some() => {}
-                _ = storer.swarm.select_next_some() => {}
-                res = &mut rx => return res.expect("sender not dropped"),
-            }
-        }
-    };
-    let result = tokio::time::timeout(Duration::from_secs(10), drive)
+    let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut pusher, &mut storer];
+    let result = drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
         .await
         .expect("push resolved within timeout");
 
@@ -504,16 +480,8 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
             },
         });
 
-    let drive = async {
-        loop {
-            tokio::select! {
-                _ = pusher.swarm.select_next_some() => {}
-                _ = storer.swarm.select_next_some() => {}
-                res = &mut rx => return res.expect("sender not dropped"),
-            }
-        }
-    };
-    let result = tokio::time::timeout(Duration::from_secs(10), drive)
+    let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut pusher, &mut storer];
+    let result = drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
         .await
         .expect("push resolved within timeout");
 
@@ -678,18 +646,11 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
 
     // B's forwarder commands are pumped back into B.
     let result = {
-        let drive = async {
-            loop {
-                tokio::select! {
-                    _ = a.swarm.select_next_some() => {}
-                    _ = b.swarm.select_next_some() => {}
-                    _ = c.swarm.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
-                    res = &mut rx => return res.expect("sender not dropped"),
-                }
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), drive)
+        let mut b_pump = CommandPump::new(&mut b.swarm, &mut b_commands, |behaviour, command| {
+            behaviour.on_command(command);
+        });
+        let mut drivables: [&mut dyn DrivableSwarm; 3] = [&mut a, &mut b_pump, &mut c];
+        drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
             .await
             .expect("retrieval resolved within timeout")
     };
@@ -777,18 +738,11 @@ async fn relay_does_not_cache_a_forwarded_soc() {
     });
 
     let result = {
-        let drive = async {
-            loop {
-                tokio::select! {
-                    _ = a.swarm.select_next_some() => {}
-                    _ = b.swarm.select_next_some() => {}
-                    _ = c.swarm.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
-                    res = &mut rx => return res.expect("sender not dropped"),
-                }
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), drive)
+        let mut b_pump = CommandPump::new(&mut b.swarm, &mut b_commands, |behaviour, command| {
+            behaviour.on_command(command);
+        });
+        let mut drivables: [&mut dyn DrivableSwarm; 3] = [&mut a, &mut b_pump, &mut c];
+        drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
             .await
             .expect("retrieval resolved within timeout")
     };
@@ -848,17 +802,11 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
     });
 
     let result = {
-        let drive = async {
-            loop {
-                tokio::select! {
-                    _ = a.swarm.select_next_some() => {}
-                    _ = b.swarm.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
-                    res = &mut rx => return res.expect("sender not dropped"),
-                }
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), drive)
+        let mut b_pump = CommandPump::new(&mut b.swarm, &mut b_commands, |behaviour, command| {
+            behaviour.on_command(command);
+        });
+        let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut a, &mut b_pump];
+        drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
             .await
             .expect("retrieval resolved within timeout")
     };
@@ -963,29 +911,22 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
     });
 
     let result = {
-        let drive = async {
-            loop {
-                tokio::select! {
-                    _ = a.swarm.select_next_some() => {}
-                    _ = b.swarm.select_next_some() => {}
-                    _ = c.swarm.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
-                    // C is the storer: answer its outbound push with the
-                    // signed receipt instead of forwarding on.
-                    Some(cmd) = c_commands.recv() => {
-                        if let ClientCommand::Peer {
-                            command: PeerCommand::PushChunk { response, .. },
-                            ..
-                        } = cmd
-                        {
-                            let _ = response.send(Ok(receipt_for_c.clone()));
-                        }
-                    }
-                    res = &mut rx => return res.expect("sender not dropped"),
-                }
+        let mut b_pump = CommandPump::new(&mut b.swarm, &mut b_commands, |behaviour, command| {
+            behaviour.on_command(command);
+        });
+        // C is the storer: answer its outbound push with the signed receipt
+        // instead of forwarding on.
+        let mut c_pump = CommandPump::new(&mut c.swarm, &mut c_commands, |_behaviour, command| {
+            if let ClientCommand::Peer {
+                command: PeerCommand::PushChunk { response, .. },
+                ..
+            } = command
+            {
+                let _ = response.send(Ok(receipt_for_c.clone()));
             }
-        };
-        tokio::time::timeout(Duration::from_secs(10), drive)
+        });
+        let mut drivables: [&mut dyn DrivableSwarm; 3] = [&mut a, &mut b_pump, &mut c_pump];
+        drive_until_signal(&mut drivables, Duration::from_secs(10), &mut rx)
             .await
             .expect("push resolved within timeout")
     };
