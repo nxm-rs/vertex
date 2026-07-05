@@ -63,8 +63,12 @@ fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Option<SocketAddr> {
         Protocol::Ip6(ip) => std::net::IpAddr::V6(ip),
         _ => return None,
     };
-    match (iter.next()?, iter.next()) {
-        (Protocol::Tcp(port), None) => Some(SocketAddr::new(ip, port)),
+    // A trailing /p2p component is tolerated, matching the production TCP
+    // transport, so bootnode-form multiaddrs dial unchanged.
+    match (iter.next()?, iter.next(), iter.next()) {
+        (Protocol::Tcp(port), None, None) | (Protocol::Tcp(port), Some(Protocol::P2p(_)), None) => {
+            Some(SocketAddr::new(ip, port))
+        }
         _ => None,
     }
 }
