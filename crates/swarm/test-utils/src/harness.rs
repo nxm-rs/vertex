@@ -3,8 +3,8 @@
 //! Behaviour tests re-roll the same plumbing: an ephemeral swarm, a memory
 //! listener made external, a connect, then a hand-marked active peer in the
 //! connection registry the behaviour reads through. This module folds that into
-//! seeded identities, a first-class [`connect_and_activate`], `start_paused`
-//! aware drive helpers, and panic-safe spawning.
+//! seeded identities, a first-class [`connect_and_activate`], and `start_paused`
+//! aware drive helpers.
 //!
 //! Transport is an implementation detail: nodes run on the in-process memory
 //! transport, but no test-facing signature names it, so a later deterministic
@@ -22,7 +22,6 @@ use libp2p_swarm_test::SwarmExt;
 use vertex_net_peer_registry::PeerRegistry;
 use vertex_swarm_api::SwarmNodeType;
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_tasks::{TaskExecutor, TaskHandle};
 
 use crate::MockIdentity;
 use crate::peer::{test_keypair, test_overlay};
@@ -157,14 +156,20 @@ where
 }
 
 /// Connection ids handed to the registry must be distinct across activations so
-/// its per-connection indices stay unique.
+/// its per-connection indices stay unique. Seeded far above libp2p's own
+/// allocator (which counts up from 1 in the same process) so a synthetic id can
+/// never collide with a live connection's.
 fn next_connection_id() -> ConnectionId {
-    static N: AtomicUsize = AtomicUsize::new(1);
+    static N: AtomicUsize = AtomicUsize::new(usize::MAX >> 1);
     ConnectionId::new_unchecked(N.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Mark `peer`/`overlay` active in `registry`, the transition topology performs
 /// at handshake completion (an inbound connection promoted to a known overlay).
+///
+/// The entry is recorded as inbound under a synthetic [`ConnectionId`] that
+/// never matches the live connection, so tests must not read direction or
+/// per-connection identity back out of the harness registry.
 fn activate_in_registry(registry: &IdentityRegistry, peer: PeerId, overlay: OverlayAddress) {
     let conn = next_connection_id();
     registry.connected_inbound(peer, conn);
@@ -201,6 +206,10 @@ where
 /// `activate` on each behaviour so one gated on activation goes live. `activate`
 /// receives the behaviour and the remote peer's identity; pass a no-op for a
 /// behaviour with no activation step.
+///
+/// Both registry entries are recorded as inbound under synthetic connection ids
+/// that never match the live connection: the registry resolves overlays, it
+/// does not mirror direction or per-connection identity.
 pub async fn connect_and_activate<B, A>(a: &mut HarnessNode<B>, b: &mut HarnessNode<B>, activate: A)
 where
     B: NetworkBehaviour + Send,
@@ -250,6 +259,10 @@ pub async fn connect_and_activate_hetero<B1, B2, A1, A2>(
 /// waiting; under a live clock it bounds wall time. The predicate observes both
 /// swarms after every event, so callers assert on accumulated state rather than
 /// counting events.
+///
+/// Under `start_paused` always drive through these helpers: the
+/// `libp2p_swarm_test` drive helpers run their deadline on a wall-clock timer
+/// and burn the full real duration on a paused runtime.
 pub async fn drive_until<B1, B2, P>(
     a: &mut HarnessNode<B1>,
     b: &mut HarnessNode<B2>,
@@ -288,19 +301,6 @@ where
     B2::ToSwarm: std::fmt::Debug,
 {
     drive_until(a, b, duration, |_, _| false).await;
-}
-
-/// Spawn a background task on the current [`TaskExecutor`] as critical, so a
-/// panic notifies the [`TaskManager`](vertex_tasks::TaskManager) instead of
-/// vanishing silently.
-///
-/// Requires a task executor to be current (install one with
-/// [`TaskManager::current`](vertex_tasks::TaskManager::current)).
-pub fn spawn<F>(name: &'static str, fut: F) -> TaskHandle
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    TaskExecutor::current().spawn_critical(name, fut)
 }
 
 #[cfg(test)]
