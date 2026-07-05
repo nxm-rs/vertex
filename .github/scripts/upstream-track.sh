@@ -102,6 +102,8 @@ Detail:
 ${detail}
 \`\`\`
 
+Recovery runbook: if the failing stage is the rebase and the conflict sits in the mechanical timer-sweep commit (trailer \`Regenerate: scripts/retimer.sh\`), do NOT hand-merge it. Drop that commit, rebase the remaining series, re-run \`scripts/retimer.sh\` in the fork checkout, recommit the sweep with the same trailer, and re-verify. Push the result to a candidate branch for review; never force-push the pinned branch without sign-off. Hand-merge only conflicts in the hand-written commits (the timer crate, the swarm reroll, the websocket-websys and swarm-test patches).
+
 This issue is maintained automatically by the \`upstream-track\` workflow and will be closed when the series verifies cleanly again.
 EOF
 )

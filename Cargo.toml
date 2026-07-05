@@ -311,7 +311,7 @@ opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_u
 # WebSocket `bufferedAmount` draining to zero, which stalled the wasm client mid
 # handshake and tore the connection down with `BrokenPipe`. Revisit when the fix is
 # upstreamed and libp2p 0.57 is released.
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73", features = [
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb", features = [
     "tokio",
     "noise",
     "tcp",
@@ -328,13 +328,13 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
-libp2p-swarm = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73" }
-libp2p-swarm-test = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73" }
+libp2p-swarm = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
+libp2p-swarm-test = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
 # Browser websocket transport for the wasm client. Dials the bee AutoTLS
 # `/tls/sni/<host>/ws` form; the browser performs TLS and SNI natively. Pinned to
 # the nxm-rs fork for the `poll_flush` browser WebSocket flush fix (see the `libp2p`
 # entry above).
-libp2p-websocket-websys = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73" }
+libp2p-websocket-websys = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
 quickcheck = "1.0.3"
 pb-rs = "0.10"
 walkdir = "2.5.0"

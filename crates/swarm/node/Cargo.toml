@@ -119,7 +119,7 @@ vertex-swarm-storer-behaviour = { workspace = true, optional = true }
 vertex-swarm-puller = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "0994625afa6b81e49456a8f740db4725b347ea73", default-features = false, features = [
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb", default-features = false, features = [
     "noise",
     "yamux",
     "macros",
