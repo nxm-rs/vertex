@@ -174,7 +174,7 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
 
             let item = SampleItem::with_stamp(sample, chunk, fixture_stamp(slot));
             assert_bytes_eq_hex(
-                &format!(
+                format!(
                     "recomputed transformed address must match the reference for {}",
                     it.chunk_address,
                 ),
@@ -407,7 +407,7 @@ fn assert_proof(
 ) {
     // RC: proofSegments / proveSegment.
     assert_bytes_eq_hex(
-        &format!("{label}: RC prove segment"),
+        format!("{label}: RC prove segment"),
         got.rc_proof.segment.as_slice(),
         &want.prove_segment,
     );
@@ -420,7 +420,7 @@ fn assert_proof(
 
     // OG (plain BMT): proofSegments2 / proveSegment2 / chunkSpan.
     assert_bytes_eq_hex(
-        &format!("{label}: OG prove segment"),
+        format!("{label}: OG prove segment"),
         got.og_proof.segment.as_slice(),
         &want.prove_segment2,
     );
@@ -435,7 +435,7 @@ fn assert_proof(
     // TR (anchor-prefixed BMT): proofSegments3, proving the same segment content
     // as OG.
     assert_bytes_eq_hex(
-        &format!("{label}: TR prove segment (same content as OG)"),
+        format!("{label}: TR prove segment (same content as OG)"),
         got.tr_proof.segment.as_slice(),
         &want.prove_segment2,
     );
@@ -455,7 +455,7 @@ fn assert_segments(got: &[B256], want: &[String], label: &str, which: &str) {
     );
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         assert_bytes_eq_hex(
-            &format!("{label}: {which} proof segment {i}"),
+            format!("{label}: {which} proof segment {i}"),
             g.as_slice(),
             w,
         );
