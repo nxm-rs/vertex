@@ -46,6 +46,7 @@ nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-postage = { workspace = true, features = ["arbitrary"] }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
+vertex-swarm-test-utils.workspace = true
 
 [lints]
 workspace = true
