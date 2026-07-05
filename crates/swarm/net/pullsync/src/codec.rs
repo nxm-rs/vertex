@@ -406,9 +406,11 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
+    use arbitrary::Unstructured;
+    use nectar_postage::generators::signed_stamped_chunk;
     use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
     use vertex_net_codec::prop_assert_proto_roundtrip;
-    use vertex_swarm_test_utils::strategies;
 
     use super::*;
 
@@ -418,18 +420,13 @@ mod proptests {
     }
 
     fn get() -> impl Strategy<Value = Get> {
-        (strategies::bin(), any::<u64>()).prop_map(|(bin, start)| Get::new(bin, start))
+        (arb::<Bin>(), any::<u64>()).prop_map(|(bin, start)| Get::new(bin, start))
     }
 
     fn chunk_descriptor() -> impl Strategy<Value = ChunkDescriptor> {
-        (
-            strategies::chunk_address(),
-            strategies::batch_id(),
-            strategies::b256(),
+        (arb::<ChunkAddress>(), any::<B256>(), any::<B256>()).prop_map(
+            |(address, batch_id, stamp_hash)| ChunkDescriptor::new(address, batch_id, stamp_hash),
         )
-            .prop_map(|(address, batch_id, stamp_hash)| {
-                ChunkDescriptor::new(address, batch_id, stamp_hash)
-            })
     }
 
     fn offer() -> impl Strategy<Value = Offer> {
@@ -447,8 +444,17 @@ mod proptests {
             .prop_map(|bytes| Want::new(BitVector::from_wire_bytes(bytes)))
     }
 
+    // A valid-by-construction stamped chunk: the stamp verifies against the
+    // chunk address and batch owner, drawn through nectar's generator.
     fn delivery() -> impl Strategy<Value = Delivery> {
-        strategies::stamped_chunk().prop_map(Delivery::new)
+        prop::collection::vec(any::<u8>(), 128..2048).prop_filter_map(
+            "a byte pool the generator can draw a signed stamped chunk from",
+            |bytes| {
+                let mut u = Unstructured::new(&bytes);
+                let (chunk, _batch) = signed_stamped_chunk(&mut u).ok()?;
+                Some(Delivery::new(chunk))
+            },
+        )
     }
 
     proptest! {

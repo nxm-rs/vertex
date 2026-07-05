@@ -21,9 +21,6 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 nectar-primitives.workspace = true
 
-# Postage (for stamp strategies, gated by the `proptest` feature)
-nectar-postage = { workspace = true, optional = true }
-
 # Crypto/signing
 alloy-primitives.workspace = true
 alloy-signer.workspace = true
@@ -38,6 +35,7 @@ parking_lot.workspace = true
 
 # Property-testing strategies (gated by the `proptest` feature)
 proptest = { workspace = true, optional = true }
+proptest-arbitrary-interop = { workspace = true, optional = true }
 
 # Cluster harness (gated by the `cluster` feature)
 vertex-swarm-node = { workspace = true, optional = true }
@@ -50,7 +48,11 @@ eyre = { workspace = true, optional = true }
 default = []
 # Proptest value strategies for core wire types. Dev-only: enable it from a
 # codec crate's dev-dependency on this crate. Never turned on in a shipped cone.
-proptest = ["dep:proptest", "dep:nectar-postage"]
+proptest = [
+    "dep:proptest",
+    "dep:proptest-arbitrary-interop",
+    "nectar-primitives/arbitrary",
+]
 # In-process multi-node cluster harness. Pulls in `vertex-swarm-node` and a
 # tokio runtime, so it's gated to keep crate-local tests of leaf primitives
 # fast and dependency-light.
