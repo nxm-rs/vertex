@@ -23,9 +23,10 @@ pub enum TransportRequirement {
     /// TLS websocket: `/tls/ws` (with or without `/sni`) or the legacy
     /// `/wss` form.
     SecureWebsocket,
-    /// In-process memory transport (`/memory/<port>`). Only ever produced by
-    /// the channel-based transport an integration harness injects; a live peer
-    /// never advertises one.
+    /// In-process memory transport (`/memory/<port>`). Dialable only by a node
+    /// that has a channel-based memory transport injected; the default TCP and
+    /// websocket stacks carry none, so a self-signed record advertising one is
+    /// rejected pre-dial rather than admitted for a dial that always fails.
     Memory,
     /// Anything else (QUIC, relay-only); dialable by no transport stack vertex
     /// currently assembles.
@@ -93,17 +94,16 @@ impl TransportCapability {
 
     /// Whether this stack can dial `addr` at the transport layer.
     ///
-    /// A `/memory/<port>` address is admitted by either stack so a hermetic
-    /// cluster can dial over an injected memory transport. Peer records are
-    /// self-signed, so a live peer can gossip one too; on a stack with no
-    /// memory transport such a dial fails immediately with an unsupported
-    /// multiaddr, bounding the cost to a wasted dial attempt.
+    /// Covers only the statically assembled suites (TCP or secure websockets).
+    /// A `/memory/<port>` address is never dialable through the platform stack;
+    /// memory admission is a property of the combined
+    /// [`DialCapability::allow_memory`] bit, set only when an in-process memory
+    /// transport is injected.
     pub fn can_dial(&self, addr: &Multiaddr) -> bool {
         matches!(
             (self, TransportRequirement::of(addr)),
             (Self::Tcp, TransportRequirement::Tcp)
                 | (Self::SecureWebsocket, TransportRequirement::SecureWebsocket)
-                | (_, TransportRequirement::Memory)
         )
     }
 }
@@ -120,13 +120,29 @@ pub struct DialCapability {
     pub ip: crate::IpCapability,
     /// Transport suites the assembled stack can dial.
     pub transport: TransportCapability,
+    /// Admit `/memory/<port>` multiaddrs. Off by default: the platform TCP and
+    /// websocket stacks carry no memory transport, so a gossiped memory-only
+    /// record dies at intake. Set only when an in-process memory transport is
+    /// injected (the integration harness), so its channel addresses dial.
+    pub allow_memory: bool,
 }
 
 impl DialCapability {
-    /// Whether `addr` is dialable: the transport stack supports it and
+    /// Whether `addr` is dialable: the transport half supports it and
     /// [`crate::is_dialable`] passes for the IP half.
     pub fn can_dial(&self, addr: &Multiaddr) -> bool {
-        self.transport.can_dial(addr) && crate::is_dialable(addr, self.ip)
+        self.transport_can_dial(addr) && crate::is_dialable(addr, self.ip)
+    }
+
+    /// Whether the assembled transport stack can dial `addr`, ignoring the IP
+    /// half. Memory addresses are admitted only when [`Self::allow_memory`] is
+    /// set. Callers that must apply the transport filter before the IP
+    /// capability is known use this directly.
+    pub fn transport_can_dial(&self, addr: &Multiaddr) -> bool {
+        if matches!(TransportRequirement::of(addr), TransportRequirement::Memory) {
+            return self.allow_memory;
+        }
+        self.transport.can_dial(addr)
     }
 
     /// Whether at least one of `addrs` is dialable.
@@ -207,11 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn memory_is_dialable_by_either_stack() {
+    fn memory_classification_survives_p2p_suffix() {
         let mem = addr("/memory/1234");
         assert_eq!(TransportRequirement::of(&mem), TransportRequirement::Memory);
-        assert!(TransportCapability::Tcp.can_dial(&mem));
-        assert!(TransportCapability::SecureWebsocket.can_dial(&mem));
+        // The platform transport half never admits memory on its own.
+        assert!(!TransportCapability::Tcp.can_dial(&mem));
+        assert!(!TransportCapability::SecureWebsocket.can_dial(&mem));
 
         // A /p2p/ suffix does not change the classification.
         let with_peer = addr("/memory/1234/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg");
@@ -219,14 +236,39 @@ mod tests {
             TransportRequirement::of(&with_peer),
             TransportRequirement::Memory
         );
+    }
 
-        // The combined filter admits it even when the IP half is unknown, since
-        // a memory address carries no IP to reach.
+    #[test]
+    fn default_capability_rejects_memory() {
+        // Without the memory bit a production node drops a memory address, even
+        // one carrying no IP, so a gossiped memory-only record dies at intake.
         let cap = DialCapability {
             ip: IpCapability::None,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
+        assert!(!cap.can_dial(&addr("/memory/1234")));
+    }
+
+    #[test]
+    fn memory_bit_admits_memory_regardless_of_ip() {
+        // With the bit set an injected memory transport dials the channel
+        // address; a memory address carries no IP to reach, so the IP half
+        // never blocks it.
+        let cap = DialCapability {
+            ip: IpCapability::None,
+            transport: TransportCapability::Tcp,
+            allow_memory: true,
+        };
+        let mem = addr("/memory/1234");
         assert!(cap.can_dial(&mem));
+        assert!(cap.transport_can_dial(&mem));
+
+        // The bit does not widen the platform transport suite: a TCP stack
+        // still rejects a websocket-only address.
+        assert!(!cap.can_dial(&addr(
+            "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws"
+        )));
     }
 
     #[test]
@@ -235,6 +277,7 @@ mod tests {
         let browser = DialCapability {
             ip: IpCapability::Dual,
             transport: TransportCapability::SecureWebsocket,
+            allow_memory: false,
         };
         let wss = addr("/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws");
         let tcp = addr("/ip4/8.8.8.8/tcp/1634");
@@ -247,6 +290,7 @@ mod tests {
         let native_v4 = DialCapability {
             ip: IpCapability::V4Only,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
         assert!(native_v4.can_dial(&tcp));
         assert!(!native_v4.can_dial(&addr("/ip6/2001:db8::1/tcp/1634")));
@@ -258,6 +302,7 @@ mod tests {
         let cap = DialCapability {
             ip: IpCapability::None,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
     }

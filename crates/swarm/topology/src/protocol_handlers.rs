@@ -482,7 +482,7 @@ fn record_dialable(
     } else {
         peer.multiaddrs()
             .iter()
-            .any(|addr| capability.transport.can_dial(addr))
+            .any(|addr| capability.transport_can_dial(addr))
     }
 }
 
@@ -534,6 +534,48 @@ mod tests {
 
     const TCP: &str = "/ip4/8.8.8.8/tcp/1634";
     const WSS: &str = "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws";
+    const MEMORY: &str = "/memory/1234";
+
+    #[test]
+    fn default_node_drops_memory_only_gossip_record() {
+        // A production node (default TCP stack, no injected memory transport)
+        // never admits a self-signed memory-only record: it is filtered here at
+        // hive intake, so it never reaches the dialer. Both the known-IP and
+        // unknown-IP branches reject it.
+        let known = DialCapability {
+            ip: IpCapability::Dual,
+            transport: TransportCapability::Tcp,
+            allow_memory: false,
+        };
+        assert!(!record_dialable(&record_with_addrs(&[MEMORY]), known));
+
+        let unknown = DialCapability {
+            ip: IpCapability::None,
+            transport: TransportCapability::Tcp,
+            allow_memory: false,
+        };
+        assert!(!record_dialable(&record_with_addrs(&[MEMORY]), unknown));
+    }
+
+    #[test]
+    fn injected_memory_transport_admits_memory_gossip_record() {
+        // A cluster node with a memory transport injected admits the gossiped
+        // memory address so peers learned via hive dial each other. Its memory
+        // listener leaves the IP half unknown, so exercise that branch too.
+        let unknown = DialCapability {
+            ip: IpCapability::None,
+            transport: TransportCapability::Tcp,
+            allow_memory: true,
+        };
+        assert!(record_dialable(&record_with_addrs(&[MEMORY]), unknown));
+
+        let known = DialCapability {
+            ip: IpCapability::Dual,
+            transport: TransportCapability::Tcp,
+            allow_memory: true,
+        };
+        assert!(record_dialable(&record_with_addrs(&[MEMORY]), known));
+    }
 
     #[test]
     fn unexpected_exchange_is_a_peer_fault() {
@@ -550,6 +592,7 @@ mod tests {
         let capability = DialCapability {
             ip: IpCapability::Dual,
             transport: TransportCapability::SecureWebsocket,
+            allow_memory: false,
         };
         assert!(!record_dialable(&record_with_addrs(&[TCP]), capability));
         assert!(record_dialable(&record_with_addrs(&[WSS]), capability));
@@ -561,6 +604,7 @@ mod tests {
         let capability = DialCapability {
             ip: IpCapability::Dual,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
         assert!(record_dialable(&record_with_addrs(&[TCP]), capability));
         assert!(!record_dialable(&record_with_addrs(&[WSS]), capability));
@@ -575,6 +619,7 @@ mod tests {
         let capability = DialCapability {
             ip: IpCapability::None,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
         assert!(record_dialable(&record_with_addrs(&[TCP]), capability));
         assert!(!record_dialable(&record_with_addrs(&[WSS]), capability));
@@ -585,6 +630,7 @@ mod tests {
         let capability = DialCapability {
             ip: IpCapability::V4Only,
             transport: TransportCapability::Tcp,
+            allow_memory: false,
         };
         let v6_only = record_with_addrs(&["/ip6/2001:db8::1/tcp/1634"]);
         assert!(!record_dialable(&v6_only, capability));

@@ -61,6 +61,9 @@ pub struct TopologyBehaviourBuilder<I: SwarmIdentity + Clone> {
     /// No listen addresses configured: the node is dial-only, so its IP
     /// capability is pinned instead of listener-derived.
     dial_only: bool,
+    /// Admit `/memory/<port>` multiaddrs in the dial filter. Set only when the
+    /// node builder injects an in-process memory transport.
+    allow_memory: bool,
     trust_local_peers: bool,
     scoring_config: SwarmScoringConfig,
     max_per_bin: usize,
@@ -85,6 +88,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             trusted_peers: network_config.trusted_peers().to_vec(),
             nat_addrs: network_config.nat_addrs().to_vec(),
             dial_only: network_config.listen_addrs().is_empty(),
+            allow_memory: false,
             trust_local_peers: network_config.trust_local_peers(),
             scoring_config: SwarmScoringConfig::builder()
                 .ban_threshold(peer_config.ban_threshold())
@@ -99,6 +103,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
     /// Set the topology configuration (kademlia, dial cadence, save interval).
     pub fn with_config(mut self, config: TopologyConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Admit `/memory/<port>` multiaddrs in this node's dial filter.
+    ///
+    /// The node builder sets this only when an in-process memory transport is
+    /// injected. Left off, the node rejects memory addresses pre-dial, so a
+    /// gossiped memory-only record never enters the known table.
+    pub fn with_memory_dialing(mut self, allow: bool) -> Self {
+        self.allow_memory = allow;
         self
     }
 
@@ -177,11 +191,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         // filter would reject every ip4/dns4 address. Pin it to dual-stack
         // instead: an outbound-only node dials whatever its host stack
         // routes (the browser target applies the same pin globally).
-        let local_capabilities = Arc::new(if self.dial_only {
-            LocalCapabilities::dial_only()
-        } else {
-            LocalCapabilities::new()
-        });
+        let local_capabilities = Arc::new(
+            if self.dial_only {
+                LocalCapabilities::dial_only()
+            } else {
+                LocalCapabilities::new()
+            }
+            .with_memory_dialing(self.allow_memory),
+        );
 
         // LocalAddressManager handles NAT address advertisement. Peer-observed
         // addresses never enter it: their ports are connection-specific NAT

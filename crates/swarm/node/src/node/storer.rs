@@ -679,6 +679,9 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             .pullsync_storage
             .ok_or_else(|| eyre::eyre!("storer node requires a pullsync reserve snapshot"))?;
 
+        // An injected transport (the integration harness supplies a memory
+        // transport) admits `/memory` dials; the default stack does not.
+        let allow_memory = self.transport.is_some();
         let topology_config =
             TopologyConfig::new().with_kademlia(self.kademlia_config.unwrap_or_default());
         let infra = BuiltInfrastructure::from_config(
@@ -686,6 +689,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             network_config,
             topology_config,
             peer_store,
+            allow_memory,
         )?;
 
         let store: Arc<dyn SwarmLocalStore> = self.store.unwrap_or_else(|| {

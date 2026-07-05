@@ -527,6 +527,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
     {
         info!("Initializing client P2P network...");
 
+        // An injected transport (the integration harness supplies a memory
+        // transport) admits `/memory` dials; the default stack does not.
+        let allow_memory = self.transport.is_some();
         let infra = match self.infra {
             Some(infra) => infra,
             None => {
@@ -537,6 +540,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
                     network_config,
                     topology_config,
                     peer_store,
+                    allow_memory,
                 )?
             }
         };
