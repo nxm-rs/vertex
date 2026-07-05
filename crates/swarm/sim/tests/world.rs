@@ -141,6 +141,69 @@ fn partition_blocks_and_repair_heals() {
     );
 }
 
+/// Virtual completion time of one dial-and-handshake under a latency range.
+fn handshake_completion_time(min: Duration, max: Duration) -> Duration {
+    let mut world = SimWorld::builder()
+        .fixed_seed(11)
+        .duration(Duration::from_secs(120))
+        .latency(min, max)
+        .build();
+    world.host("server", serve);
+    world.client("dialer", |ctx| async move {
+        let mut traced = build_traced(&ctx);
+        traced
+            .swarm_mut()
+            .dial(ctx.lookup_multiaddr("server", PORT))?;
+        if !traced
+            .drive_until(Duration::from_secs(60), is_completed)
+            .await
+        {
+            return Err("handshake did not complete".into());
+        }
+        Ok(())
+    });
+    world.run();
+    world.elapsed()
+}
+
+/// The latency control reaches the schedule: the same seeded world finishes
+/// its handshake later under a slower link.
+#[test]
+fn latency_shifts_the_virtual_completion_time() {
+    let fast = handshake_completion_time(Duration::from_millis(1), Duration::from_millis(2));
+    let slow = handshake_completion_time(Duration::from_millis(400), Duration::from_millis(500));
+    assert!(
+        slow > fast + Duration::from_millis(500),
+        "latency range had no effect: fast={fast:?} slow={slow:?}"
+    );
+}
+
+/// The fail_rate control reaches the schedule: dropping every message blocks
+/// the handshake entirely.
+#[test]
+fn full_fail_rate_blocks_the_handshake() {
+    let mut world = SimWorld::builder()
+        .fixed_seed(7)
+        .duration(Duration::from_secs(60))
+        .fail_rate(1.0)
+        .build();
+    world.host("server", serve);
+    world.client("dialer", |ctx| async move {
+        let mut traced = build_traced(&ctx);
+        traced
+            .swarm_mut()
+            .dial(ctx.lookup_multiaddr("server", PORT))?;
+        if traced
+            .drive_until(Duration::from_secs(30), is_completed)
+            .await
+        {
+            return Err("handshake completed with every message dropped".into());
+        }
+        Ok(())
+    });
+    world.run();
+}
+
 /// A bounced host restarts with the same derived identity.
 #[test]
 fn bounce_preserves_host_identity() {
