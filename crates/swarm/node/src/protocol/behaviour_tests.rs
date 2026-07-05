@@ -129,7 +129,7 @@ async fn drive_until_retrieved(
         .expect("retrieval resolved within timeout")
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn serves_a_content_chunk_from_the_cache() {
     let chunk = content_chunk(b"served from cache");
     let address = *chunk.address();
@@ -167,7 +167,7 @@ async fn serves_a_content_chunk_from_the_cache() {
     assert_eq!(delivered.chunk, *chunk.chunk());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn serves_a_fresh_soc_from_the_cache() {
     // SOC stamped at 900ns, served at 1000ns under a 500ns TTL: still fresh.
     let chunk = soc_chunk(b"feed v1", 900);
@@ -209,7 +209,7 @@ async fn serves_a_fresh_soc_from_the_cache() {
     assert_eq!(delivered.chunk, *chunk.chunk());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn expired_soc_is_not_served_and_resets() {
     // SOC stamped at 900ns, served at 2000ns under a 500ns TTL: expired, so
     // the cache misses and the inbound retrieval resets rather than serving a
@@ -254,7 +254,7 @@ async fn expired_soc_is_not_served_and_resets() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cache_miss_resets_with_stub_forwarder() {
     // Empty cache plus stub forwarder: the inbound retrieval can neither
     // serve nor forward, so the substream resets and the requester fails.
@@ -294,7 +294,7 @@ async fn cache_miss_resets_with_stub_forwarder() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn inbound_pushsync_resets_with_stub_forwarder() {
     // A cache-only client never takes custody: inbound pushsync forwards, the
     // stub forward fails, the substream resets, and no receipt is signed.
@@ -409,7 +409,7 @@ fn storer_node(
     (node, reserve, signer, nonce)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn responsible_storer_stores_and_signs_a_receipt() {
     use nectar_primitives::{NetworkId, compute_overlay};
     use vertex_swarm_primitives::Bin;
@@ -470,7 +470,7 @@ async fn responsible_storer_stores_and_signs_a_receipt() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn non_responsible_storer_forwards_instead_of_storing() {
     use vertex_swarm_primitives::Bin;
 
@@ -629,7 +629,7 @@ fn relay_node(
     (node, rx)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn three_node_retrieval_relays_verifies_and_accounts() {
     let chunk = content_chunk(b"relayed through B from C");
     let address = *chunk.address();
@@ -730,7 +730,7 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_does_not_cache_a_forwarded_soc() {
     // A retrieved SOC arrives stampless, so it carries no version signal: the
     // relay forwards it without caching (a cached stampless SOC could later
@@ -806,7 +806,7 @@ async fn relay_does_not_cache_a_forwarded_soc() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
     // B's only candidate is no closer to the chunk than requester A, so the
     // loop bound rejects it: B cannot forward sideways or backwards, the
@@ -877,7 +877,7 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;

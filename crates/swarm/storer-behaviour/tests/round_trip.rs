@@ -56,7 +56,7 @@ async fn next_puller_event(
     .expect("event resolved within timeout")
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cursor_handshake_round_trips() {
     let bin = Bin::new(5).expect("valid bin");
     let chunks = vec![content(b"cursor chunk a"), content(b"cursor chunk b")];
@@ -87,7 +87,7 @@ async fn cursor_handshake_round_trips() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn range_exchange_delivers_the_page() {
     let bin = Bin::new(3).expect("valid bin");
     let chunks = vec![content(b"range chunk one"), content(b"range chunk two")];
@@ -125,7 +125,7 @@ async fn range_exchange_delivers_the_page() {
 }
 
 /// An empty range completes promptly with topmost 0 and no want round.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn empty_range_completes_with_no_want() {
     let bin = Bin::new(3).expect("valid bin");
     // The syncer holds chunks in a different bin, so the requested bin is empty.

@@ -61,7 +61,7 @@ fn event_routes_to_pullsync_arm() {
 /// The composite forwards pullsync range deliveries through
 /// `StorerBehaviourEvent::Pullsync`, proving the derived multiplexer routes a
 /// sub-behaviour's events.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn composite_routes_pullsync_range() {
     let bin = Bin::new(3).expect("valid bin");
     let chunks = vec![content(b"range chunk one"), content(b"range chunk two")];
