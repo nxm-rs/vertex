@@ -26,6 +26,8 @@ fn handshake_failure_releases_the_reservation() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     let mut scenario = Scenario::new(&world, spec());
     let mut names = Vec::new();
@@ -36,7 +38,7 @@ fn handshake_failure_releases_the_reservation() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             names.push(name);
         }
@@ -46,7 +48,7 @@ fn handshake_failure_releases_the_reservation() {
         "failer",
         STORER,
         PeerScript::HandshakeFail,
-        place(SEED, 1),
+        place(seed, 1),
     );
     names.push("failer".to_owned());
     #[allow(clippy::expect_used)]
@@ -73,7 +75,7 @@ fn handshake_failure_releases_the_reservation() {
     };
     assert!(
         failed,
-        "the scripted dial never reached and failed the handshake (seed={SEED})"
+        "the scripted dial never reached and failed the handshake (seed={seed})"
     );
 
     // The honest supply converges around the failure.
@@ -86,7 +88,7 @@ fn handshake_failure_releases_the_reservation() {
             stats.depth == 1 && connected_in_bin(&stats, 1) == 3
         },
     );
-    assert!(converged, "fixture never converged (seed={SEED})");
+    assert!(converged, "fixture never converged (seed={seed})");
 
     // The failure never leaks into later rounds: the failer stays excluded
     // under backoff, only the honest peers count, and no dialing or
@@ -100,23 +102,23 @@ fn handshake_failure_releases_the_reservation() {
         assert_eq!(
             connected_in_bin(&stats, 1),
             3,
-            "only the honest peers count as connected (seed={SEED})"
+            "only the honest peers count as connected (seed={seed})"
         );
         for bin in &stats.bins {
             assert_eq!(
                 (bin.dialing, bin.handshaking),
                 (0, 0),
-                "a settled table carries no phase reservation in bin {} (seed={SEED})",
+                "a settled table carries no phase reservation in bin {} (seed={seed})",
                 bin.bin
             );
         }
         Invariants::new()
             .phase_counters_consistent()
-            .assert(&stats, SEED);
+            .assert(&stats, seed);
     }
     assert!(
         handle.peer_manager().peer_is_in_backoff(&failer),
-        "the failer stays excluded under backoff (seed={SEED})"
+        "the failer stays excluded under backoff (seed={seed})"
     );
     assert_eq!(handle.routing_stats().connected_peers_total, 11);
 }

@@ -40,8 +40,10 @@ fn empty_slots_dilute_a_subprefix_monoculture() {
     // sybil family alone satisfies the count and only slot awareness can
     // justify further dials.
     let probe = launch_node(&mut world, KademliaConfig::default().with_total_target(8));
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
-    let anchor = node_overlay(SEED);
+    let anchor = node_overlay(seed);
     let place =
         |slot: u8| Some(Placement::new(anchor, Bin::new(0).unwrap_or(Bin::MAX)).in_slot(slot));
     let mut scenario = Scenario::new(&world, spec());
@@ -99,13 +101,13 @@ fn empty_slots_dilute_a_subprefix_monoculture() {
     );
     assert!(
         monoculture,
-        "the sybil supply never met the count target (seed={SEED}): {:?}",
+        "the sybil supply never met the count target (seed={seed}): {:?}",
         handle.routing_stats()
     );
     assert_eq!(
         bin0_slots(&handle),
         Some(1),
-        "the sole supply shares one slot: sub-prefix monoculture (seed={SEED})"
+        "the sole supply shares one slot: sub-prefix monoculture (seed={seed})"
     );
 
     // Diverse supply arrives. The empty slots pull it in even though the
@@ -119,7 +121,7 @@ fn empty_slots_dilute_a_subprefix_monoculture() {
     );
     assert!(
         diluted,
-        "empty slots never pulled the diverse supply (seed={SEED}): {:?}",
+        "empty slots never pulled the diverse supply (seed={seed}): {:?}",
         handle.routing_stats()
     );
     assert_eq!(
@@ -136,7 +138,7 @@ fn empty_slots_dilute_a_subprefix_monoculture() {
     assert_eq!(
         common::connected_in_bin(&handle.routing_stats(), 0),
         12,
-        "the diverse set holds without oscillation (seed={SEED})"
+        "the diverse set holds without oscillation (seed={seed})"
     );
     assert_eq!(bin0_slots(&handle), Some(5), "slot diversity is retained");
     assert_eq!(
