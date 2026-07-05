@@ -28,7 +28,7 @@ pub use node::{SimNetworkConfig, transport_override};
 pub use probe::Probe;
 pub use scenario::{
     Fault, FaultSchedule, Invariants, PeerScript, Placement, Scenario, ScriptedPeer,
-    handshake_summary, placement_nonce,
+    handshake_summary, placement_nonce, slot_of,
 };
 pub use trace::{SimTrace, TraceEntry, normalized_event};
 pub use transport::{TurmoilStream, TurmoilTransport};

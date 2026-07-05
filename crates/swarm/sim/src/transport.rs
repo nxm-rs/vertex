@@ -23,8 +23,9 @@ use libp2p::{
 use turmoil::net::{TcpListener, TcpStream};
 
 /// Raw stream transport over turmoil TCP, supporting `/ip4|ip6/../tcp/..`
-/// multiaddrs. Compose it with an authentication upgrade and a muxer before
-/// handing it to a swarm.
+/// multiaddrs and, for dialling only, `/dns|dns4|dns6/<host>/tcp/..` resolved
+/// through turmoil's name table. Compose it with an authentication upgrade
+/// and a muxer before handing it to a swarm.
 #[derive(Default)]
 pub struct TurmoilTransport {
     listeners: Vec<Listener>,
@@ -56,21 +57,42 @@ fn arm_accept(
     Box::pin(async move { listener.accept().await })
 }
 
+/// A dialable endpoint: a literal socket address, or a turmoil host name
+/// resolved at connect time.
+enum DialEndpoint {
+    Addr(SocketAddr),
+    Name(String, u16),
+}
+
 fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Option<SocketAddr> {
+    match multiaddr_to_endpoint(addr)? {
+        DialEndpoint::Addr(addr) => Some(addr),
+        DialEndpoint::Name(..) => None,
+    }
+}
+
+fn multiaddr_to_endpoint(addr: &Multiaddr) -> Option<DialEndpoint> {
     let mut iter = addr.iter();
-    let ip = match iter.next()? {
-        Protocol::Ip4(ip) => std::net::IpAddr::V4(ip),
-        Protocol::Ip6(ip) => std::net::IpAddr::V6(ip),
+    let host = match iter.next()? {
+        Protocol::Ip4(ip) => DialEndpoint::Addr(SocketAddr::new(std::net::IpAddr::V4(ip), 0)),
+        Protocol::Ip6(ip) => DialEndpoint::Addr(SocketAddr::new(std::net::IpAddr::V6(ip), 0)),
+        Protocol::Dns(name) | Protocol::Dns4(name) | Protocol::Dns6(name) => {
+            DialEndpoint::Name(name.into_owned(), 0)
+        }
         _ => return None,
     };
     // A trailing /p2p component is tolerated, matching the production TCP
     // transport, so bootnode-form multiaddrs dial unchanged.
-    match (iter.next()?, iter.next(), iter.next()) {
+    let port = match (iter.next()?, iter.next(), iter.next()) {
         (Protocol::Tcp(port), None, None) | (Protocol::Tcp(port), Some(Protocol::P2p(_)), None) => {
-            Some(SocketAddr::new(ip, port))
+            port
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(match host {
+        DialEndpoint::Addr(addr) => DialEndpoint::Addr(SocketAddr::new(addr.ip(), port)),
+        DialEndpoint::Name(name, _) => DialEndpoint::Name(name, port),
+    })
 }
 
 fn socketaddr_to_multiaddr(addr: SocketAddr) -> Multiaddr {
@@ -110,10 +132,13 @@ impl Transport for TurmoilTransport {
         addr: Multiaddr,
         _opts: DialOpts,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
-        let socket_addr =
-            multiaddr_to_socketaddr(&addr).ok_or(TransportError::MultiaddrNotSupported(addr))?;
+        let endpoint =
+            multiaddr_to_endpoint(&addr).ok_or(TransportError::MultiaddrNotSupported(addr))?;
         Ok(Box::pin(async move {
-            let stream = TcpStream::connect(socket_addr).await?;
+            let stream = match endpoint {
+                DialEndpoint::Addr(addr) => TcpStream::connect(addr).await?,
+                DialEndpoint::Name(name, port) => TcpStream::connect((name.as_str(), port)).await?,
+            };
             Ok(TurmoilStream { inner: stream })
         }))
     }

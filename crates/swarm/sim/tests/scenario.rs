@@ -61,10 +61,10 @@ fn churn_bursts_hold_the_depth_floor() {
         .overlay_address()
     };
     let place = |bin: u8| {
-        Some(Placement {
-            anchor: node_overlay,
-            bin: Bin::new(bin).unwrap_or(Bin::MAX),
-        })
+        Some(Placement::new(
+            node_overlay,
+            Bin::new(bin).unwrap_or(Bin::MAX),
+        ))
     };
 
     let saturation = usize::from(DEFAULT_SATURATION_PEERS);
@@ -223,10 +223,7 @@ fn placement_matches_the_hosted_identity() {
         spec.network_id(),
         &vertex_swarm_sim::host_nonce(SEED, "anchor"),
     );
-    let placement = Placement {
-        anchor,
-        bin: Bin::new(2).unwrap_or(Bin::MAX),
-    };
+    let placement = Placement::new(anchor, Bin::new(2).unwrap_or(Bin::MAX));
     let nonce = placement_nonce(SEED, "placed", &spec, placement);
     let overlay = compute_overlay(
         &host_signer(SEED, "placed").address(),

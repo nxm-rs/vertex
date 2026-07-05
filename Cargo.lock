@@ -9547,6 +9547,7 @@ dependencies = [
  "vertex-swarm-identity",
  "vertex-swarm-net-handshake",
  "vertex-swarm-node",
+ "vertex-swarm-peer",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
