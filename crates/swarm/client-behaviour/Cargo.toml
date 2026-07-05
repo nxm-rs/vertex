@@ -33,7 +33,7 @@ vertex-swarm-api.workspace = true
 vertex-swarm-client-protocol.workspace = true
 
 ## vertex - runtime
-vertex-util-runtime.workspace = true
+vertex-tasks.workspace = true
 
 ## crypto
 alloy-primitives.workspace = true

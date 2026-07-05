@@ -10,13 +10,10 @@ repository.workspace = true
 [dependencies]
 parking_lot.workspace = true
 thiserror.workspace = true
-# Monotonic clock via web-time so the GCRA limiter runs in the wasm cone instead
-# of reaching the std clock, which panics on wasm32-unknown-unknown.
-vertex-util-runtime.workspace = true
-# Send-bounded, re-armable timer (SendDelay) for the outbound self-limiter's
-# parking queue. vertex-tasks is the one timer home: it drives the tokio clock on
-# native (so paused-time tests control the parking) and the browser clock on
-# wasm32, where the std clock panics.
+# Monotonic clock plus the Send-bounded, re-armable timer (SendDelay) for the
+# outbound self-limiter's parking queue. vertex-tasks is the one timer home: it
+# drives the tokio clock on native (so paused-time tests control the limiter)
+# and the browser clock on wasm32, where the std clock panics.
 vertex-tasks.workspace = true
 
 [dev-dependencies]

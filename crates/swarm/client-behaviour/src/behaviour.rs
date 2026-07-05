@@ -465,7 +465,7 @@ mod tests {
     use vertex_swarm_api::{ChunkAddress, SwarmResult};
     use vertex_swarm_primitives::CachedChunk;
     use vertex_swarm_test_utils::test_peer;
-    use vertex_util_runtime::time::Instant;
+    use vertex_tasks::time::Instant;
 
     use super::*;
     use crate::forward::StubForwarder;

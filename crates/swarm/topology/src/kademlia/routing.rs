@@ -29,7 +29,7 @@ use vertex_swarm_primitives::{
 // The neighborhood stability clock is the timer-coherent monotonic clock from
 // `vertex_tasks::time` on both targets.
 use vertex_tasks::time::Instant;
-use vertex_util_runtime::time::Instant as PhaseInstant;
+use vertex_tasks::time::Instant as PhaseInstant;
 
 /// Connection phase for capacity tracking. `Dialing` is outbound by
 /// construction; the later phases carry the direction so the per-bin outbound

@@ -100,13 +100,14 @@ pub struct PeerSnapshot {
     pub last_seen: u64,
 }
 
-/// Current wall-clock time in unix seconds.
+/// Current runtime wall-clock time in unix seconds.
 ///
-/// Delegates to [`vertex_util_runtime::time::now_unix_secs`], the single
-/// cfg-gated clock source for the workspace (native `std::time`, browser clock
-/// on wasm32).
+/// Delegates to [`vertex_tasks::time::now_unix_secs`], the bookkeeping clock:
+/// real in production, advanced by the paused clock in tests and the sim.
+/// Wire timestamp comparisons must not read this; they stay on the platform
+/// clock in `vertex_util_runtime::time`.
 pub(crate) fn unix_timestamp_secs() -> u64 {
-    vertex_util_runtime::time::now_unix_secs()
+    vertex_tasks::time::now_unix_secs()
 }
 
 pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {

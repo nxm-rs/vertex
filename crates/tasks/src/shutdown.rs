@@ -1,5 +1,6 @@
 //! Helper for shutdown signals
 
+use crate::time::Instant;
 use futures_util::{
     FutureExt,
     future::{FusedFuture, Shared},
@@ -16,7 +17,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::oneshot;
-use vertex_util_runtime::time::Instant;
 
 /// A Future that resolves when the shutdown event has been fired.
 #[derive(Debug)]

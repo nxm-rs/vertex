@@ -26,7 +26,7 @@ use libp2p::swarm::{
 };
 
 use vertex_net_local::{AddressScope, advertise_filter, classify_multiaddr};
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use crate::{
     Config,

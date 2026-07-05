@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use alloy_primitives::U256;
 use futures_bounded::Timeout;
@@ -341,7 +341,11 @@ impl ClientHandler {
     }
 
     fn evict_stale_responses(&mut self) {
-        let cutoff = Instant::now() - RESPONDER_STALE_TIMEOUT;
+        // checked_sub: early in a paused-clock test the clock may not yet have
+        // advanced past the timeout, and tokio instants panic on underflow.
+        let Some(cutoff) = Instant::now().checked_sub(RESPONDER_STALE_TIMEOUT) else {
+            return;
+        };
         self.pending_responses.retain(|_, v| v.stored_at > cutoff);
     }
 

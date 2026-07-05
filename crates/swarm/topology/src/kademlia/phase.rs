@@ -25,7 +25,7 @@
 
 use std::time::Duration;
 
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use vertex_swarm_primitives::NeighborhoodDepth;
 

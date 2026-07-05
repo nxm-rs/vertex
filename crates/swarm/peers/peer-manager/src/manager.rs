@@ -499,7 +499,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
         candidate: Timestamp,
         existing: Option<Timestamp>,
     ) -> bool {
-        let now = Timestamp::from_seconds(unix_timestamp_secs() as i64);
+        // Gossip candidates carry remote-produced timestamps, so the check
+        // reads the platform clock, never the runtime bookkeeping clock.
+        let now = Timestamp::from_seconds(vertex_util_runtime::time::now_unix_secs() as i64);
         match check_timestamp(candidate, existing, now) {
             Ok(()) => false,
             Err(rejection) => {

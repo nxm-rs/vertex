@@ -8,7 +8,7 @@ use hashlink::{LinkedHashMap, LruCache};
 use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::{Multiaddr, PeerId};
 use metrics::{counter, gauge};
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use crate::backoff::{BackoffEntry, backoff_remaining, jitter_seed_for};
 use crate::config::DialTrackerConfig;

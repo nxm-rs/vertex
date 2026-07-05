@@ -18,7 +18,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use super::GossipConfig;
 use super::events::{GossipAction, GossipCheckOk};
@@ -769,10 +769,12 @@ mod tests {
         // A mark whose cleanup events were all missed: age it past the TTL and
         // confirm the periodic tick reclaims it as a backstop.
         let peer_id = PeerId::random();
-        engine.gossip_dial_peers.insert(
-            peer_id,
-            Instant::now() - (GOSSIP_DIAL_TTL + Duration::from_secs(1)),
-        );
+        // checked_sub keeps the underflow failure mode explicit; tokio
+        // instants panic on bare subtraction when the clock is young.
+        let aged = Instant::now()
+            .checked_sub(GOSSIP_DIAL_TTL + Duration::from_secs(1))
+            .expect("monotonic clock predates the dial TTL");
+        engine.gossip_dial_peers.insert(peer_id, aged);
 
         engine.on_tick(0);
         assert!(
