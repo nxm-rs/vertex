@@ -9538,13 +9538,19 @@ dependencies = [
  "alloy-signer-local",
  "futures",
  "libp2p",
+ "parking_lot",
+ "thiserror 2.0.18",
  "tokio",
  "turmoil",
+ "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-net-handshake",
+ "vertex-swarm-node",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
+ "vertex-swarm-topology",
+ "vertex-tasks",
 ]
 
 [[package]]
