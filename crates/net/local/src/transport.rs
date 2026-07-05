@@ -93,10 +93,11 @@ impl TransportCapability {
 
     /// Whether this stack can dial `addr` at the transport layer.
     ///
-    /// A `/memory/<port>` address is admitted by either stack: it appears only
-    /// when an in-process harness injects a memory transport, so admitting it
-    /// costs nothing on the live network (no real peer advertises one) and lets
-    /// a hermetic cluster dial over the injected transport.
+    /// A `/memory/<port>` address is admitted by either stack so a hermetic
+    /// cluster can dial over an injected memory transport. Peer records are
+    /// self-signed, so a live peer can gossip one too; on a stack with no
+    /// memory transport such a dial fails immediately with an unsupported
+    /// multiaddr, bounding the cost to a wasted dial attempt.
     pub fn can_dial(&self, addr: &Multiaddr) -> bool {
         matches!(
             (self, TransportRequirement::of(addr)),

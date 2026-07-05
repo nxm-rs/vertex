@@ -1,7 +1,7 @@
 //! AutoNAT v2 dial-back over a real TCP transport, in a vertex-shaped
 //! behaviour composition.
 //!
-//! This exercises the wiring PR #156 added: vertex identify emits an
+//! This exercises the AutoNAT v2 wiring: vertex identify emits an
 //! external-address candidate, the AutoNAT v2 client asks a peer's AutoNAT v2
 //! server to dial it back, and a successful dial-back is mapped onto peer
 //! reachability exactly as `handle_autonat_server_event` does in the node
