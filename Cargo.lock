@@ -9292,7 +9292,6 @@ dependencies = [
  "vertex-chain",
  "vertex-metrics",
  "vertex-net-local",
- "vertex-net-peer-registry",
  "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-storage-indexeddb",
@@ -9550,7 +9549,6 @@ dependencies = [
  "alloy-primitives",
  "futures",
  "libp2p",
- "libp2p-swarm-test",
  "metrics",
  "nectar-postage",
  "nectar-primitives",
@@ -9558,7 +9556,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "vertex-net-peer-registry",
  "vertex-net-ratelimiter",
  "vertex-swarm-api",
  "vertex-swarm-client-behaviour",
@@ -9567,6 +9564,7 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-pullsync",
  "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
  "vertex-tasks",
 ]
 

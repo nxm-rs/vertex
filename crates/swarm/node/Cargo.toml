@@ -141,9 +141,8 @@ vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync", "test-util"] }
-vertex-swarm-test-utils = { workspace = true, features = ["cluster"] }
+vertex-swarm-test-utils = { workspace = true, features = ["cluster", "harness"] }
 vertex-swarm-topology.workspace = true
-vertex-net-peer-registry.workspace = true
 eyre.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libp2p-swarm-test.workspace = true
