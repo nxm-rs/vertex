@@ -161,10 +161,9 @@ fn requester_node(seed: u8, retrieval_timeout: Duration) -> HarnessNode<ClientBe
     })
 }
 
-// Live clock on purpose: the per-request deadline is a libp2p substream
-// timeout running on a wall-clock timer, so under `start_paused` the outer
-// tokio guard would auto-advance and fire before the deadline ever could.
-#[tokio::test]
+// Paused time: the libp2p substream deadline rides the tokio clock on native,
+// so the whole reproduction resolves on logical time with no wall-clock wait.
+#[tokio::test(start_paused = true)]
 async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
     // A 200ms retrieval deadline: short enough to assert against, far below the
     // shared 30s default that the bug would otherwise impose.
