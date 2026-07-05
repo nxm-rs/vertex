@@ -96,23 +96,30 @@ async fn build_client_base<I, C>(
     infra: BuiltInfrastructure<I>,
     network_config: &C,
     store: Arc<dyn SwarmLocalStore>,
+    transport: Option<super::builder::TransportOverride>,
 ) -> Result<BaseNode<I, ClientNodeBehaviour<I>>>
 where
     I: SwarmIdentity + Clone,
     C: SwarmNetworkConfig,
 {
     let limits = super::base::build_admission_limits(network_config);
-    super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
-        let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
-        ClientNodeBehaviour::from_parts(
-            pk,
-            topology,
-            nat,
-            limits,
-            store,
-            network_config.agent_version(),
-        )
-    })
+    super::builder::build_base_node(
+        infra,
+        network_config,
+        "Client node",
+        transport,
+        move |pk, topology| {
+            let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+            ClientNodeBehaviour::from_parts(
+                pk,
+                topology,
+                nat,
+                limits,
+                store,
+                network_config.agent_version(),
+            )
+        },
+    )
     .await
 }
 
@@ -443,6 +450,7 @@ pub struct ClientNodeBuilder<I: SwarmIdentity + Clone> {
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
     store: Option<Arc<dyn SwarmLocalStore>>,
+    transport: Option<super::builder::TransportOverride>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     #[cfg(feature = "swap")]
     swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
@@ -455,6 +463,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             infra: None,
             kademlia_config: None,
             store: None,
+            transport: None,
             pseudosettle_event_tx: None,
             #[cfg(feature = "swap")]
             swap_event_tx: None,
@@ -475,6 +484,14 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
 
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
         self.kademlia_config = Some(kademlia_config);
+        self
+    }
+
+    /// Replace the default TCP transport with an injected one. Tests supply a
+    /// memory transport so paused time drives the node; production leaves this
+    /// unset and keeps the default stack.
+    pub fn with_transport(mut self, transport: super::builder::TransportOverride) -> Self {
+        self.transport = Some(transport);
         self
     }
 
@@ -531,7 +548,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             ))
         });
 
-        let mut base = build_client_base(infra, network_config, Arc::clone(&store)).await?;
+        let mut base =
+            build_client_base(infra, network_config, Arc::clone(&store), self.transport).await?;
 
         base.swarm
             .behaviour()

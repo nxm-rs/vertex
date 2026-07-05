@@ -13,12 +13,13 @@
 //! - **Persistent identity.** Each node is constructed from a single
 //!   [`Identity`] generated up front and cloned into the builder. This
 //!   models a bootnode whose overlay address survives restarts.
-//! - **TCP transport.** The current `BootNodeBuilder` / `ClientNodeBuilder`
-//!   hardwire `libp2p::tcp::tokio::Transport` (see
-//!   `vertex_swarm_node::node::builder::build_base_node`). Hermetic memory
-//!   transport would require a public builder hook that does not exist in
-//!   `main` yet — the workaround is to bind on `127.0.0.1` with
-//!   OS-assigned ports.
+//! - **TCP transport.** The node builders expose a
+//!   [`with_transport`](vertex_swarm_node::ClientNodeBuilder::with_transport)
+//!   seam that swaps the default TCP stack for an injected one (a memory
+//!   transport for hermetic tests). This harness still binds `127.0.0.1` with
+//!   OS-assigned ports because adopting the memory transport also needs the
+//!   dial-eligibility filter to admit `/memory/` addresses, tracked
+//!   separately.
 //! - **Wall-clock timeouts.** Because real TCP I/O is involved, integration
 //!   tests use bounded `tokio::time::timeout` rather than
 //!   `tokio::time::pause()`; pause would freeze timers without freezing the
