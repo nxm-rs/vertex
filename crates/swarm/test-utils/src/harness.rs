@@ -10,8 +10,10 @@
 //! transport, but no test-facing signature names it, so a later deterministic
 //! simulation can slot under the same surface.
 
+use std::future::poll_fn;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -19,6 +21,7 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm};
 use libp2p_swarm_test::SwarmExt;
+use tokio::sync::{mpsc, oneshot};
 use vertex_net_peer_registry::PeerRegistry;
 use vertex_swarm_api::SwarmNodeType;
 use vertex_swarm_primitives::OverlayAddress;
@@ -303,6 +306,136 @@ where
     drive_until(a, b, duration, |_, _| false).await;
 }
 
+/// A source the [`drive`] loop can advance: a [`Swarm`], a [`HarnessNode`], or a
+/// [`CommandPump`] adapter.
+///
+/// `poll_drive` advances the source once and reports `Ready` when it made
+/// progress, so a driver races several sources without naming their transport.
+/// The signature is runtime-free (no timer, no executor, no transport), so a
+/// deterministic simulation can drive the same sources under virtual time; the
+/// paused-clock deadline is the driver's concern, not the trait's.
+pub trait DrivableSwarm {
+    /// Poll the source once, returning `Ready` when it produced an event or
+    /// otherwise made progress this poll.
+    fn poll_drive(&mut self, cx: &mut Context<'_>) -> Poll<()>;
+}
+
+impl<B: NetworkBehaviour> DrivableSwarm for Swarm<B> {
+    fn poll_drive(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // The swarm stream never terminates; a yielded event is progress, its
+        // payload discarded because callers assert on accumulated state.
+        match self.poll_next_unpin(cx) {
+            Poll::Ready(Some(_)) => Poll::Ready(()),
+            Poll::Ready(None) | Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<B: NetworkBehaviour> DrivableSwarm for HarnessNode<B> {
+    fn poll_drive(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.swarm.poll_drive(cx)
+    }
+}
+
+/// A [`DrivableSwarm`] that drains a command channel into a swarm's behaviour
+/// before polling the swarm.
+///
+/// It folds a manual command pump into a driver's poll set, so a relay test that
+/// feeds a node's own outbound commands back into it (or answers them) need not
+/// hand-roll a recv-and-apply `select!` branch. Co-locating the channel with the
+/// swarm in one owner keeps the pump out of the driver's terminal hook, which
+/// already borrows the poll set.
+pub struct CommandPump<'a, B: NetworkBehaviour, C, F> {
+    swarm: &'a mut Swarm<B>,
+    commands: &'a mut mpsc::Receiver<C>,
+    apply: F,
+}
+
+impl<'a, B, C, F> CommandPump<'a, B, C, F>
+where
+    B: NetworkBehaviour,
+    F: FnMut(&mut B, C),
+{
+    /// Drain `commands` into `swarm`'s behaviour through `apply` on every poll,
+    /// then poll the swarm.
+    pub fn new(swarm: &'a mut Swarm<B>, commands: &'a mut mpsc::Receiver<C>, apply: F) -> Self {
+        Self {
+            swarm,
+            commands,
+            apply,
+        }
+    }
+}
+
+impl<B, C, F> DrivableSwarm for CommandPump<'_, B, C, F>
+where
+    B: NetworkBehaviour,
+    F: FnMut(&mut B, C),
+{
+    fn poll_drive(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut progressed = false;
+        while let Poll::Ready(Some(command)) = self.commands.poll_recv(cx) {
+            (self.apply)(self.swarm.behaviour_mut(), command);
+            progressed = true;
+        }
+        // A drained command schedules swarm work that resolves on a later poll,
+        // so report progress to keep the driver looping rather than parking.
+        match self.swarm.poll_drive(cx) {
+            Poll::Ready(()) => Poll::Ready(()),
+            Poll::Pending if progressed => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Drive every source in `drivables`, calling `hook` after each poll round,
+/// until the hook yields a value or `timeout` elapses; returns the hook's value,
+/// or `None` on timeout.
+///
+/// The deadline runs on the tokio clock, so under `#[tokio::test(start_paused =
+/// true)]` an idle set auto-advances rather than burning real time. The hook
+/// observes external state (a response channel, a counter); fold a command
+/// channel into `drivables` with a [`CommandPump`] rather than into the hook.
+pub async fn drive<T>(
+    drivables: &mut [&mut dyn DrivableSwarm],
+    timeout: Duration,
+    mut hook: impl FnMut() -> Option<T>,
+) -> Option<T> {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        if let Some(value) = hook() {
+            return Some(value);
+        }
+        let step = poll_fn(|cx| {
+            let mut progress = Poll::Pending;
+            for drivable in drivables.iter_mut() {
+                if drivable.poll_drive(cx).is_ready() {
+                    progress = Poll::Ready(());
+                }
+            }
+            progress
+        });
+        tokio::select! {
+            () = &mut deadline => return hook(),
+            () = step => {}
+        }
+    }
+}
+
+/// Drive `drivables` until `signal` resolves or `timeout` elapses, returning the
+/// resolved value (or `None` on timeout).
+///
+/// The terminal condition every relay and completion test shares: a response
+/// arrives on a oneshot while the swarms (and any [`CommandPump`]s) run.
+pub async fn drive_until_signal<T>(
+    drivables: &mut [&mut dyn DrivableSwarm],
+    timeout: Duration,
+    signal: &mut oneshot::Receiver<T>,
+) -> Option<T> {
+    drive(drivables, timeout, || signal.try_recv().ok()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +495,56 @@ mod tests {
         // A predicate already true returns immediately.
         let held = drive_until(&mut a, &mut b, Duration::from_secs(30), |_, _| true).await;
         assert!(held);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drive_until_signal_resolves_or_times_out() {
+        let mut a = dummy_node(9);
+        let mut b = dummy_node(10);
+        connect_and_activate(&mut a, &mut b, |_, _, _, _| {}).await;
+
+        // A signal that never fires times out; the idle pair auto-advances.
+        let (_tx, mut rx) = oneshot::channel::<u8>();
+        {
+            let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut a, &mut b];
+            let out = drive_until_signal(&mut drivables, Duration::from_secs(5), &mut rx).await;
+            assert_eq!(out, None);
+        }
+
+        // An already-fired signal resolves to its value.
+        let (tx, mut rx) = oneshot::channel::<u8>();
+        tx.send(42).unwrap();
+        let mut drivables: [&mut dyn DrivableSwarm; 2] = [&mut a, &mut b];
+        let out = drive_until_signal(&mut drivables, Duration::from_secs(5), &mut rx).await;
+        assert_eq!(out, Some(42));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn command_pump_applies_before_polling() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut node = dummy_node(11);
+        let (tx, mut rx) = mpsc::channel::<u8>(4);
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        drop(tx);
+
+        let applied = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&applied);
+        let mut pump = CommandPump::new(
+            &mut node.swarm,
+            &mut rx,
+            move |_behaviour: &mut dummy::Behaviour, command: u8| {
+                sink.borrow_mut().push(command);
+            },
+        );
+
+        let (_never_tx, mut never) = oneshot::channel::<()>();
+        let mut drivables: [&mut dyn DrivableSwarm; 1] = [&mut pump];
+        let out = drive_until_signal(&mut drivables, Duration::from_secs(1), &mut never).await;
+
+        assert_eq!(out, None);
+        assert_eq!(*applied.borrow(), vec![1, 2]);
     }
 }
