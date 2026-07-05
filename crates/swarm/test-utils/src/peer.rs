@@ -36,9 +36,20 @@ pub fn test_peer() -> OverlayAddress {
     OverlayAddress::from([1u8; 32])
 }
 
+/// Create a deterministic ed25519 keypair from a byte.
+///
+/// The seed byte is repeated to fill the 32-byte secret key, so the same `n`
+/// always yields the same libp2p identity. This is the single source both
+/// [`test_peer_id`] and any seeded swarm derive their identity from.
+pub fn test_keypair(n: u8) -> libp2p::identity::Keypair {
+    let bytes = [n; 32];
+    let key = libp2p::identity::ed25519::SecretKey::try_from_bytes(bytes)
+        .expect("32 bytes is valid ed25519 secret key");
+    libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key))
+}
+
 /// Create a deterministic PeerId from a byte.
 ///
-/// Uses ed25519 key derivation from `[n; 32]` bytes.
 /// The same `n` always produces the same PeerId, making tests reproducible.
 ///
 /// # Example
@@ -54,11 +65,7 @@ pub fn test_peer() -> OverlayAddress {
 /// assert_ne!(peer1, peer3);  // Different input = different PeerId
 /// ```
 pub fn test_peer_id(n: u8) -> PeerId {
-    let bytes = [n; 32];
-    let key = libp2p::identity::ed25519::SecretKey::try_from_bytes(bytes)
-        .expect("32 bytes is valid ed25519 secret key");
-    let keypair = libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key));
-    keypair.public().to_peer_id()
+    test_keypair(n).public().to_peer_id()
 }
 
 /// Create a test SwarmPeer with deterministic values.
