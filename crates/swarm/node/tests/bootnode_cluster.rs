@@ -144,7 +144,7 @@ async fn three_node_convergence() -> Result<()> {
         );
     }
 
-    // Suppress unused-binding warning for the structural reservation —
+    // Suppress unused-binding warning for the structural reservation,
     // re-enabled the moment assertion (b) becomes live.
     let _ = client_overlays;
 
