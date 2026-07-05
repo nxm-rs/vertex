@@ -40,3 +40,6 @@ serde_json.workspace = true
 
 ## tracing
 tracing.workspace = true
+
+[dev-dependencies]
+vertex-swarm-test-utils.workspace = true

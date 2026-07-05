@@ -23,46 +23,26 @@
 
 #![allow(
     clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "conformance fixtures: panicking on malformed test inputs is intended"
 )]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy_primitives::{Address, B256, Signature};
+use alloy_primitives::{Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use libp2p::Multiaddr;
-use nectar_primitives::SwarmAddress;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_peer::{SwarmPeer, SwarmPeerWire};
 use vertex_swarm_primitives::{NetworkId, Nonce, SwarmNodeType, Timestamp, compute_overlay};
 use vertex_swarm_spec::SpecBuilder;
+use vertex_swarm_test_utils::vectors::{check_each, hex_array};
 
 /// A persistent identity reproducing the vector's signer, nonce and network id,
 /// so `SwarmPeer::sign` derives exactly the vector's pinned overlay.
 fn vector_identity(signer: PrivateKeySigner, network_id: NetworkId, nonce: Nonce) -> Identity {
     let spec = Arc::new(SpecBuilder::testnet().network_id(network_id.get()).build());
     Identity::new(signer, nonce, spec, SwarmNodeType::Storer)
-}
-
-/// Decode a fixed-size lowercase hex string into a byte array.
-fn hex_to_array<const N: usize>(hex: &str) -> [u8; N] {
-    let trimmed = hex.strip_prefix("0x").unwrap_or(hex);
-    assert_eq!(
-        trimmed.len(),
-        N * 2,
-        "hex literal `{hex}` has length {} but expected {}",
-        trimmed.len(),
-        N * 2,
-    );
-    let mut out = [0u8; N];
-    for (i, byte) in out.iter_mut().enumerate() {
-        let off = i * 2;
-        *byte = u8::from_str_radix(&trimmed[off..off + 2], 16)
-            .expect("hex literal contains non-hex characters");
-    }
-    out
 }
 
 /// Overlay-only conformance vectors. Every Swarm node must produce the
@@ -104,14 +84,12 @@ struct OverlayVector {
 
 #[test]
 fn overlay_derivation_matches_swarm_spec() {
-    for (idx, v) in OVERLAY_VECTORS.iter().enumerate() {
-        let eth = Address::from(hex_to_array::<20>(v.eth_address_hex));
-        let nonce = Nonce::from(hex_to_array::<32>(v.nonce_hex));
-        let expected = SwarmAddress::from(hex_to_array::<32>(v.expected_overlay_hex));
-
+    check_each("OVERLAY_VECTORS", OVERLAY_VECTORS, |cx, v| {
+        let eth = Address::from(hex_array::<20>(v.eth_address_hex));
+        let nonce = Nonce::from(hex_array::<32>(v.nonce_hex));
         let got = compute_overlay(&eth, NetworkId::new(v.network_id), &nonce);
-        assert_eq!(got, expected, "overlay vector {idx} mismatch");
-    }
+        cx.assert_bytes_eq_hex("overlay", got.as_slice(), v.expected_overlay_hex);
+    });
 }
 
 /// Full handshake 15.0.0 conformance vector: the inputs uniquely
@@ -168,12 +146,12 @@ const HANDSHAKE_VECTORS: &[HandshakeVector] = &[
 
 impl HandshakeVector {
     fn signer(&self) -> PrivateKeySigner {
-        let bytes = hex_to_array::<32>(self.private_key_hex);
+        let bytes = hex_array::<32>(self.private_key_hex);
         PrivateKeySigner::from_bytes(&B256::from(bytes)).expect("valid secp256k1 key")
     }
 
     fn nonce(&self) -> Nonce {
-        Nonce::from(hex_to_array::<32>(self.nonce_hex))
+        Nonce::from(hex_array::<32>(self.nonce_hex))
     }
 
     fn multiaddr(&self) -> Multiaddr {
@@ -182,26 +160,13 @@ impl HandshakeVector {
 
     fn chequebook(&self) -> Option<Address> {
         self.chequebook_hex
-            .map(|hex| Address::from(hex_to_array::<20>(hex)))
-    }
-
-    fn expected_eth_address(&self) -> Address {
-        Address::from(hex_to_array::<20>(self.expected_eth_address_hex))
-    }
-
-    fn expected_overlay(&self) -> SwarmAddress {
-        SwarmAddress::from(hex_to_array::<32>(self.expected_overlay_hex))
-    }
-
-    fn expected_signature(&self) -> Signature {
-        let bytes = hex_to_array::<65>(self.expected_signature_hex);
-        Signature::from_raw(&bytes).expect("valid signature literal")
+            .map(|hex| Address::from(hex_array::<20>(hex)))
     }
 }
 
 #[test]
 fn handshake_15_sign_produces_pinned_signature_and_overlay() {
-    for (idx, v) in HANDSHAKE_VECTORS.iter().enumerate() {
+    check_each("HANDSHAKE_VECTORS", HANDSHAKE_VECTORS, |cx, v| {
         let signer = v.signer();
         let network_id = NetworkId::new(v.network_id);
         let nonce = v.nonce();
@@ -209,35 +174,31 @@ fn handshake_15_sign_produces_pinned_signature_and_overlay() {
         let multiaddr = v.multiaddr();
         let chequebook = v.chequebook();
 
-        assert_eq!(
-            signer.address(),
-            v.expected_eth_address(),
-            "vector {idx}: derived ethereum address mismatch",
+        cx.assert_bytes_eq_hex(
+            "derived ethereum address",
+            signer.address().as_slice(),
+            v.expected_eth_address_hex,
         );
 
         let overlay = compute_overlay(&signer.address(), network_id, &nonce);
-        assert_eq!(
-            overlay,
-            v.expected_overlay(),
-            "vector {idx}: overlay mismatch",
-        );
+        cx.assert_bytes_eq_hex("overlay", overlay.as_slice(), v.expected_overlay_hex);
 
         let identity = vector_identity(signer, network_id, nonce);
         let peer = SwarmPeer::sign(&identity, vec![multiaddr], timestamp, chequebook)
             .expect("sign succeeds");
 
-        assert_eq!(
-            *peer.signature(),
-            v.expected_signature(),
-            "vector {idx}: signature does not match pinned conformance value; \
-             sign-data layout has drifted",
+        // A signature mismatch means the sign-data layout has drifted.
+        cx.assert_bytes_eq_hex(
+            "handshake signature",
+            &peer.signature().as_bytes(),
+            v.expected_signature_hex,
         );
-    }
+    });
 }
 
 #[test]
 fn handshake_15_parse_recovers_pinned_signer() {
-    for (idx, v) in HANDSHAKE_VECTORS.iter().enumerate() {
+    check_each("HANDSHAKE_VECTORS", HANDSHAKE_VECTORS, |cx, v| {
         let signer = v.signer();
         let network_id = NetworkId::new(v.network_id);
         let nonce = v.nonce();
@@ -271,22 +232,24 @@ fn handshake_15_parse_recovers_pinned_signer() {
                 Duration::from_secs(60),
             )),
         )
-        .unwrap_or_else(|err| panic!("vector {idx}: parse failed: {err}"));
+        .unwrap_or_else(|err| panic!("{}: {err}", cx.label("parse failed")));
 
-        assert_eq!(
-            *parsed.ethereum_address(),
-            v.expected_eth_address(),
-            "vector {idx}: recovered ethereum address mismatch",
+        cx.assert_bytes_eq_hex(
+            "recovered ethereum address",
+            parsed.ethereum_address().as_slice(),
+            v.expected_eth_address_hex,
         );
         assert_eq!(
             parsed.overlay(),
             peer.overlay(),
-            "vector {idx}: overlay roundtrip mismatch",
+            "{}",
+            cx.label("overlay roundtrip mismatch"),
         );
         assert_eq!(
             parsed.chequebook(),
             v.chequebook().as_ref(),
-            "vector {idx}: chequebook roundtrip mismatch",
+            "{}",
+            cx.label("chequebook roundtrip mismatch"),
         );
-    }
+    });
 }

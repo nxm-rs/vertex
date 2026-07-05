@@ -22,6 +22,7 @@ use asynchronous_codec::{Decoder, Encoder};
 use bytes::{Bytes, BytesMut};
 use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_net_swap::{EmitCheque, EmitChequeCodec, Handshake, HandshakeCodec};
+use vertex_swarm_test_utils::vectors::{assert_bytes_eq, push_uvarint};
 
 /// Build the signed cheque used in the `EmitCheque` framing tests.
 fn vector_cheque() -> SignedCheque {
@@ -39,18 +40,7 @@ fn vector_cheque() -> SignedCheque {
 /// matching the framing applied by the codec.
 fn frame(body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len() + 2);
-    let mut len = body.len();
-    loop {
-        let mut byte = (len & 0x7f) as u8;
-        len >>= 7;
-        if len != 0 {
-            byte |= 0x80;
-        }
-        out.push(byte);
-        if len == 0 {
-            break;
-        }
-    }
+    push_uvarint(&mut out, body.len());
     out.extend_from_slice(body);
     out
 }
@@ -59,18 +49,7 @@ fn frame(body: &[u8]) -> Vec<u8> {
 /// payload) for field number 1, wire type 2.
 fn field1_len_delimited(payload: &[u8]) -> Vec<u8> {
     let mut out = vec![0x0a]; // field 1, wire type 2 (length-delimited)
-    let mut len = payload.len();
-    loop {
-        let mut byte = (len & 0x7f) as u8;
-        len >>= 7;
-        if len != 0 {
-            byte |= 0x80;
-        }
-        out.push(byte);
-        if len == 0 {
-            break;
-        }
-    }
+    push_uvarint(&mut out, payload.len());
     out.extend_from_slice(payload);
     out
 }
@@ -89,10 +68,10 @@ fn emit_cheque_frame_matches_protobuf_framing() {
         .encode(EmitCheque::new(vector_cheque()), &mut buf)
         .unwrap();
 
-    assert_eq!(
+    assert_bytes_eq(
+        "EmitCheque frame diverged from the expected protobuf framing",
         buf.as_ref(),
-        expected.as_slice(),
-        "EmitCheque frame diverged from the expected protobuf framing"
+        &expected,
     );
 
     let decoded = codec.decode(&mut buf).unwrap().unwrap();
@@ -110,10 +89,10 @@ fn handshake_frame_matches_pinned_bytes() {
     let mut buf = BytesMut::new();
     codec.encode(Handshake::new(beneficiary), &mut buf).unwrap();
 
-    assert_eq!(
+    assert_bytes_eq(
+        "Handshake frame diverged from the pinned wire bytes",
         buf.as_ref(),
-        expected.as_slice(),
-        "Handshake frame diverged from the pinned wire bytes"
+        &expected,
     );
 
     let decoded = codec.decode(&mut buf).unwrap().unwrap();

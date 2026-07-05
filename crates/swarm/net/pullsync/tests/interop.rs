@@ -19,6 +19,7 @@ use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
 use quick_protobuf::Writer;
 use vertex_net_codec::ProtoMessage;
 use vertex_swarm_primitives::{Bin, StampedChunk};
+use vertex_swarm_test_utils::vectors::{assert_bytes_eq, push_uvarint};
 
 use vertex_swarm_net_pullsync::{Ack, BitVector, ChunkDescriptor, Delivery, Get, Offer, Syn, Want};
 
@@ -45,7 +46,7 @@ fn descriptor(addr: u8, batch: u8, hash: u8) -> ChunkDescriptor {
 
 #[test]
 fn syn_encodes_to_empty_message() {
-    assert_eq!(proto_bytes(Syn), Vec::<u8>::new());
+    assert_bytes_eq("Syn encodes empty", &proto_bytes(Syn), &[]);
 }
 
 #[test]
@@ -66,7 +67,7 @@ fn get_high_bin_roundtrips() {
     let bytes = proto_bytes(get);
     // field 1 (bin), varint: tag 0x08, value 31 (0x1f).
     // field 2 (start), varint: tag 0x10, value 1_000_000.
-    assert_eq!(&bytes[..2], &[0x08, 0x1f]);
+    assert_bytes_eq("Get bin prefix", &bytes[..2], &[0x08, 0x1f]);
     let decoded = Get::from_proto(get.into_proto().unwrap()).unwrap();
     assert_eq!(decoded.bin, Bin::MAX);
     assert_eq!(decoded.start, 1_000_000);
@@ -106,7 +107,7 @@ fn offer_two_descriptors_fixed_bytes() {
     expected.extend_from_slice(&[0x12, second.len() as u8]);
     expected.extend_from_slice(&second);
 
-    assert_eq!(bytes, expected, "offer wire layout drifted");
+    assert_bytes_eq("offer wire layout drifted", &bytes, &expected);
 
     // And it decodes back to the same descriptors.
     let decoded = Offer::from_proto(offer.clone().into_proto().unwrap()).unwrap();
@@ -125,11 +126,11 @@ fn want_bitvector_is_lsb_first_fixed_bytes() {
     bv.set(1);
     bv.set(8);
     // Byte 0: bits 0,1 -> 0x03. Byte 1: bit 8 -> 0x01. Byte 2: len/8+1 pad -> 0x00.
-    assert_eq!(bv.as_bytes(), &[0x03, 0x01, 0x00]);
+    assert_bytes_eq("Want bitvector bytes", bv.as_bytes(), &[0x03, 0x01, 0x00]);
 
     let bytes = proto_bytes(Want::new(bv.clone()));
     // field 1 (bit_vector), length-delimited: tag 0x0a, len 3, then 0x03 0x01 0x00.
-    assert_eq!(bytes, vec![0x0a, 0x03, 0x03, 0x01, 0x00]);
+    assert_bytes_eq("Want wire layout", &bytes, &[0x0a, 0x03, 0x03, 0x01, 0x00]);
 
     // The selection survives a round-trip and counts three wanted chunks.
     let want = Want::new(bv);
@@ -163,12 +164,12 @@ fn delivery_fixed_bytes_and_roundtrip() {
     expected.extend_from_slice(&[0x0a, 0x20]);
     expected.extend_from_slice(address.as_bytes());
     expected.push(0x12);
-    push_len(&mut expected, wire_data.len());
+    push_uvarint(&mut expected, wire_data.len());
     expected.extend_from_slice(&wire_data);
     expected.push(0x1a);
-    push_len(&mut expected, 113);
+    push_uvarint(&mut expected, 113);
     expected.extend_from_slice(&stamp.to_bytes());
-    assert_eq!(bytes, expected, "delivery wire layout drifted");
+    assert_bytes_eq("delivery wire layout drifted", &bytes, &expected);
 
     // Reconstructs to the requested address.
     let proto = vertex_swarm_net_proto::pullsync::Delivery {
@@ -178,13 +179,4 @@ fn delivery_fixed_bytes_and_roundtrip() {
     };
     let decoded = Delivery::from_proto(proto).expect("valid delivery");
     assert_eq!(*decoded.chunk.address(), address);
-}
-
-/// Encode a protobuf length as a base-128 varint.
-fn push_len(buf: &mut Vec<u8>, mut len: usize) {
-    while len >= 0x80 {
-        buf.push((len as u8 & 0x7f) | 0x80);
-        len >>= 7;
-    }
-    buf.push(len as u8);
 }

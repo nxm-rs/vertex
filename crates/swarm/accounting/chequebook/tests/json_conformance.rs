@@ -16,6 +16,7 @@ use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use serde_json::Value;
 use vertex_swarm_accounting_chequebook::{ChequeExt, SignedCheque, cheque::Cheque};
+use vertex_swarm_test_utils::vectors::{assert_bytes_eq, assert_bytes_eq_hex};
 
 /// Gnosis Chain, the cheque signing chain on mainnet.
 const MAINNET_CHAIN: NamedChain = NamedChain::Gnosis;
@@ -73,21 +74,19 @@ fn parses_peer_format_sample() {
 
     let decoded: SignedCheque = serde_json::from_slice(sample.as_bytes()).unwrap();
 
-    assert_eq!(
-        decoded.cheque.chequebook,
-        "0xcafebabecafebabecafebabecafebabecafebabe"
-            .parse::<Address>()
-            .unwrap()
+    assert_bytes_eq_hex(
+        "chequebook",
+        decoded.cheque.chequebook.as_slice(),
+        "cafebabecafebabecafebabecafebabecafebabe",
     );
-    assert_eq!(
-        decoded.cheque.beneficiary,
-        "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-            .parse::<Address>()
-            .unwrap()
+    assert_bytes_eq_hex(
+        "beneficiary",
+        decoded.cheque.beneficiary.as_slice(),
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
     );
     assert_eq!(decoded.cheque.cumulative_payout(), U256::MAX);
     let expected_sig: Vec<u8> = (0u8..=64).collect();
-    assert_eq!(decoded.signature.as_ref(), expected_sig.as_slice());
+    assert_bytes_eq("signature", decoded.signature.as_ref(), &expected_sig);
 }
 
 #[test]
