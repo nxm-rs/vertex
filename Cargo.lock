@@ -4897,7 +4897,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "nectar-contracts"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=0e56d916e69ddd0c3ecd63daa2404b88d88e5da3#0e56d916e69ddd0c3ecd63daa2404b88d88e5da3"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4907,7 +4907,7 @@ dependencies = [
 [[package]]
 name = "nectar-postage"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=0e56d916e69ddd0c3ecd63daa2404b88d88e5da3#0e56d916e69ddd0c3ecd63daa2404b88d88e5da3"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4923,7 +4923,7 @@ dependencies = [
 [[package]]
 name = "nectar-primitives"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=0e56d916e69ddd0c3ecd63daa2404b88d88e5da3#0e56d916e69ddd0c3ecd63daa2404b88d88e5da3"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4954,7 +4954,7 @@ dependencies = [
 [[package]]
 name = "nectar-swarms"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=0e56d916e69ddd0c3ecd63daa2404b88d88e5da3#0e56d916e69ddd0c3ecd63daa2404b88d88e5da3"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-chains",
  "num_enum",
