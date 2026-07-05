@@ -67,9 +67,11 @@ fn storer_node_connects_over_the_sim_transport() {
         .tokio_io()
         .build();
 
+    // Derive from the built world's seed: a replay override changes it.
+    let seed = world.seed();
     world.host("boot", serve_bootnode);
     let boot_addr = world.multiaddr_of("boot", PORT).with(Protocol::P2p(
-        host_keypair(SEED, "boot").public().to_peer_id(),
+        host_keypair(seed, "boot").public().to_peer_id(),
     ));
 
     world.client("node", move |ctx| async move {
@@ -123,8 +125,8 @@ fn storer_node_connects_over_the_sim_transport() {
     world.run();
 
     let overlay = Identity::new(
-        host_signer(SEED, "node"),
-        host_nonce(SEED, "node"),
+        host_signer(seed, "node"),
+        host_nonce(seed, "node"),
         spec(),
         SwarmNodeType::Storer,
     )

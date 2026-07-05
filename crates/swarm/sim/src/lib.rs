@@ -5,6 +5,20 @@
 //! network plus a [`SimWorld`] that runs real vertex swarms under a seeded,
 //! virtual-time scheduler with the same drive vocabulary as the seeded
 //! behaviour harness.
+//!
+//! # Replaying a failure
+//!
+//! Every failure names the world seed (`seed=N`). Replay it exactly:
+//!
+//! ```sh
+//! VERTEX_SIM_SEED=N cargo nextest run -p vertex-swarm-sim --profile sim -E 'test(<name>)'
+//! ```
+//!
+//! The override applies to every world built through
+//! [`SimWorldBuilder::seed`], so derive host material from [`SimWorld::seed`]
+//! after build, never from the literal passed to the builder. Determinism
+//! proofs that compare distinct seeds pin theirs with
+//! [`SimWorldBuilder::fixed_seed`].
 
 use libp2p::{
     PeerId, Transport as _,
@@ -32,7 +46,7 @@ pub use scenario::{
 };
 pub use trace::{SimTrace, TraceEntry, normalized_event};
 pub use transport::{TurmoilStream, TurmoilTransport};
-pub use world::{HostResult, SimError, SimWorld, SimWorldBuilder, listen_multiaddr};
+pub use world::{HostResult, SEED_ENV, SimError, SimWorld, SimWorldBuilder, listen_multiaddr};
 
 /// Authentication upgrade a simulated stack negotiates.
 ///

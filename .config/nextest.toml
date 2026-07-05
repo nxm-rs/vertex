@@ -1,0 +1,26 @@
+# Nextest lanes.
+#
+# The default profile is the fast unit lane. Deterministic simulations run in
+# their own lane:
+#
+#   cargo nextest run -p vertex-swarm-sim --profile sim
+#
+# A failed sim names its seed (seed=N); replay it exactly with
+#
+#   VERTEX_SIM_SEED=N cargo nextest run -p vertex-swarm-sim --profile sim -E 'test(<name>)'
+#
+# A scenario too big even for the sim lane gets excluded by filterset here,
+# never by #[ignore].
+
+[profile.default]
+# Sim scenarios do not belong in the default run; the sim lane owns them.
+default-filter = "not package(vertex-swarm-sim)"
+
+[profile.sim]
+default-filter = "package(vertex-swarm-sim)"
+# Whole-node scenarios compress hours of virtual time into real seconds but
+# still do real work per tick: flag a test after a minute, kill it after five.
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Scenario failures carry the seed line and the world trace; print them in
+# full at the end of the run.
+failure-output = "immediate-final"
