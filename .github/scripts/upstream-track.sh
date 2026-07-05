@@ -70,9 +70,13 @@ ensure_label() {
     return 0
   fi
   log "label '$DRIFT_LABEL' missing; creating it"
-  mutate_gh label create "$DRIFT_LABEL" --repo "$ISSUE_REPO" \
+  # A create that loses to a concurrent create, or a label past the list page
+  # limit, must not abort the run and suppress the drift alert that follows.
+  if ! mutate_gh label create "$DRIFT_LABEL" --repo "$ISSUE_REPO" \
     --color "d93f0b" \
-    --description "The rust-libp2p fork patch series no longer applies or verifies against upstream master"
+    --description "The rust-libp2p fork patch series no longer applies or verifies against upstream master"; then
+    log "label create failed (it may already exist); continuing"
+  fi
 }
 
 find_open_issue() {
@@ -196,6 +200,12 @@ main() {
     resolve_drift_issue "$upstream_sha"
     return 0
   fi
+
+  # Download every dependency up front, outside a verification stage. A
+  # registry network flake then fails the job red (like a clone or fetch
+  # failure) instead of masquerading as patch-series drift and filing an issue.
+  log "fetching dependencies"
+  cargo fetch >&2
 
   if ! run_stage "test" \
       cargo test -p libp2p-swarm -p libp2p-swarm-test \
