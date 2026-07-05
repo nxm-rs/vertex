@@ -1,10 +1,15 @@
 //! Test helpers for creating peer fixtures.
 
+use std::sync::Arc;
+
 use alloy_primitives::{Address, B256, Signature, U256};
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
+use vertex_swarm_api::SwarmNodeType;
+use vertex_swarm_identity::Identity;
 use vertex_swarm_peer::{SwarmPeer, Timestamp};
 use vertex_swarm_primitives::{Nonce, OverlayAddress};
+use vertex_swarm_spec::Spec;
 
 /// Create a test overlay address from a single byte.
 ///
@@ -116,6 +121,22 @@ pub fn test_swarm_peer_with_timestamp(n: u8, timestamp: i64, port: u16) -> Swarm
         None,
         Address::ZERO,
     )
+}
+
+/// Sign a `SwarmPeer` record with a fresh random identity under `spec`.
+///
+/// Unlike [`test_swarm_peer`], the returned record carries a real EIP-191
+/// signature that re-parses under `spec.network_id()`, so it round-trips
+/// through the handshake codec. The overlay is derived from the random signer,
+/// not caller-controlled.
+pub fn test_signed_swarm_peer(
+    spec: Arc<Spec>,
+    node_type: SwarmNodeType,
+    multiaddrs: Vec<Multiaddr>,
+    timestamp: Timestamp,
+) -> SwarmPeer {
+    let identity = Identity::random(spec, node_type);
+    SwarmPeer::sign(&identity, multiaddrs, timestamp, None).expect("sign test peer")
 }
 
 /// Create a SwarmAddress with a specific first byte.

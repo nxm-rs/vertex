@@ -84,18 +84,15 @@ mod tests {
         // The record body is irrelevant to `needs_resign`; only the fingerprint
         // and timestamp drive the decision. Build a placeholder via a real sign
         // so the type is well formed.
-        use vertex_swarm_identity::Identity;
-        use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
-        use vertex_swarm_test_utils::test_spec_isolated as test_spec;
+        use vertex_swarm_peer::SwarmNodeType;
+        use vertex_swarm_test_utils::{test_signed_swarm_peer, test_spec_isolated as test_spec};
 
-        let identity = Identity::random(test_spec(), SwarmNodeType::Storer);
-        let record = SwarmPeer::sign(
-            &identity,
+        let record = test_signed_swarm_peer(
+            test_spec(),
+            SwarmNodeType::Storer,
             vec!["/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr")],
             Timestamp::from_seconds(signed_at.max(1)),
-            None,
-        )
-        .expect("sign record");
+        );
         CachedSelfRecord {
             fingerprint,
             signed_at: Timestamp::from_seconds(signed_at),
