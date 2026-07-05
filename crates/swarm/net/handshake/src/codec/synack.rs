@@ -46,17 +46,19 @@ pub(crate) fn encode_synack(
 mod tests {
     use super::*;
     use vertex_swarm_api::SwarmSpec;
-    use vertex_swarm_identity::Identity;
     use vertex_swarm_peer::Timestamp;
-    use vertex_swarm_test_utils::test_spec_isolated as test_spec;
+    use vertex_swarm_test_utils::{test_signed_swarm_peer, test_spec_isolated as test_spec};
 
     fn create_test_data() -> (Multiaddr, SwarmPeer, NetworkId) {
         let spec = test_spec();
-        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let observed: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
         let peer_addr: Multiaddr = "/ip4/192.168.1.1/tcp/5678".parse().unwrap();
-        let peer = SwarmPeer::sign(&identity, vec![peer_addr], Timestamp::now(), None)
-            .expect("should sign peer");
+        let peer = test_signed_swarm_peer(
+            spec.clone(),
+            SwarmNodeType::Storer,
+            vec![peer_addr],
+            Timestamp::now(),
+        );
         (observed, peer, spec.network_id())
     }
 

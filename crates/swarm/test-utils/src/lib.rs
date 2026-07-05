@@ -28,16 +28,18 @@ pub mod cluster;
 pub mod identity;
 pub mod peer;
 pub mod spec;
+pub mod storage;
 pub mod topology;
 pub mod vectors;
 
 // Re-exports for convenience
 pub use identity::{MockIdentity, test_identity, test_identity_arc, test_identity_with_type};
 pub use peer::{
-    make_overlay, make_swarm_peer_minimal, test_overlay, test_peer, test_peer_id, test_swarm_peer,
-    test_swarm_peer_with_timestamp,
+    make_overlay, make_swarm_peer_minimal, test_overlay, test_peer, test_peer_id,
+    test_signed_swarm_peer, test_swarm_peer, test_swarm_peer_with_timestamp,
 };
 pub use spec::{TEST_NETWORK_ID, test_spec, test_spec_isolated, test_spec_with_network_id};
+pub use storage::{MockReserve, MockStorage};
 pub use topology::MockTopology;
 pub use vectors::{
     Vector, assert_bytes_eq, assert_bytes_eq_hex, check_each, hex_array, hex_vec, push_uvarint,

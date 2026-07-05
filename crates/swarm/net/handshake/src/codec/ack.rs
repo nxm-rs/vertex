@@ -115,15 +115,16 @@ mod tests {
     use super::*;
     use libp2p::Multiaddr;
     use vertex_swarm_api::SwarmSpec;
-    use vertex_swarm_identity::Identity;
-    use vertex_swarm_test_utils::test_spec_isolated as test_spec;
+    use vertex_swarm_test_utils::{test_signed_swarm_peer, test_spec_isolated as test_spec};
 
     fn create_test_peer() -> SwarmPeer {
-        let spec = test_spec();
-        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        SwarmPeer::sign(&identity, vec![multiaddr], Timestamp::now(), None)
-            .expect("should sign peer")
+        test_signed_swarm_peer(
+            test_spec(),
+            SwarmNodeType::Storer,
+            vec![multiaddr],
+            Timestamp::now(),
+        )
     }
 
     #[test]
