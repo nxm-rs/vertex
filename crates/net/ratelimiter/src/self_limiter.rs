@@ -116,6 +116,9 @@ impl<K: Eq + Hash + Clone, T> SelfRateLimiter<K, T> {
     /// returned; it will later surface from [`Self::poll_ready`] once the bucket
     /// has refilled. `Err(value)` hands the value back when the cost exceeds the
     /// bucket capacity and so can never be admitted.
+    ///
+    /// Parking arms a [`SendDelay`], which on native builds a tokio timer, so a
+    /// call that parks must run inside a tokio runtime context.
     pub fn enqueue(&mut self, key: K, cost: u32, value: T) -> Result<Option<T>, T> {
         if self.cost_exceeds_capacity(key.clone(), cost) {
             return Err(value);
