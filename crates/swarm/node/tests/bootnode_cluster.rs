@@ -259,6 +259,62 @@ async fn tcp_cluster_smoke() -> Result<()> {
     Ok(())
 }
 
+/// Seeded smoke: a seed-derived cluster builds and converges. Proves the
+/// `with_seed` path end to end: seeded signers and nonces are accepted by the
+/// real node builders, and the seed-derived memory-port base binds. Determinism
+/// of the derivation itself is covered by the harness unit tests; here we launch
+/// a single cluster (two same-seed clusters would collide on ports) and assert
+/// it handshakes with stable, distinct overlays.
+#[tokio::test(start_paused = true)]
+async fn seeded_cluster_smoke() -> Result<()> {
+    let mut cluster = ClusterBuilder::new()
+        .with_seed(0xC0FFEE)
+        .with_bootnode()
+        .with_clients(1)
+        .build()
+        .await?;
+
+    let mut bootnode_events = cluster
+        .take_bootnode_events()
+        .expect("cluster built with bootnode");
+
+    let bootnode_overlay = cluster.bootnode().overlay;
+    let client = cluster.clients().first().expect("one client built");
+    let client_overlay = client.overlay;
+    let client_peer_id = client.peer_id;
+
+    assert!(
+        !bootnode_overlay.is_zero() && !client_overlay.is_zero(),
+        "seeded overlays should never be the zero address"
+    );
+    assert_ne!(
+        bootnode_overlay, client_overlay,
+        "distinct seeded nodes must derive distinct overlays"
+    );
+
+    timeout(HANDSHAKE_TIMEOUT, async {
+        loop {
+            match bootnode_events.recv().await {
+                Ok(TopologyEvent::PeerReady { peer_id, .. }) if peer_id == client_peer_id => break,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+    .await
+    .map_err(|_| eyre::eyre!("timed out waiting for the seeded client to handshake"))?;
+
+    for (idx, result) in cluster.shutdown().await.iter().enumerate() {
+        if let Err(err) = result {
+            return Err(eyre::eyre!(
+                "cluster node #{idx} did not shut down cleanly: {err}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Storer smoke: the cluster's storer role builds a `StorerNode` over the mock
 /// store and completes a handshake with the bootnode.
 #[tokio::test(start_paused = true)]

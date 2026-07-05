@@ -30,6 +30,9 @@
 //! - **Persistent identity.** Each node is constructed from a single
 //!   [`Identity`] generated up front. This models a bootnode whose overlay
 //!   address survives restarts.
+//! - **Optional determinism.** [`ClusterBuilder::with_seed`] derives every
+//!   node's signer, nonce, and listen-port base from a seeded RNG, so a run
+//!   replays exactly given its seed. The default stays random.
 //! - **Per-node shutdown and panic surfacing.** Each node's `run` future is
 //!   spawned on the [`TaskManager`], and a panic in one is surfaced as an
 //!   `eyre` error out of [`Cluster::shutdown`] rather than lost.
@@ -57,6 +60,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use alloy_signer::k256::ecdsa::SigningKey;
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
@@ -134,6 +138,7 @@ pub struct ClusterBuilder {
     #[cfg(feature = "cluster-storer")]
     storer_count: usize,
     max_peers: usize,
+    seed: Option<u64>,
 }
 
 /// Default connection admission cap, generous enough for a ~50-node star.
@@ -168,6 +173,7 @@ impl ClusterBuilder {
             #[cfg(feature = "cluster-storer")]
             storer_count: 0,
             max_peers: DEFAULT_MAX_PEERS,
+            seed: None,
         }
     }
 
@@ -187,6 +193,27 @@ impl ClusterBuilder {
     /// Override the per-node connection admission cap.
     pub fn with_max_peers(mut self, max_peers: usize) -> Self {
         self.max_peers = max_peers;
+        self
+    }
+
+    /// Derive every node identity and the listen-port base from a deterministic
+    /// RNG so the whole cluster replays exactly given the same seed.
+    ///
+    /// Each node's secp256k1 signer, nonce, and hence overlay address are drawn
+    /// from a generator seeded by `seed`, in a stable order (bootnode first,
+    /// then clients, then storers). Two clusters built with the same seed share
+    /// per-node overlays and topology geometry, so depth and proximity
+    /// assertions rest on exact addresses rather than probabilistic arguments.
+    ///
+    /// The listen-port base is seed-derived too, so two clusters built with the
+    /// same seed bind the same ports and cannot run simultaneously. Assert on
+    /// identities without launching both, or vary the seed per live cluster.
+    ///
+    /// The default (no seed) preserves the random status quo: fresh signers,
+    /// nonces, and a random memory-port base or OS-assigned ephemeral TCP ports
+    /// on every build.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
         self
     }
 
@@ -224,14 +251,22 @@ impl ClusterBuilder {
             Err(_) => Some(TaskManager::current()),
         };
 
+        // Plan the per-node identities and listen addresses in one ordered
+        // pass (bootnode, then clients, then storers). A seed makes both
+        // deterministic; the default draws random identities and either a
+        // random memory-port base or OS-assigned ephemeral TCP ports.
+        let node_types = self.node_type_sequence();
+        let mut identities = self.plan_identities(&node_types).into_iter();
+        let mut listen = self.listen_allocator();
+
         let mut bootnode = None;
         let mut bootnode_addrs: Vec<Multiaddr> = Vec::new();
 
         if self.has_bootnode {
-            let identity = persistent_identity(&self.spec, SwarmNodeType::Bootnode);
-            let listen = self.reserve_listen_addr()?;
+            let identity = identities.next().expect("one identity per node");
+            let reservation = listen.next()?;
             let handle =
-                spawn_bootnode(identity, listen, &[], self.transport, self.max_peers).await?;
+                spawn_bootnode(identity, reservation, &[], self.transport, self.max_peers).await?;
             bootnode_addrs.push(handle.listen_addr.clone());
             bootnode = Some(handle);
         }
@@ -244,11 +279,11 @@ impl ClusterBuilder {
 
         let mut clients = Vec::with_capacity(self.client_count);
         for _ in 0..self.client_count {
-            let identity = persistent_identity(&self.spec, SwarmNodeType::Client);
-            let listen = self.reserve_listen_addr()?;
+            let identity = identities.next().expect("one identity per node");
+            let reservation = listen.next()?;
             let handle = spawn_client(
                 identity,
-                listen,
+                reservation,
                 &bootnode_addrs,
                 self.transport,
                 self.max_peers,
@@ -261,11 +296,11 @@ impl ClusterBuilder {
         let mut storers = Vec::with_capacity(self.storer_count);
         #[cfg(feature = "cluster-storer")]
         for _ in 0..self.storer_count {
-            let identity = persistent_identity(&self.spec, SwarmNodeType::Storer);
-            let listen = self.reserve_listen_addr()?;
+            let identity = identities.next().expect("one identity per node");
+            let reservation = listen.next()?;
             let handle = spawn_storer(
                 identity,
-                listen,
+                reservation,
                 &bootnode_addrs,
                 self.transport,
                 self.max_peers,
@@ -298,24 +333,53 @@ impl ClusterBuilder {
         })
     }
 
-    /// Allocate the listen multiaddr for one node under the selected transport.
-    ///
-    /// Memory nodes take a process-unique `/memory/<port>` picked up front so
-    /// the address (with the peer id appended after build) can seed clients
-    /// before the node's loop is polled. TCP nodes reserve an ephemeral
-    /// loopback port, held until libp2p binds it.
-    fn reserve_listen_addr(&self) -> Result<ListenReservation> {
-        match self.transport {
-            Transport::Memory => Ok(ListenReservation::Memory(next_memory_addr())),
-            Transport::Tcp => reserve_ephemeral_port().map(ListenReservation::Tcp),
+    /// Node types in cluster order: the bootnode (if any) first, then clients,
+    /// then storers. This ordering fixes how a seeded RNG stream maps to nodes.
+    fn node_type_sequence(&self) -> Vec<SwarmNodeType> {
+        let mut types = Vec::new();
+        if self.has_bootnode {
+            types.push(SwarmNodeType::Bootnode);
+        }
+        types.extend(std::iter::repeat_n(
+            SwarmNodeType::Client,
+            self.client_count,
+        ));
+        #[cfg(feature = "cluster-storer")]
+        types.extend(std::iter::repeat_n(
+            SwarmNodeType::Storer,
+            self.storer_count,
+        ));
+        types
+    }
+
+    /// Derive one [`Identity`] per node. Seeded builds draw signers and nonces
+    /// from a deterministic RNG; unseeded builds fall back to random.
+    fn plan_identities(&self, node_types: &[SwarmNodeType]) -> Vec<Identity> {
+        match self.seed {
+            Some(seed) => seeded_identities(seed, &self.spec, node_types),
+            None => node_types
+                .iter()
+                .map(|&node_type| persistent_identity(&self.spec, node_type))
+                .collect(),
+        }
+    }
+
+    /// Build the listen-address allocator for the selected transport. Seeded
+    /// builds hand out a deterministic sequential block from a seed-derived
+    /// base; unseeded builds keep the random status quo.
+    fn listen_allocator(&self) -> ListenAllocator {
+        match self.seed {
+            Some(seed) => ListenAllocator::seeded(seed, self.transport),
+            None => ListenAllocator::Random(self.transport),
         }
     }
 }
 
 /// A reserved listen multiaddr, resolved just before the node binds it.
 enum ListenReservation {
-    /// A process-unique `/memory/<port>` address.
-    Memory(Multiaddr),
+    /// A pre-resolved multiaddr returned verbatim: a `/memory/<port>` address
+    /// or a seed-derived fixed TCP port.
+    Fixed(Multiaddr),
     /// A placeholder [`TcpListener`] holding an ephemeral loopback port so a
     /// sibling in the same harness cannot reuse it.
     Tcp(TcpListener),
@@ -326,7 +390,7 @@ impl ListenReservation {
     /// socket so libp2p can bind it.
     fn into_listen_addr(self) -> Result<Multiaddr> {
         match self {
-            Self::Memory(addr) => Ok(addr),
+            Self::Fixed(addr) => Ok(addr),
             Self::Tcp(listener) => {
                 let port = listener
                     .local_addr()
@@ -486,6 +550,129 @@ fn persistent_identity(spec: &Arc<Spec>, node_type: SwarmNodeType) -> Identity {
         Arc::clone(spec),
         node_type,
     )
+}
+
+/// Derive one persistent [`Identity`] per entry of `node_types` from a
+/// generator seeded by `seed`, in list order. The same seed and node-type
+/// sequence yield byte-identical signers, nonces, and overlay addresses.
+fn seeded_identities(seed: u64, spec: &Arc<Spec>, node_types: &[SwarmNodeType]) -> Vec<Identity> {
+    use rand::{SeedableRng, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    node_types
+        .iter()
+        .map(|&node_type| {
+            let signer = seeded_signer(&mut rng);
+            let nonce = seeded_nonce(&mut rng);
+            Identity::new(signer, nonce, Arc::clone(spec), node_type)
+        })
+        .collect()
+}
+
+/// Draw a secp256k1 signer from `rng`. A uniformly random 32-byte scalar is a
+/// valid key with overwhelming probability; the rare rejects (zero or above the
+/// curve order) are redrawn so the derivation is total.
+fn seeded_signer(rng: &mut impl rand::RngCore) -> alloy_signer_local::LocalSigner<SigningKey> {
+    use alloy_primitives::B256;
+    use alloy_signer_local::LocalSigner;
+
+    loop {
+        let mut key_bytes = [0u8; 32];
+        rng.fill_bytes(&mut key_bytes);
+        if let Ok(signer) = LocalSigner::from_bytes(&B256::from(key_bytes)) {
+            return signer;
+        }
+    }
+}
+
+/// Draw a nonce from `rng`.
+fn seeded_nonce(rng: &mut impl rand::RngCore) -> vertex_swarm_primitives::Nonce {
+    use vertex_swarm_primitives::Nonce;
+
+    let mut nonce_bytes = [0u8; 32];
+    rng.fill_bytes(&mut nonce_bytes);
+    Nonce::new(nonce_bytes)
+}
+
+/// Salt mixed into the seed for the port stream so it does not alias the
+/// identity stream seeded by the same value.
+const PORT_SEED_SALT: u64 = 0x506f_7274_5f62_6173;
+/// First TCP port a seeded cluster may bind.
+const TCP_PORT_RANGE_START: u16 = 20_000;
+/// Width of the seeded TCP port window; leaves headroom below the 16-bit ceiling
+/// for sequential per-node offsets.
+const TCP_PORT_RANGE_SPAN: u32 = 20_000;
+
+/// Deterministic memory-port base for a seeded cluster. A high base keeps it
+/// clear of `/memory/0`, which the swarm-test harness listens on.
+fn seeded_memory_base(seed: u64) -> u64 {
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(seed ^ PORT_SEED_SALT);
+    u64::from(rng.next_u32()) + 1
+}
+
+/// Deterministic TCP-port base for a seeded cluster, confined to the dynamic
+/// range with headroom for sequential per-node offsets.
+fn seeded_tcp_base(seed: u64) -> u16 {
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(seed ^ PORT_SEED_SALT);
+    TCP_PORT_RANGE_START + (rng.next_u32() % TCP_PORT_RANGE_SPAN) as u16
+}
+
+/// Assigns a listen reservation to each node in turn.
+///
+/// `Random` keeps the status quo: a process-unique `/memory/<port>` or an
+/// OS-assigned ephemeral TCP port reserved behind a placeholder socket.
+/// `Seeded*` hand out a deterministic sequential block from a seed-derived base,
+/// so a run replays exactly at the cost of two same-seed clusters colliding if
+/// launched together.
+enum ListenAllocator {
+    Random(Transport),
+    SeededMemory { next: u64 },
+    SeededTcp { base: u16, offset: u16 },
+}
+
+impl ListenAllocator {
+    fn seeded(seed: u64, transport: Transport) -> Self {
+        match transport {
+            Transport::Memory => ListenAllocator::SeededMemory {
+                next: seeded_memory_base(seed),
+            },
+            Transport::Tcp => ListenAllocator::SeededTcp {
+                base: seeded_tcp_base(seed),
+                offset: 0,
+            },
+        }
+    }
+
+    /// Listen reservation for the next node in cluster order.
+    fn next(&mut self) -> Result<ListenReservation> {
+        match self {
+            ListenAllocator::Random(transport) => match transport {
+                Transport::Memory => Ok(ListenReservation::Fixed(next_memory_addr())),
+                Transport::Tcp => reserve_ephemeral_port().map(ListenReservation::Tcp),
+            },
+            ListenAllocator::SeededMemory { next } => {
+                let addr = format!("/memory/{next}")
+                    .parse()
+                    .expect("literal /memory addr is well-formed");
+                *next += 1;
+                Ok(ListenReservation::Fixed(addr))
+            }
+            ListenAllocator::SeededTcp { base, offset } => {
+                let port = base
+                    .checked_add(*offset)
+                    .ok_or_else(|| eyre::eyre!("seeded cluster exceeds the 16-bit port ceiling"))?;
+                *offset += 1;
+                let addr = format!("/ip4/127.0.0.1/tcp/{port}")
+                    .parse()
+                    .wrap_err("listen multiaddr is well-formed")?;
+                Ok(ListenReservation::Fixed(addr))
+            }
+        }
+    }
 }
 
 /// Process-unique memory port allocator.
@@ -822,5 +1009,142 @@ impl vertex_swarm_api::SwarmRoutingConfig for TestNetworkConfig {
     type Routing = vertex_swarm_topology::KademliaConfig;
     fn routing(&self) -> &Self::Routing {
         &self.routing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_spec() -> Arc<Spec> {
+        Arc::new(
+            vertex_swarm_spec::SpecBuilder::testnet()
+                .network_id(TEST_NETWORK_ID)
+                .bootnodes(Vec::new())
+                .build(),
+        )
+    }
+
+    fn fixed_addr(reservation: ListenReservation) -> Multiaddr {
+        match reservation {
+            ListenReservation::Fixed(addr) => addr,
+            ListenReservation::Tcp(_) => panic!("expected a fixed seeded address"),
+        }
+    }
+
+    #[test]
+    fn same_seed_yields_identical_identities() {
+        let spec = test_spec();
+        let node_types = [
+            SwarmNodeType::Bootnode,
+            SwarmNodeType::Client,
+            SwarmNodeType::Client,
+        ];
+
+        let first = seeded_identities(42, &spec, &node_types);
+        let second = seeded_identities(42, &spec, &node_types);
+
+        let first_overlays: Vec<_> = first.iter().map(|id| id.overlay_address()).collect();
+        let second_overlays: Vec<_> = second.iter().map(|id| id.overlay_address()).collect();
+        assert_eq!(
+            first_overlays, second_overlays,
+            "same seed must reproduce every node overlay"
+        );
+
+        // Distinct nodes within one cluster must not alias each other.
+        assert_ne!(
+            first_overlays[0], first_overlays[1],
+            "distinct nodes must derive distinct overlays"
+        );
+        assert_ne!(first_overlays[1], first_overlays[2]);
+    }
+
+    #[test]
+    fn different_seeds_diverge() {
+        let spec = test_spec();
+        let node_types = [SwarmNodeType::Bootnode, SwarmNodeType::Client];
+
+        let a = seeded_identities(1, &spec, &node_types);
+        let b = seeded_identities(2, &spec, &node_types);
+
+        assert_ne!(
+            a[0].overlay_address(),
+            b[0].overlay_address(),
+            "different seeds should produce different overlays"
+        );
+    }
+
+    #[test]
+    fn seeded_builder_plan_is_reproducible() {
+        let a = ClusterBuilder::new()
+            .with_seed(7)
+            .with_bootnode()
+            .with_clients(3);
+        let b = ClusterBuilder::new()
+            .with_seed(7)
+            .with_bootnode()
+            .with_clients(3);
+
+        let a_types = a.node_type_sequence();
+        let b_types = b.node_type_sequence();
+        assert_eq!(a_types, b_types);
+        assert_eq!(a_types.len(), 4, "one bootnode plus three clients");
+        assert_eq!(a_types[0], SwarmNodeType::Bootnode);
+
+        let a_overlays: Vec<_> = a
+            .plan_identities(&a_types)
+            .iter()
+            .map(|id| id.overlay_address())
+            .collect();
+        let b_overlays: Vec<_> = b
+            .plan_identities(&b_types)
+            .iter()
+            .map(|id| id.overlay_address())
+            .collect();
+        assert_eq!(a_overlays, b_overlays);
+    }
+
+    #[test]
+    fn seeded_memory_ports_are_deterministic_and_sequential() {
+        // The memory-port base is stable per seed and moves with the seed.
+        assert_eq!(seeded_memory_base(7), seeded_memory_base(7));
+        assert_ne!(seeded_memory_base(7), seeded_memory_base(8));
+        assert!(seeded_memory_base(7) >= 1, "base must clear /memory/0");
+
+        // Two allocators on the same seed hand out the same sequential block.
+        let mut first = ListenAllocator::seeded(7, Transport::Memory);
+        let mut second = ListenAllocator::seeded(7, Transport::Memory);
+        let a0 = fixed_addr(first.next().unwrap());
+        let a1 = fixed_addr(first.next().unwrap());
+        let b0 = fixed_addr(second.next().unwrap());
+        assert_eq!(a0, b0, "same seed replays the first memory port");
+        assert_ne!(a0, a1, "successive nodes take successive ports");
+    }
+
+    #[test]
+    fn seeded_tcp_ports_stay_in_range() {
+        assert_eq!(seeded_tcp_base(7), seeded_tcp_base(7));
+        assert_ne!(seeded_tcp_base(7), seeded_tcp_base(8));
+        assert!(seeded_tcp_base(7) >= TCP_PORT_RANGE_START);
+
+        let mut alloc = ListenAllocator::seeded(7, Transport::Tcp);
+        let p0 = fixed_addr(alloc.next().unwrap());
+        let p1 = fixed_addr(alloc.next().unwrap());
+        assert_ne!(p0, p1, "successive nodes take successive TCP ports");
+    }
+
+    #[test]
+    fn default_builder_stays_random() {
+        let node_types = [SwarmNodeType::Client, SwarmNodeType::Client];
+        let a = ClusterBuilder::new().with_clients(2);
+        let first = a.plan_identities(&node_types);
+        let b = ClusterBuilder::new().with_clients(2);
+        let second = b.plan_identities(&node_types);
+
+        assert_ne!(
+            first[0].overlay_address(),
+            second[0].overlay_address(),
+            "unseeded builds must not repeat overlays"
+        );
     }
 }
