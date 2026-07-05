@@ -9,10 +9,11 @@
 //! `hive_peers_discarded_total{reason="bootnode_mode"}` counter exists but
 //! is not exposed through the test harness yet.
 //!
-//! See `vertex_swarm_test_utils::cluster` for the harness rationale.
-//! Wall-clock `tokio::time::timeout` is used because the underlying libp2p
-//! transport is real TCP (`tokio::time::pause()` would freeze timers without
-//! freezing the OS network stack).
+//! See `vertex_swarm_test_utils::cluster` for the harness rationale. The
+//! cluster runs over the in-process memory transport, so paused virtual time
+//! (`start_paused`) drives convergence with no wall-clock waiting: the
+//! transport wakes tasks through channels, so an idle runtime auto-advances
+//! the clock past each `timeout` budget.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -27,10 +28,12 @@ use vertex_swarm_primitives::{Bin, NeighborhoodDepth, all_bins};
 use vertex_swarm_test_utils::cluster::{ClusterBuilder, NodeRole};
 use vertex_swarm_topology::{TopologyEvent, TopologyPhase};
 
-/// Cap on wall-clock time the test will wait for handshakes to complete.
+/// Virtual-time budget the test allows for handshakes to complete. Under
+/// `start_paused` an idle runtime auto-advances to this deadline instantly, so
+/// it bounds logical rather than wall-clock time.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(start_paused = true)]
 async fn three_node_convergence() -> Result<()> {
     // Best-effort tracing init so RUST_LOG works when debugging locally.
     // `try_init` so re-running the test in the same process is a no-op.
@@ -41,10 +44,11 @@ async fn three_node_convergence() -> Result<()> {
         )
         .try_init();
 
-    // Build the cluster: 1 bootnode + 2 clients. The harness assigns
-    // ephemeral 127.0.0.1 ports, configures each client with the bootnode's
-    // listen multiaddr as its sole bootstrap entry, and spawns each event
-    // loop on the global TaskExecutor.
+    // Build the cluster: 1 bootnode + 2 clients over the default memory
+    // transport. Each node takes a process-unique `/memory/<port>` address,
+    // each client is configured with the bootnode's listen multiaddr as its
+    // sole bootstrap entry, and every event loop runs on the global
+    // TaskExecutor.
     let mut cluster = ClusterBuilder::new()
         .with_bootnode()
         .with_clients(2)
@@ -54,9 +58,9 @@ async fn three_node_convergence() -> Result<()> {
     assert_eq!(cluster.client_count(), 2);
 
     // Take the pre-subscribed event receiver BEFORE inspecting the bootnode
-    // handle. The harness subscribed inside `build` ahead of any dial,
-    // closing the race against fast loopback handshakes that would
-    // otherwise complete before a caller could subscribe.
+    // handle. The harness subscribed inside `build` before spawning any peer,
+    // closing the race against a handshake that would otherwise complete
+    // before a caller could subscribe.
     let mut bootnode_events = cluster
         .take_bootnode_events()
         .expect("cluster built with bootnode");
@@ -140,7 +144,7 @@ async fn three_node_convergence() -> Result<()> {
         );
     }
 
-    // Suppress unused-binding warning for the structural reservation —
+    // Suppress unused-binding warning for the structural reservation,
     // re-enabled the moment assertion (b) becomes live.
     let _ = client_overlays;
 
@@ -187,8 +191,7 @@ async fn three_node_convergence() -> Result<()> {
     );
 
     // Bootnode's overlay address is well-defined and non-zero (smoke check
-    // — guards against accidental ephemeral-identity regression once Unit
-    // 11 lands).
+    // guarding against an accidental ephemeral-identity regression).
     assert!(
         !bootnode_overlay.is_zero(),
         "bootnode overlay should never be the zero address"
