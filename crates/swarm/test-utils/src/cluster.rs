@@ -417,23 +417,22 @@ impl Cluster {
         // Fire the global shutdown signal. Two cases:
         //
         // - If the cluster installed its *own* [`TaskManager`] (no executor
-        //   was current before [`ClusterBuilder::build`]), we own it and can
-        //   call [`TaskManager::graceful_shutdown`] directly. That consumes
-        //   the manager and drops its `Signal`, which fires the `Shutdown`
-        //   future every node holds. Because that call blocks on a `Condvar`,
-        //   we run it on the blocking pool.
+        //   was current before [`ClusterBuilder::build`]), we own it and drop
+        //   it here. Dropping the manager drops its `Signal`, which fires the
+        //   `Shutdown` future every node holds. We deliberately do not call
+        //   [`TaskManager::graceful_shutdown_with_timeout`]: it blocks on a
+        //   `Condvar`, and under `start_paused` an outstanding blocking task
+        //   stops the runtime from parking, so virtual time never advances and
+        //   the wait burns its full real timeout every run. The join loop below
+        //   awaits each task through tokio timers instead, which paused time
+        //   advances instantly.
         //
         // - If the manager was created elsewhere (typical inside a
         //   `#[tokio::test]` that wraps `cluster::build`), we can only signal
         //   via [`TaskExecutor::initiate_graceful_shutdown`], which relies on
         //   the outer manager being polled.
         if let Some(manager) = self.task_manager.take() {
-            tokio::task::spawn_blocking(move || {
-                // Bounded so a stuck node does not wedge the test runner.
-                manager.graceful_shutdown_with_timeout(Duration::from_secs(15));
-            })
-            .await
-            .ok();
+            drop(manager);
         } else if let Ok(executor) = vertex_tasks::TaskExecutor::try_current() {
             let _ = executor.initiate_graceful_shutdown();
         }
