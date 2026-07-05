@@ -96,7 +96,7 @@ hex = { version = "0.4", default-features = false, features = ["alloc"] }
 vertex-tasks = { path = "../../crates/tasks" }
 
 # libp2p Multiaddr only; the trimmed wasm feature set mirrors the node crate.
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", default-features = false }
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "570774ff4368b8401040825f5da9efda8211e929", default-features = false }
 
 # wasm-bindgen surface and browser bindings.
 wasm-bindgen = "0.2"
