@@ -17,19 +17,26 @@
 //! - [`timeout`] bounds a future by a deadline and returns
 //!   `Result<T, Elapsed>`.
 //! - [`Instant`] is the timer-coherent monotonic clock.
-//! - The wall-clock types and Unix-timestamp helpers are re-exported from
-//!   `vertex_util_runtime::time` so timer code needs no second import path.
+//! - [`now_unix_secs`], [`now_unix_millis`], and [`now_unix_nanos`] are the
+//!   runtime wall clock: Unix timestamps derived from the timer clock, so
+//!   paused-clock tests and the sim move them together with timers.
+//!
+//! Two clock homes, one contract: this module is the runtime wall clock, and
+//! all internal bookkeeping and persistence timestamps read here.
+//! `vertex_util_runtime::time` is the platform wall clock, always real:
+//! wire-visible timestamps, log and metric stamps, and any comparison against
+//! a remote-produced timestamp read there instead.
 
 mod interval;
+mod wall;
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 pub use interval::{Interval, interval, interval_after};
-pub use vertex_util_runtime::time::{
-    Duration, SystemTime, UNIX_EPOCH, now_unix_millis, now_unix_nanos, now_unix_secs,
-};
+pub use vertex_util_runtime::time::{Duration, SystemTime, UNIX_EPOCH};
+pub use wall::{now_unix_millis, now_unix_nanos, now_unix_secs};
 
 /// The monotonic clock that timers in this module are driven by.
 ///
