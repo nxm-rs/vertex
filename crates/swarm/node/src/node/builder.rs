@@ -83,11 +83,17 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
 
 impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
     /// Build infrastructure from network configuration.
+    ///
+    /// `allow_memory` admits `/memory/<port>` multiaddrs in the dial filter; the
+    /// node builder sets it only when an in-process memory transport is
+    /// injected, so a production node with the default stack rejects them
+    /// pre-dial.
     pub fn from_config<C>(
         identity: I,
         network_config: &C,
         topology_config: TopologyConfig,
         peer_store: Option<PeerStore>,
+        allow_memory: bool,
     ) -> Result<Self>
     where
         I: HasSpec,
@@ -105,7 +111,8 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
         };
 
         let mut builder = TopologyBehaviourBuilder::new(identity.clone(), &config_with_bootnodes)
-            .with_config(topology_config);
+            .with_config(topology_config)
+            .with_memory_dialing(allow_memory);
         if let Some(store) = peer_store {
             builder = builder.with_peer_store(store);
         }

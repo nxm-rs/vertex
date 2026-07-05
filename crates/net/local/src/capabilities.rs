@@ -57,6 +57,9 @@ pub struct LocalCapabilities {
     /// can never derive a capability from listeners, yet can dial whatever
     /// address family their host stack routes.
     dial_only: bool,
+    /// Admit `/memory/<port>` multiaddrs in the dial filter. Set only when an
+    /// in-process memory transport is injected; production nodes leave it off.
+    allow_memory: bool,
 }
 
 impl LocalCapabilities {
@@ -76,6 +79,17 @@ impl LocalCapabilities {
             dial_only: true,
             ..Self::default()
         }
+    }
+
+    /// Admit `/memory/<port>` multiaddrs in the dial filter.
+    ///
+    /// Set by the node builder only when an in-process memory transport is
+    /// injected, so its channel addresses (received via config or gossip)
+    /// dial. Production nodes leave this off, so a self-signed record
+    /// advertising only memory addresses is rejected pre-dial.
+    pub fn with_memory_dialing(mut self, allow: bool) -> Self {
+        self.allow_memory = allow;
+        self
     }
 
     /// Handle new listen address from libp2p.
@@ -146,6 +160,7 @@ impl LocalCapabilities {
         crate::DialCapability {
             ip: self.capability(),
             transport: crate::TransportCapability::platform(),
+            allow_memory: self.allow_memory,
         }
     }
 
@@ -213,6 +228,19 @@ mod tests {
         // did the pin holds: capability stays Dual.
         cap.on_new_listen_addr(parse_addr("/ip4/127.0.0.1/tcp/1634"));
         assert_eq!(cap.capability(), IpCapability::Dual);
+    }
+
+    #[test]
+    fn memory_dialing_defaults_off_and_flows_into_dial_capability() {
+        let mem = parse_addr("/memory/1234");
+
+        let default = LocalCapabilities::new();
+        assert!(!default.dial_capability().allow_memory);
+        assert!(!default.dial_capability().can_dial(&mem));
+
+        let with_memory = LocalCapabilities::dial_only().with_memory_dialing(true);
+        assert!(with_memory.dial_capability().allow_memory);
+        assert!(with_memory.dial_capability().can_dial(&mem));
     }
 
     #[test]
