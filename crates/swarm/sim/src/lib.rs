@@ -16,6 +16,8 @@ use libp2p::{
 mod drive;
 mod host;
 mod node;
+mod probe;
+mod scenario;
 mod trace;
 mod transport;
 mod world;
@@ -23,6 +25,11 @@ mod world;
 pub use drive::{DrivableSwarm, drive};
 pub use host::{HostContext, TracedSwarm, host_keypair, host_nonce, host_signer};
 pub use node::{SimNetworkConfig, transport_override};
+pub use probe::Probe;
+pub use scenario::{
+    Fault, FaultSchedule, Invariants, PeerScript, Placement, Scenario, ScriptedPeer,
+    handshake_summary, placement_nonce,
+};
 pub use trace::{SimTrace, TraceEntry, normalized_event};
 pub use transport::{TurmoilStream, TurmoilTransport};
 pub use world::{HostResult, SimError, SimWorld, SimWorldBuilder, listen_multiaddr};
