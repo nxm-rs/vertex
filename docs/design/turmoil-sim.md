@@ -2,17 +2,17 @@
 
 ## Verdict: go
 
-A `libp2p_core::Transport` over turmoil's simulated TCP works with no fork changes and no production code changes. Real vertex swarms complete the handshake protocol across two simulated hosts, and the seeded event trace is byte-identical across repeated runs, both in-process and across processes.
+A `libp2p_core::Transport` over turmoil's simulated TCP works with no fork changes and no production code changes. Real vertex swarms complete the handshake protocol across two simulated hosts, and the seeded event trace is byte-identical across repeated runs: in-process (asserted by the seed-stability tests) and across separate processes (checked by running the test binary twice).
 
 ## What was proven
 
-All claims below are backed by executing tests in `crates/swarm/sim/tests/handshake.rs`.
+Every claim below is backed by the tests in `crates/swarm/sim/tests/handshake.rs`, run in-process. The one exception is cross-process reproduction: those tests assert in-process stability only, so cross-process was verified separately by running the test binary in two processes and diffing the trace.
 
 - **Transport**: `TurmoilTransport` (in `vertex-swarm-sim`) implements `Transport` over `turmoil::net::{TcpListener, TcpStream}`. turmoil's net types implement the tokio I/O traits; a thin wrapper re-exposes them through the futures traits libp2p upgrades expect. The transport lives in this repository, not the libp2p fork: it needs nothing non-public from libp2p, so there is no reason to carry it as fork delta.
 - **Round-trip**: two turmoil hosts each drive a real `Swarm<HandshakeBehaviour<Identity, NoAddresses>>` and both sides complete the full syn/synack/ack handshake, over both the plaintext and the production-shaped noise-plus-yamux stack. The whole exchange completes in about 470ms of virtual time and about 50ms of wall time.
 - **Virtual time**: libp2p deadlines ride turmoil's clock with no extra wiring. The fork routes all libp2p timers through `libp2p-timer`, which picks the tokio clock whenever a tokio runtime handle exists; turmoil runs each host on a paused current-thread runtime, so handshake timeouts, upgrade timeouts, and idle timeouts are all virtual.
 - **Yamux**: negotiates and multiplexes normally under the sim. It arms no wall-clock timers of its own (window updates are data-driven, no keepalive), so it introduced no nondeterminism: the noise-plus-yamux trace was as seed-stable as the plaintext one.
-- **Seed stability**: the identical seeded sim run twice in one process produces identical normalized event traces (virtual timestamps, peer ids, addresses, handshake payloads). The same trace also reproduced exactly across separate processes. A different turmoil seed shifts message latencies and produces a different trace, so the seed demonstrably drives the schedule.
+- **Seed stability**: the identical seeded sim run twice in one process produces identical normalized event traces (virtual timestamps, peer ids, addresses, handshake payloads). The same trace also reproduced exactly across separate processes (verified by running the test binary twice; there is no in-process assertion for the cross-process case). A different turmoil seed shifts message latencies and produces a different trace, so the seed demonstrably drives the schedule.
 - **Entropy-free path**: seeded libp2p keypairs (`test_keypair`) plus a seeded overlay signer (`Identity::new` over a fixed private key) mean the plaintext path draws no OS entropy at all. Noise draws ephemeral X25519 keys from the OS RNG, which varies the wire bytes per run but never fed back into event ordering in these tests; plaintext remains the honest default for byte-level reproducibility claims.
 
 ## Remaining nondeterminism sources
