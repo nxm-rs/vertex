@@ -40,7 +40,8 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 alloy-signer-local.workspace = true
-vertex-swarm-test-utils.workspace = true
+proptest.workspace = true
+vertex-swarm-test-utils = { workspace = true, features = ["proptest"] }
 
 [lints]
 workspace = true

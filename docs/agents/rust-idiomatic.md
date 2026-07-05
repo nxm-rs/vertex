@@ -79,7 +79,7 @@ Refuse to write any of these in a review of your own code:
 
 - Unit tests live next to the code in `#[cfg(test)] mod tests`. Integration tests live in `crates/<name>/tests/` (see `crates/swarm/node/tests`, `crates/swarm/peers/peer/tests`).
 - Use `vertex-swarm-test-utils` for cluster, identity, peer, spec, and topology fixtures. Do not reinvent these in a downstream crate's `tests/`.
-- `proptest` for codec round-trips and any validation function with a non-trivial input space (`crates/swarm/net/handshake` is the model).
+- `proptest` for codec round-trips and any validation function with a non-trivial input space. The shared value strategies for core wire types (addresses, primitives, stamped chunks, signed peer records) live behind the `proptest` feature of `vertex-swarm-test-utils` (`strategies` module); `vertex-net-codec::prop_assert_proto_roundtrip!` is the round-trip helper for `ProtoMessage` codecs. The reference adopters are `crates/swarm/net/pullsync` (the `ProtoMessage` path via the helper) and `crates/swarm/net/handshake` (its free-function codec over the same strategies).
 - No `#[ignore]` tests on `main`. If a test is flaky, fix it or delete it.
 - Tests assert on enum variants (`matches!(err, HandshakeError::NetworkIdMismatch)`), never on `err.to_string()`.
 

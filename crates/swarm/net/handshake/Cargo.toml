@@ -63,4 +63,4 @@ arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
-vertex-swarm-test-utils = { workspace = true }
+vertex-swarm-test-utils = { workspace = true, features = ["proptest"] }
