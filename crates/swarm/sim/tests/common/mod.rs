@@ -134,7 +134,10 @@ pub(crate) fn gossip(handle: &TopologyHandle<Identity>, scenario: &mut Scenario,
 ///
 /// A productive connection is exempt from the early-disconnect penalty, so a
 /// later scripted drop reads as blameless churn (the peer stays re-dialable)
-/// rather than as a failing dial that arms backoff.
+/// rather than as a failing dial that arms backoff. The exemption is also a
+/// virtual-time necessity: connection duration and dial backoff are measured
+/// on wall clocks, so under the sim every drop looks instant and an armed
+/// backoff never expires.
 pub(crate) fn mark_productive(handle: &TopologyHandle<Identity>, scenario: &Scenario) {
     let overlays: Vec<OverlayAddress> = scenario.peers().iter().map(|p| p.overlay).collect();
     mark_overlays_productive(handle, &overlays);

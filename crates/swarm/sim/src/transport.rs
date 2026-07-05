@@ -26,6 +26,11 @@ use turmoil::net::{TcpListener, TcpStream};
 /// multiaddrs and, for dialling only, `/dns|dns4|dns6/<host>/tcp/..` resolved
 /// through turmoil's name table. Compose it with an authentication upgrade
 /// and a muxer before handing it to a swarm.
+///
+/// Built for single-listener hosts, which is all the sim registers: the poll
+/// scan services listeners from index 0 and returns on the first ready one,
+/// `remove_listener` emits no `ListenerClosed` event, and dial role overrides
+/// in `DialOpts` are ignored.
 #[derive(Default)]
 pub struct TurmoilTransport {
     listeners: Vec<Listener>,
