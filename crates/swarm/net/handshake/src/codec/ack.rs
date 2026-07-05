@@ -197,3 +197,40 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use vertex_swarm_test_utils::strategies;
+
+    use super::*;
+
+    // A bootnode does not participate in handshake, and the boolean storer flag
+    // collapses it onto client, so only storer and client round-trip.
+    fn node_type() -> impl Strategy<Value = SwarmNodeType> {
+        prop_oneof![Just(SwarmNodeType::Storer), Just(SwarmNodeType::Client)]
+    }
+
+    fn welcome() -> impl Strategy<Value = String> {
+        prop::collection::vec(any::<char>(), 0..=32).prop_map(|cs| cs.into_iter().collect())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn ack_roundtrips(
+            peer in strategies::swarm_peer(),
+            node_type in node_type(),
+            welcome in welcome(),
+        ) {
+            let network_id = strategies::swarm_peer_network_id();
+            let proto = encode_ack(&peer, node_type, &welcome, network_id);
+            let (decoded_peer, decoded_type, decoded_welcome) =
+                decode_ack(proto, network_id).expect("a validly signed ack decodes");
+            prop_assert_eq!(peer, decoded_peer);
+            prop_assert_eq!(node_type, decoded_type);
+            prop_assert_eq!(welcome, decoded_welcome);
+        }
+    }
+}

@@ -30,6 +30,31 @@ macro_rules! assert_proto_roundtrip {
     }};
 }
 
+/// Proptest sibling of [`assert_proto_roundtrip!`] for use inside a
+/// `proptest!` block.
+///
+/// Encodes a message to proto and decodes it back, failing the test case
+/// through `prop_assert_eq!` (so proptest can shrink) rather than panicking.
+/// The message type must implement `ProtoMessage` and `Clone + PartialEq +
+/// Debug`; the caller crate must depend on `proptest`.
+#[macro_export]
+macro_rules! prop_assert_proto_roundtrip {
+    ($msg:expr) => {{
+        let original = $msg;
+        let proto = original
+            .clone()
+            .into_proto()
+            .expect("proto encoding should succeed");
+        let decoded =
+            <_ as $crate::ProtoMessage>::from_proto(proto).expect("proto decoding should succeed");
+        ::proptest::prop_assert_eq!(
+            original,
+            decoded,
+            "roundtrip encoding should preserve message"
+        );
+    }};
+}
+
 /// Generates a protocol error enum with common variants for protobuf-based protocols.
 ///
 /// All protocol error types share `ConnectionClosed`, `Protobuf`, and `Io` variants

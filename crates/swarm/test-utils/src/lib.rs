@@ -29,6 +29,8 @@ pub mod identity;
 pub mod peer;
 pub mod spec;
 pub mod storage;
+#[cfg(feature = "proptest")]
+pub mod strategies;
 pub mod topology;
 pub mod vectors;
 

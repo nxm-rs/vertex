@@ -4897,7 +4897,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "nectar-contracts"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=19ee6d4f6303f1fb629314b4b4d9cb6def930d31#19ee6d4f6303f1fb629314b4b4d9cb6def930d31"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4907,10 +4907,11 @@ dependencies = [
 [[package]]
 name = "nectar-postage"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=19ee6d4f6303f1fb629314b4b4d9cb6def930d31#19ee6d4f6303f1fb629314b4b4d9cb6def930d31"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "arbitrary",
  "byteorder",
  "k256",
  "nectar-primitives",
@@ -4922,11 +4923,12 @@ dependencies = [
 [[package]]
 name = "nectar-primitives"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=19ee6d4f6303f1fb629314b4b4d9cb6def930d31#19ee6d4f6303f1fb629314b4b4d9cb6def930d31"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "arbitrary",
  "bytes",
  "derive_more",
  "digest 0.11.3",
@@ -4939,6 +4941,7 @@ dependencies = [
  "keccak-batch",
  "once_cell",
  "parking_lot",
+ "rand 0.10.1",
  "rayon",
  "serde",
  "subtle",
@@ -4951,7 +4954,7 @@ dependencies = [
 [[package]]
 name = "nectar-swarms"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=19ee6d4f6303f1fb629314b4b4d9cb6def930d31#19ee6d4f6303f1fb629314b4b4d9cb6def930d31"
+source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
 dependencies = [
  "alloy-chains",
  "num_enum",
@@ -9161,12 +9164,15 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
+ "arbitrary",
  "asynchronous-codec",
  "bytes",
  "futures",
  "libp2p",
  "nectar-postage",
  "nectar-primitives",
+ "proptest",
+ "proptest-arbitrary-interop",
  "quick-protobuf",
  "quick-protobuf-codec",
  "strum 0.28.0",
@@ -9177,7 +9183,6 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
  "vertex-swarm-primitives",
- "vertex-swarm-test-utils",
 ]
 
 [[package]]
@@ -9594,6 +9599,8 @@ dependencies = [
  "libp2p",
  "nectar-primitives",
  "parking_lot",
+ "proptest",
+ "proptest-arbitrary-interop",
  "rand 0.9.4",
  "tokio",
  "vertex-swarm-api",

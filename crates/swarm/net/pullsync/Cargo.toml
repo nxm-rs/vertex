@@ -40,6 +40,12 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 alloy-signer-local.workspace = true
+alloy-primitives = { workspace = true, features = ["arbitrary"] }
+arbitrary.workspace = true
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-postage = { workspace = true, features = ["arbitrary"] }
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
 vertex-swarm-test-utils.workspace = true
 
 [lints]
