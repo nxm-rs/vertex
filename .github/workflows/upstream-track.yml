@@ -1,0 +1,48 @@
+name: Upstream Fork Drift
+
+# Continuously verify that the nxm-rs/rust-libp2p fork patch series still
+# rebases cleanly onto upstream libp2p/rust-libp2p master and still builds and
+# tests there. Drift is reported as a single tracking issue in this repo.
+#
+# Hosted here (not in the fork) because scheduled workflows only run from a
+# repo's default branch, and the fork's default branch is its upstream mirror
+# which we do not want to pollute. Vertex owns this supply-chain concern.
+
+on:
+  schedule:
+    # Twice weekly (Monday and Thursday, 05:00 UTC): enough to catch drift
+    # without generating noise.
+    - cron: '0 5 * * 1,4'
+  workflow_dispatch:
+
+# Never let two drift runs overlap; do not cancel an in-flight verification.
+concurrency:
+  group: upstream-fork-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: rebase and verify fork patch series
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Track upstream and verify patch series
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/upstream-track.sh
