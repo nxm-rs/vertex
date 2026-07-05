@@ -1,27 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 //! Test utilities and mocks for vertex-swarm crates.
 //!
-//! This crate provides shared test infrastructure to reduce duplication
-//! across the vertex codebase. It consolidates common test patterns:
+//! Shared test infrastructure so suites do not re-roll fixtures:
 //!
-//! - [`MockIdentity`] - A configurable mock implementation of `SwarmIdentity`
-//! - [`MockTopology`] - A configurable mock implementation of `SwarmTopology`
-//! - Helper functions for creating deterministic test fixtures
+//! - [`MockIdentity`], [`MockTopology`], [`MockStorage`], [`MockReserve`]:
+//!   configurable mocks of the core node traits
+//! - `peer`, `spec`, `vectors`: deterministic fixtures and wire vectors
+//! - `strategies` (feature `proptest`): proptest strategies for wire types
+//! - `harness` (feature `harness`): seeded behaviour-level swarm harness
+//! - `cluster` (features `cluster`/`cluster-storer`): in-process multi-node
+//!   cluster rig
 //!
-//! # Usage
-//!
-//! Add to your crate's `[dev-dependencies]`:
-//!
-//! ```toml
-//! [dev-dependencies]
-//! vertex-swarm-test-utils.workspace = true
-//! ```
-//!
-//! Then import what you need:
-//!
-//! ```ignore
-//! use vertex_swarm_test_utils::{test_identity, test_peer_id, MockIdentity};
-//! ```
+//! Consume it from `[dev-dependencies]` only.
 
 #[cfg(feature = "cluster")]
 pub mod cluster;

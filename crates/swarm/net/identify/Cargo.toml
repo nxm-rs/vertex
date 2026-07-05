@@ -45,5 +45,4 @@ void = "1.0"
 tracing.workspace = true
 
 [dev-dependencies]
-libp2p-swarm-test.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }

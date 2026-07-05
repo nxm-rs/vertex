@@ -51,6 +51,8 @@ pub type NodeTransport = Boxed<(PeerId, StreamMuxerBox)>;
 /// gets the default stack unchanged; an in-process test supplies a
 /// channel-based memory transport so paused time drives the whole node.
 ///
+/// A supported injection point for embedders, not a test-only hook.
+///
 /// Only the native swarm assembly consults it; the browser stack is fixed.
 pub type TransportOverride = Box<
     dyn FnOnce(

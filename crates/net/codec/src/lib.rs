@@ -33,10 +33,11 @@ macro_rules! assert_proto_roundtrip {
 /// Proptest sibling of [`assert_proto_roundtrip!`] for use inside a
 /// `proptest!` block.
 ///
-/// Encodes a message to proto and decodes it back, failing the test case
-/// through `prop_assert_eq!` (so proptest can shrink) rather than panicking.
-/// The message type must implement `ProtoMessage` and `Clone + PartialEq +
-/// Debug`; the caller crate must depend on `proptest`.
+/// Encodes a message to proto and decodes it back. The equality check fails
+/// through `prop_assert_eq!` so proptest can shrink the case; an encode or
+/// decode failure panics via `expect`. The message type must implement
+/// `ProtoMessage` and `Clone + PartialEq + Debug`; the caller crate must
+/// depend on `proptest`.
 #[macro_export]
 macro_rules! prop_assert_proto_roundtrip {
     ($msg:expr) => {{

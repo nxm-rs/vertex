@@ -25,7 +25,7 @@ use libp2p::PeerId;
 use tokio::time::timeout;
 use vertex_swarm_api::{SwarmTopologyPeers as _, SwarmTopologyState as _, SwarmTopologyStats as _};
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, all_bins};
-use vertex_swarm_test_utils::cluster::{ClusterBuilder, NodeRole};
+use vertex_swarm_test_utils::cluster::{ClusterBuilder, NodeRole, Transport};
 use vertex_swarm_topology::{TopologyEvent, TopologyPhase};
 
 /// Virtual-time budget the test allows for handshakes to complete. Under
@@ -220,5 +220,82 @@ async fn three_node_convergence() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// TCP smoke: the cluster's real-socket mode (ephemeral port reservation plus
+/// the bootnode-dial kick) stays exercised. Real I/O, so a live clock and a
+/// wall-clock budget rather than paused time.
+#[tokio::test]
+async fn tcp_cluster_smoke() -> Result<()> {
+    let cluster = ClusterBuilder::new()
+        .with_transport_mode(Transport::Tcp)
+        .with_bootnode()
+        .with_clients(2)
+        .build()
+        .await?;
+
+    let bootnode_topo = cluster.bootnode().topology.clone();
+    let connected = timeout(Duration::from_secs(15), async {
+        while bootnode_topo.connected_peers_count() < 2 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(
+        connected,
+        "bootnode should connect both clients over TCP; got {}",
+        bootnode_topo.connected_peers_count()
+    );
+
+    for (idx, result) in cluster.shutdown().await.iter().enumerate() {
+        if let Err(err) = result {
+            return Err(eyre::eyre!(
+                "cluster node #{idx} did not shut down cleanly: {err}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Storer smoke: the cluster's storer role builds a `StorerNode` over the mock
+/// store and completes a handshake with the bootnode.
+#[tokio::test(start_paused = true)]
+async fn storer_cluster_smoke() -> Result<()> {
+    let mut cluster = ClusterBuilder::new()
+        .with_bootnode()
+        .with_storers(1)
+        .build()
+        .await?;
+
+    let mut bootnode_events = cluster
+        .take_bootnode_events()
+        .expect("cluster built with bootnode");
+    assert_eq!(cluster.storer_count(), 1);
+    let storer = cluster.storers().first().expect("one storer built");
+    assert_eq!(storer.role, NodeRole::Storer);
+    let storer_peer_id = storer.peer_id;
+
+    timeout(HANDSHAKE_TIMEOUT, async {
+        loop {
+            match bootnode_events.recv().await {
+                Ok(TopologyEvent::PeerReady { peer_id, .. }) if peer_id == storer_peer_id => break,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+    .await
+    .map_err(|_| eyre::eyre!("timed out waiting for the storer to handshake with the bootnode"))?;
+
+    for (idx, result) in cluster.shutdown().await.iter().enumerate() {
+        if let Err(err) = result {
+            return Err(eyre::eyre!(
+                "cluster node #{idx} did not shut down cleanly: {err}"
+            ));
+        }
+    }
     Ok(())
 }
