@@ -8,7 +8,9 @@
 //!
 //! This module is the one import path for timer code in the wasm cone:
 //!
-//! - [`sleep`] waits for a duration.
+//! - [`sleep`] waits for a duration; [`send_sleep`] and its re-armable
+//!   [`SendDelay`] wrapper do the same on a `Send` future for timers held across
+//!   an `await` inside a `Send`-bounded behaviour future.
 //! - [`interval`] and [`interval_after`] build an [`Interval`] for periodic
 //!   work, with [`Interval::poll_tick`] for behaviour poll loops and
 //!   [`Interval::tick`] for async tasks.
@@ -21,6 +23,8 @@
 mod interval;
 
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 pub use interval::{Interval, interval, interval_after};
 pub use vertex_util_runtime::time::{
@@ -79,6 +83,72 @@ pub fn sleep(duration: Duration) -> impl Future<Output = ()> + 'static {
     // an absurdly long duration still produces a (very long) timer.
     let millis = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
     gloo_timers::future::TimeoutFuture::new(millis)
+}
+
+/// Wait for `duration`, then resolve, on a future that is `Send` on both
+/// targets.
+///
+/// Prefer [`sleep`] for timer code that stays on one task. Reach for this only
+/// where the timer is held across an `await` inside a future that carries a
+/// `Send` bound, as async-trait behaviour futures do: [`sleep`] is `!Send` on
+/// `wasm32` and cannot cross those bounds.
+///
+/// On native this is `tokio::time::sleep`, so it follows the tokio clock and is
+/// controllable under `tokio::time::pause` and `tokio::time::advance`. On
+/// `wasm32` it is `futures_timer::Delay`, the `Send` browser timer, driven by
+/// the wall clock.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn send_sleep(duration: Duration) -> impl Future<Output = ()> + Send + 'static {
+    tokio::time::sleep(duration)
+}
+
+/// Wait for `duration`, then resolve, on a future that is `Send` on both
+/// targets.
+///
+/// Prefer [`sleep`] for timer code that stays on one task. Reach for this only
+/// where the timer is held across an `await` inside a future that carries a
+/// `Send` bound, as async-trait behaviour futures do: [`sleep`] is `!Send` on
+/// `wasm32` and cannot cross those bounds.
+///
+/// On native this is `tokio::time::sleep`, so it follows the tokio clock and is
+/// controllable under `tokio::time::pause` and `tokio::time::advance`. On
+/// `wasm32` it is `futures_timer::Delay`, the `Send` browser timer, driven by
+/// the wall clock.
+#[cfg(target_arch = "wasm32")]
+pub fn send_sleep(duration: Duration) -> impl Future<Output = ()> + Send + 'static {
+    futures_timer::Delay::new(duration)
+}
+
+/// A re-armable [`send_sleep`] timer for struct fields.
+///
+/// Holds a boxed [`send_sleep`], so it is `Send` and `Unpin` on both targets: it
+/// can be stored in a struct, polled through `Pin::new`, and re-armed in place
+/// where tokio's `!Unpin` `Sleep` could not be. [`Self::reset`] re-arms it to
+/// fire `duration` from the reset instant, the same as a fresh [`Self::new`].
+pub struct SendDelay {
+    inner: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl SendDelay {
+    /// Arm a timer to fire after `duration`.
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            inner: Box::pin(send_sleep(duration)),
+        }
+    }
+
+    /// Re-arm to fire `duration` from now, discarding any pending deadline.
+    pub fn reset(&mut self, duration: Duration) {
+        self.inner = Box::pin(send_sleep(duration));
+    }
+}
+
+impl Future for SendDelay {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.inner.as_mut().poll(cx)
+    }
 }
 
 /// Error returned by [`timeout`] when the deadline elapses before the wrapped
@@ -172,5 +242,24 @@ mod tests {
     fn elapsed_metric_label() {
         let label: &'static str = (&Elapsed).into();
         assert_eq!(label, "elapsed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_sleep_completes_under_tokio_advance() {
+        let start = Instant::now();
+        send_sleep(Duration::from_secs(30)).await;
+        assert_eq!(start.elapsed(), Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_delay_reset_re_arms_from_now() {
+        let start = Instant::now();
+        let mut timer = SendDelay::new(Duration::from_secs(5));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        // Re-arm before it fires: the new deadline is measured from now, so the
+        // total wait is the elapsed 2s plus the fresh 10s.
+        timer.reset(Duration::from_secs(10));
+        timer.await;
+        assert_eq!(start.elapsed(), Duration::from_secs(12));
     }
 }

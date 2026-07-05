@@ -8494,10 +8494,10 @@ name = "vertex-net-ratelimiter"
 version = "0.1.0"
 dependencies = [
  "futures",
- "futures-timer",
  "parking_lot",
  "thiserror 2.0.18",
  "tokio",
+ "vertex-tasks",
  "vertex-util-runtime",
 ]
 
@@ -9671,6 +9671,7 @@ version = "0.1.0"
 dependencies = [
  "auto_impl",
  "dyn-clone",
+ "futures-timer",
  "futures-util",
  "gloo-timers 0.3.0",
  "metrics",

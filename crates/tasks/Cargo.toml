@@ -42,6 +42,10 @@ wasm-bindgen-futures = { workspace = true }
 # unsupported-platform clock and panics), so wasm timers use the browser's
 # setTimeout through gloo-timers instead. See the `time` module.
 gloo-timers = { workspace = true, features = ["futures"] }
+# `send_sleep` needs a `Send` timer on wasm32; gloo-timers' future is `!Send`, so
+# the browser side of `send_sleep`/`SendDelay` uses futures-timer's `Send` Delay
+# (routed through gloo-timers by its wasm-bindgen feature). See the `time` module.
+futures-timer = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros", "test-util"] }
