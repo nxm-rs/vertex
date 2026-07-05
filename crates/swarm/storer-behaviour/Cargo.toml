@@ -40,6 +40,5 @@ thiserror.workspace = true
 alloy-primitives.workspace = true
 nectar-postage.workspace = true
 nectar-primitives.workspace = true
-libp2p-swarm-test.workspace = true
-vertex-net-peer-registry.workspace = true
+vertex-swarm-test-utils = { workspace = true, features = ["harness"] }
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }

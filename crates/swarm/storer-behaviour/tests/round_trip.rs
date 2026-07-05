@@ -1,140 +1,20 @@
 //! Behaviour-level round-trip: a puller behaviour syncs cursors and a range page
-//! from a syncer behaviour backed by a mock [`PullStorage`].
+//! from a syncer behaviour backed by the canonical mock [`PullStorage`].
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::get_first)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{B256, Signature};
 use futures::StreamExt;
-use libp2p::Swarm;
-use libp2p_swarm_test::SwarmExt;
+use libp2p::swarm::SwarmEvent;
 use nectar_postage::Stamp;
-use nectar_primitives::{AnyChunk, Bin, ChunkAddress, ContentChunk, ProximityOrder};
-use vertex_swarm_api::{
-    BatchId, BinScanItem, PullStorage, StampedChunk, StorageRadius, SwarmResult,
-};
-use vertex_swarm_primitives::CachedChunk;
+use nectar_primitives::{AnyChunk, Bin, ChunkAddress, ContentChunk};
+use vertex_swarm_api::{PullStorage, StampedChunk};
+use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_storer_behaviour::{PullsyncBehaviour, PullsyncEvent};
-
-/// A reserve snapshot for one bin: ordered entries plus an address index.
-#[derive(Default)]
-struct MockPullStorage {
-    bin: u8,
-    epoch: u64,
-    items: Vec<BinScanItem>,
-    chunks: HashMap<ChunkAddress, StampedChunk>,
-}
-
-impl MockPullStorage {
-    fn with_chunks(bin: Bin, epoch: u64, chunks: Vec<StampedChunk>) -> Self {
-        let mut items = Vec::new();
-        let mut index = HashMap::new();
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            let address = *chunk.address();
-            let stamp_hash = B256::from_slice(address.as_slice());
-            items.push(BinScanItem {
-                seq: i as u64 + 1,
-                address,
-                batch_id: BatchId::repeat_byte(0xbb),
-                stamp_hash,
-            });
-            index.insert(address, chunk);
-        }
-        Self {
-            bin: bin.get(),
-            epoch,
-            items,
-            chunks: index,
-        }
-    }
-}
-
-impl vertex_swarm_api::SwarmLocalStore for MockPullStorage {
-    fn put(&self, _chunk: CachedChunk) -> SwarmResult<()> {
-        Ok(())
-    }
-
-    fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>> {
-        Ok(self.chunks.get(address).cloned().map(CachedChunk::from))
-    }
-
-    fn contains(&self, address: &ChunkAddress) -> bool {
-        self.chunks.contains_key(address)
-    }
-
-    fn remove(&self, _address: &ChunkAddress) -> SwarmResult<()> {
-        Ok(())
-    }
-}
-
-impl vertex_swarm_api::ReserveStore for MockPullStorage {
-    fn storage_radius(&self) -> StorageRadius {
-        StorageRadius::ZERO
-    }
-
-    fn is_responsible_for(&self, _address: &ChunkAddress) -> bool {
-        true
-    }
-
-    fn count(&self) -> SwarmResult<u64> {
-        Ok(self.items.len() as u64)
-    }
-
-    fn capacity(&self) -> u64 {
-        u64::MAX
-    }
-
-    fn count_in(&self, _po: ProximityOrder) -> SwarmResult<u64> {
-        Ok(0)
-    }
-
-    fn evict_furthest(&self) -> SwarmResult<Option<ChunkAddress>> {
-        Ok(None)
-    }
-
-    fn evict_from_bin(&self, _bin: Bin, _max: u64) -> SwarmResult<u64> {
-        Ok(0)
-    }
-
-    fn evict_batch(&self, _batch: BatchId, _up_to_bin: Option<Bin>, _max: u64) -> SwarmResult<u64> {
-        Ok(0)
-    }
-}
-
-impl vertex_swarm_api::BinCursorStore for MockPullStorage {
-    fn bin_cursor(&self, bin: Bin) -> SwarmResult<u64> {
-        if bin.get() == self.bin {
-            Ok(self.items.last().map(|i| i.seq).unwrap_or(0))
-        } else {
-            Ok(0)
-        }
-    }
-
-    fn scan_bin_from<'a>(
-        &'a self,
-        bin: Bin,
-        start_seq: u64,
-    ) -> SwarmResult<Box<dyn Iterator<Item = SwarmResult<BinScanItem>> + Send + 'a>> {
-        let items: Vec<BinScanItem> = if bin.get() == self.bin {
-            self.items
-                .iter()
-                .filter(|i| i.seq >= start_seq)
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Ok(Box::new(items.into_iter().map(Ok)))
-    }
-}
-
-impl PullStorage for MockPullStorage {
-    fn reserve_epoch(&self) -> u64 {
-        self.epoch
-    }
-}
+use vertex_swarm_test_utils::MockStorage;
+use vertex_swarm_test_utils::harness::{HarnessNode, connect_and_activate, seeded_node};
 
 fn content(payload: &'static [u8]) -> StampedChunk {
     let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
@@ -145,35 +25,27 @@ fn content(payload: &'static [u8]) -> StampedChunk {
     StampedChunk::new(chunk, stamp)
 }
 
-fn syncer(storage: MockPullStorage) -> Swarm<PullsyncBehaviour> {
+fn syncer(seed: u8, storage: MockStorage) -> HarnessNode<PullsyncBehaviour> {
     let storage: Arc<dyn PullStorage> = Arc::new(storage);
-    Swarm::new_ephemeral_tokio(move |_| PullsyncBehaviour::new(Arc::clone(&storage)))
+    seeded_node(seed, SwarmNodeType::Storer, move |_| {
+        PullsyncBehaviour::new(storage)
+    })
 }
 
-/// Connect a puller and a syncer over an in-memory transport.
-async fn connect(puller: &mut Swarm<PullsyncBehaviour>, syncer: &mut Swarm<PullsyncBehaviour>) {
-    puller.listen().with_memory_addr_external().await;
-    syncer.listen().with_memory_addr_external().await;
-    puller.connect(syncer).await;
-}
-
-#[tokio::test]
-async fn cursor_handshake_round_trips() {
-    let bin = Bin::new(5).expect("valid bin");
-    let chunks = vec![content(b"cursor chunk a"), content(b"cursor chunk b")];
-    let mut puller = syncer(MockPullStorage::default());
-    let mut server = syncer(MockPullStorage::with_chunks(bin, 7, chunks));
-    let server_peer = *server.local_peer_id();
-
-    connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().fetch_cursors(server_peer, 1);
-
-    let event = tokio::time::timeout(Duration::from_secs(10), async {
+/// Drive both nodes until the puller emits a behaviour event, returning it. The
+/// emitted event is the test's outcome, so it is captured directly rather than
+/// asserted through accumulated swarm state.
+async fn next_puller_event(
+    puller: &mut HarnessNode<PullsyncBehaviour>,
+    server: &mut HarnessNode<PullsyncBehaviour>,
+    timeout: Duration,
+) -> PullsyncEvent {
+    tokio::time::timeout(timeout, async {
         loop {
             tokio::select! {
-                _ = server.select_next_some() => {}
-                ev = puller.select_next_some() => {
-                    if let libp2p::swarm::SwarmEvent::Behaviour(e) = ev {
+                _ = server.swarm.select_next_some() => {}
+                ev = puller.swarm.select_next_some() => {
+                    if let SwarmEvent::Behaviour(e) = ev {
                         return e;
                     }
                 }
@@ -181,7 +53,21 @@ async fn cursor_handshake_round_trips() {
         }
     })
     .await
-    .expect("cursors resolved within timeout");
+    .expect("event resolved within timeout")
+}
+
+#[tokio::test]
+async fn cursor_handshake_round_trips() {
+    let bin = Bin::new(5).expect("valid bin");
+    let chunks = vec![content(b"cursor chunk a"), content(b"cursor chunk b")];
+    let mut puller = syncer(1, MockStorage::default());
+    let mut server = syncer(2, MockStorage::with_chunks(bin, 7, chunks));
+    let server_peer = server.peer_id;
+
+    connect_and_activate(&mut puller, &mut server, |_, _, _, _| {}).await;
+    puller.swarm.behaviour_mut().fetch_cursors(server_peer, 1);
+
+    let event = next_puller_event(&mut puller, &mut server, Duration::from_secs(10)).await;
 
     match event {
         PullsyncEvent::CursorsReceived {
@@ -206,27 +92,17 @@ async fn range_exchange_delivers_the_page() {
     let bin = Bin::new(3).expect("valid bin");
     let chunks = vec![content(b"range chunk one"), content(b"range chunk two")];
     let addresses: Vec<ChunkAddress> = chunks.iter().map(|c| *c.address()).collect();
-    let mut puller = syncer(MockPullStorage::default());
-    let mut server = syncer(MockPullStorage::with_chunks(bin, 1, chunks));
-    let server_peer = *server.local_peer_id();
+    let mut puller = syncer(1, MockStorage::default());
+    let mut server = syncer(2, MockStorage::with_chunks(bin, 1, chunks));
+    let server_peer = server.peer_id;
 
-    connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().sync_range(server_peer, 2, bin, 0);
+    connect_and_activate(&mut puller, &mut server, |_, _, _, _| {}).await;
+    puller
+        .swarm
+        .behaviour_mut()
+        .sync_range(server_peer, 2, bin, 0);
 
-    let event = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            tokio::select! {
-                _ = server.select_next_some() => {}
-                ev = puller.select_next_some() => {
-                    if let libp2p::swarm::SwarmEvent::Behaviour(e) = ev {
-                        return e;
-                    }
-                }
-            }
-        }
-    })
-    .await
-    .expect("range resolved within timeout");
+    let event = next_puller_event(&mut puller, &mut server, Duration::from_secs(10)).await;
 
     match event {
         PullsyncEvent::RangeDelivered {
@@ -255,27 +131,17 @@ async fn empty_range_completes_with_no_want() {
     // The syncer holds chunks in a different bin, so the requested bin is empty.
     let other = Bin::new(4).expect("valid bin");
     let chunks = vec![content(b"elsewhere chunk")];
-    let mut puller = syncer(MockPullStorage::default());
-    let mut server = syncer(MockPullStorage::with_chunks(other, 1, chunks));
-    let server_peer = *server.local_peer_id();
+    let mut puller = syncer(1, MockStorage::default());
+    let mut server = syncer(2, MockStorage::with_chunks(other, 1, chunks));
+    let server_peer = server.peer_id;
 
-    connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().sync_range(server_peer, 3, bin, 0);
+    connect_and_activate(&mut puller, &mut server, |_, _, _, _| {}).await;
+    puller
+        .swarm
+        .behaviour_mut()
+        .sync_range(server_peer, 3, bin, 0);
 
-    let event = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            tokio::select! {
-                _ = server.select_next_some() => {}
-                ev = puller.select_next_some() => {
-                    if let libp2p::swarm::SwarmEvent::Behaviour(e) = ev {
-                        return e;
-                    }
-                }
-            }
-        }
-    })
-    .await
-    .expect("empty range resolves promptly, no hang");
+    let event = next_puller_event(&mut puller, &mut server, Duration::from_secs(5)).await;
 
     match event {
         PullsyncEvent::RangeDelivered {

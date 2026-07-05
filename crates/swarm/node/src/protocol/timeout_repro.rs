@@ -1,9 +1,9 @@
-//! Repro for the retrieval/pushsync liveness invariant (#314).
+//! Repro for the retrieval/pushsync liveness invariant.
 //!
 //! A peer can negotiate the retrieval substream and its headers and then simply
 //! never write the delivery frame. Without a per-request deadline the caller's
 //! outbound future would block on that read forever. This module drives that
-//! exact scenario through `libp2p-swarm-test`: a real [`ClientBehaviour`]
+//! exact scenario through the swarm-test harness: a real [`ClientBehaviour`]
 //! requester against a deliberately withholding server that completes the header
 //! exchange, captures the [`RetrievalResponder`], and drops it on the floor
 //! without responding.
@@ -20,7 +20,6 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use libp2p::Swarm;
 use libp2p::core::transport::PortUse;
 use libp2p::core::{Endpoint, Multiaddr};
 use libp2p::swarm::{
@@ -28,20 +27,19 @@ use libp2p::swarm::{
     NetworkBehaviour, SubstreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
     handler::{ConnectionEvent, FullyNegotiatedInbound},
 };
-use libp2p_swarm_test::SwarmExt;
 use nectar_primitives::ChunkAddress;
 use tokio::sync::oneshot;
+use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_localstore::ChunkStore;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_net_retrieval::{RetrievalInboundProtocol, RetrievalResponder, inbound};
+use vertex_swarm_primitives::SwarmNodeType;
+use vertex_swarm_test_utils::harness::{HarnessNode, connect_and_activate_hetero, seeded_node};
 
 use crate::ChunkTransferError;
 use crate::client_service::RetrievalResult;
 use crate::protocol::{
     BehaviourConfig, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
 };
-use vertex_net_peer_registry::PeerRegistry;
-use vertex_swarm_api::SwarmLocalStore;
-use vertex_swarm_net_retrieval::{RetrievalInboundProtocol, RetrievalResponder, inbound};
 
 /// A connection handler that accepts a single retrieval substream, completes the
 /// header exchange (the `RetrievalInboundProtocol` upgrade reads the request and
@@ -149,15 +147,8 @@ impl NetworkBehaviour for WithholdingBehaviour {
 
 /// Build a requester `ClientBehaviour` with a short retrieval deadline so the
 /// withholding peer is bounded in milliseconds, not the shared 30s default.
-fn requester_with_retrieval_timeout(
-    retrieval_timeout: Duration,
-) -> (
-    Swarm<ClientBehaviour>,
-    Arc<PeerRegistry<OverlayAddress, ()>>,
-) {
-    let registry: Arc<PeerRegistry<OverlayAddress, ()>> = Arc::new(PeerRegistry::new());
-    let registry_for_behaviour = Arc::clone(&registry);
-    let swarm = Swarm::new_ephemeral_tokio(move |_| {
+fn requester_node(seed: u8, retrieval_timeout: Duration) -> HarnessNode<ClientBehaviour> {
+    seeded_node(seed, SwarmNodeType::Client, move |ctx| {
         let mut config = BehaviourConfig::for_role(SwarmNodeType::Client);
         config.handler.retrieval_timeout = retrieval_timeout;
         let store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
@@ -165,10 +156,9 @@ fn requester_with_retrieval_timeout(
             config,
             store,
             Arc::new(StubForwarder),
-            registry_for_behaviour,
+            ctx.identities.clone(),
         )
-    });
-    (swarm, registry)
+    })
 }
 
 #[tokio::test]
@@ -177,48 +167,49 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
     // shared 30s default that the bug would otherwise impose.
     let retrieval_timeout = Duration::from_millis(200);
 
-    let (mut requester, requester_registry) = requester_with_retrieval_timeout(retrieval_timeout);
-    let mut server = Swarm::new_ephemeral_tokio(|_| WithholdingBehaviour);
-
-    let server_peer = *server.local_peer_id();
-
-    requester.listen().with_memory_addr_external().await;
-    server.listen().with_memory_addr_external().await;
-    requester.connect(&mut server).await;
-
+    let mut requester = requester_node(1, retrieval_timeout);
+    let mut server = seeded_node(2, SwarmNodeType::Client, |_| WithholdingBehaviour);
     // The requester must know the server's overlay to dispatch the request; the
-    // overlay value is arbitrary since the server never validates it.
-    let server_overlay = OverlayAddress::from([0x2a; 32]);
-    // Topology is absent here, so mark the server Active directly, as the
-    // connection registry would at handshake completion.
-    let conn = ConnectionId::new_unchecked(1);
-    requester_registry.connected_inbound(server_peer, conn);
-    requester_registry.activate(server_peer, conn, server_overlay);
-    requester
-        .behaviour_mut()
-        .on_command(ClientCommand::ActivatePeer {
-            peer_id: server_peer,
-            overlay: server_overlay,
-            node_type: SwarmNodeType::Client,
-        });
+    // server never validates it, so the harness-seeded overlay is arbitrary.
+    let server_overlay = server.overlay;
+
+    // The withholding server gates on nothing, so only the requester takes an
+    // activation hook (mark the server Active, as the connection registry would
+    // at handshake completion).
+    connect_and_activate_hetero(
+        &mut requester,
+        &mut server,
+        |behaviour, peer_id, overlay, node_type| {
+            behaviour.on_command(ClientCommand::ActivatePeer {
+                peer_id,
+                overlay,
+                node_type,
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .await;
 
     let address = ChunkAddress::new([0x11; 32]);
     let (tx, mut rx) = oneshot::channel::<Result<RetrievalResult, ChunkTransferError>>();
-    requester.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::RetrieveChunk {
-            address,
-            response: tx,
-            originated: true,
-        },
-    });
+    requester
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated: true,
+            },
+        });
 
     let start = Instant::now();
     let drive = async {
         loop {
             tokio::select! {
-                _ = requester.select_next_some() => {}
-                _ = server.select_next_some() => {}
+                _ = requester.swarm.select_next_some() => {}
+                _ = server.swarm.select_next_some() => {}
                 res = &mut rx => return res.expect("sender not dropped"),
             }
         }

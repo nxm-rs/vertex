@@ -1,77 +1,36 @@
 //! Behaviour-level integration tests for the re-exported [`ClientBehaviour`]
 //! driven through the node-local [`NetworkForwarder`].
 //!
-//! These exercise the real libp2p handler over `libp2p-swarm-test`: cache
+//! These exercise the real libp2p handler over the swarm-test harness: cache
 //! serving, the stub-forwarder reset paths, storer ingest (store and sign), and
 //! the three-node relay that needs the concrete forwarder. They live in the node
 //! crate because the relay tests construct a `NetworkForwarder` (which couples to
 //! accounting and the outbound `ClientHandle`) over the behaviour the
 //! `vertex-swarm-client-behaviour` crate provides.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{B256, Signature};
 use alloy_signer_local::PrivateKeySigner;
 use futures::StreamExt;
-use libp2p::swarm::ConnectionId;
 use libp2p::{PeerId, Swarm};
-use libp2p_swarm_test::SwarmExt;
 use nectar_postage::Stamp;
 use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};
 use tokio::sync::oneshot;
-use vertex_net_peer_registry::PeerRegistry;
-use vertex_swarm_api::SwarmLocalStore;
+use vertex_swarm_api::{StorageRadius, SwarmLocalStore};
 use vertex_swarm_localstore::{ChunkStore, Clock};
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
+use vertex_swarm_test_utils::MockReserve;
+use vertex_swarm_test_utils::harness::{
+    HarnessNode, NodeContext, connect_and_activate, seeded_identity,
+};
 
 use crate::ChunkTransferError;
 use crate::client_service::RetrievalResult;
 use crate::protocol::{
     BehaviourConfig as Config, ClientBehaviour, ClientCommand, PeerCommand, StubForwarder,
 };
-
-/// Identity registry a test swarm's `ClientBehaviour` reads through, keyed by the
-/// swarm's local peer id so `connect_and_activate` can populate the right side.
-/// Topology is absent in these standalone swarms, so the harness is the writer.
-type IdentityRegistry = Arc<PeerRegistry<OverlayAddress, ()>>;
-
-fn identity_registries() -> &'static Mutex<HashMap<PeerId, IdentityRegistry>> {
-    static REGISTRIES: OnceLock<Mutex<HashMap<PeerId, IdentityRegistry>>> = OnceLock::new();
-    REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Build a fresh identity registry, register it under `local` for later
-/// population, and return the read view to embed in the behaviour.
-fn register_identity(local: PeerId) -> IdentityRegistry {
-    let registry: IdentityRegistry = Arc::new(PeerRegistry::new());
-    identity_registries()
-        .lock()
-        .expect("registry map poisoned")
-        .insert(local, Arc::clone(&registry));
-    registry
-}
-
-/// Distinct connection ids so a registry that activates several peers keeps its
-/// secondary indices unique.
-fn next_conn_id() -> ConnectionId {
-    static N: AtomicUsize = AtomicUsize::new(1);
-    ConnectionId::new_unchecked(N.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Mark `peer`/`overlay` Active in `owner`'s identity registry, mirroring what
-/// topology's connection registry does at handshake completion.
-fn activate_identity(owner: PeerId, peer: PeerId, overlay: OverlayAddress) {
-    let map = identity_registries().lock().expect("registry map poisoned");
-    let registry = map
-        .get(&owner)
-        .expect("registry registered for owner swarm");
-    let conn = next_conn_id();
-    registry.connected_inbound(peer, conn);
-    registry.activate(peer, conn, overlay);
-}
 
 /// Fixed-instant clock for SOC freshness tests.
 struct FixedClock(i64);
@@ -105,50 +64,50 @@ fn overlay(n: u8) -> OverlayAddress {
     OverlayAddress::from([n; 32])
 }
 
-fn swarm_with_store(store: Arc<dyn SwarmLocalStore>) -> Swarm<ClientBehaviour> {
-    Swarm::new_ephemeral_tokio(move |keypair| {
-        let identity = register_identity(keypair.public().to_peer_id());
+/// Build a client-shaped harness node with a caller-chosen overlay.
+///
+/// The seed fixes the libp2p identity; the overlay is set explicitly so
+/// proximity-sensitive relay tests can place a node while the harness still owns
+/// the connection registry the behaviour reads through `ctx.identities`.
+fn node_with_overlay(
+    seed: u8,
+    overlay: OverlayAddress,
+    build: impl FnOnce(&NodeContext) -> ClientBehaviour,
+) -> HarnessNode<ClientBehaviour> {
+    let mut id = seeded_identity(seed, SwarmNodeType::Client);
+    id.overlay = overlay;
+    HarnessNode::new(&id, build)
+}
+
+/// A cache-only client node carrying `overlay` and serving from `store`.
+fn client_node(
+    seed: u8,
+    overlay: OverlayAddress,
+    store: Arc<dyn SwarmLocalStore>,
+) -> HarnessNode<ClientBehaviour> {
+    node_with_overlay(seed, overlay, move |ctx| {
         ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Client),
             store,
             Arc::new(StubForwarder),
-            identity,
+            ctx.identities.clone(),
         )
     })
 }
 
-/// Connect two client swarms and activate both handlers so the
-/// request/serve path is live.
-async fn connect_and_activate(
-    client: &mut Swarm<ClientBehaviour>,
-    server: &mut Swarm<ClientBehaviour>,
-    client_overlay: OverlayAddress,
-    server_overlay: OverlayAddress,
+/// Activation hook for [`connect_and_activate`]: promote the remote peer to
+/// Active in the behaviour so its request/serve path goes live.
+fn activate_client(
+    behaviour: &mut ClientBehaviour,
+    peer_id: PeerId,
+    overlay: OverlayAddress,
+    node_type: SwarmNodeType,
 ) {
-    let client_peer = *client.local_peer_id();
-    let server_peer = *server.local_peer_id();
-    client.listen().with_memory_addr_external().await;
-    server.listen().with_memory_addr_external().await;
-    client.connect(server).await;
-
-    // Each side's registry maps the other peer, as topology would at handshake.
-    activate_identity(client_peer, server_peer, server_overlay);
-    activate_identity(server_peer, client_peer, client_overlay);
-
-    client
-        .behaviour_mut()
-        .on_command(ClientCommand::ActivatePeer {
-            peer_id: server_peer,
-            overlay: server_overlay,
-            node_type: SwarmNodeType::Client,
-        });
-    server
-        .behaviour_mut()
-        .on_command(ClientCommand::ActivatePeer {
-            peer_id: client_peer,
-            overlay: client_overlay,
-            node_type: SwarmNodeType::Client,
-        });
+    behaviour.on_command(ClientCommand::ActivatePeer {
+        peer_id,
+        overlay,
+        node_type,
+    });
 }
 
 async fn drive_until_retrieved(
@@ -179,23 +138,30 @@ async fn serves_a_content_chunk_from_the_cache() {
         Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
     server_store.put(chunk.clone().into()).unwrap();
 
-    let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-    let mut server = swarm_with_store(server_store);
-
     let server_overlay = overlay(2);
-    connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+    let mut client = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+    let mut server = client_node(2, server_overlay, server_store);
+
+    connect_and_activate(&mut client, &mut server, activate_client).await;
 
     let (tx, rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::RetrieveChunk {
-            address,
-            response: tx,
-            originated: true,
-        },
-    });
+    client
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated: true,
+            },
+        });
 
-    let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+    let result = drive_until_retrieved(&mut client.swarm, &mut server.swarm, rx).await;
     let delivered = result.expect("served from cache");
     assert_eq!(*delivered.chunk.address(), address);
     assert_eq!(delivered.chunk, *chunk.chunk());
@@ -214,23 +180,30 @@ async fn serves_a_fresh_soc_from_the_cache() {
     ));
     server_store.put(chunk.clone().into()).unwrap();
 
-    let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-    let mut server = swarm_with_store(server_store);
-
     let server_overlay = overlay(2);
-    connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+    let mut client = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+    let mut server = client_node(2, server_overlay, server_store);
+
+    connect_and_activate(&mut client, &mut server, activate_client).await;
 
     let (tx, rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::RetrieveChunk {
-            address,
-            response: tx,
-            originated: true,
-        },
-    });
+    client
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated: true,
+            },
+        });
 
-    let delivered = drive_until_retrieved(&mut client, &mut server, rx)
+    let delivered = drive_until_retrieved(&mut client.swarm, &mut server.swarm, rx)
         .await
         .expect("fresh SOC served from cache");
     assert_eq!(delivered.chunk, *chunk.chunk());
@@ -251,23 +224,30 @@ async fn expired_soc_is_not_served_and_resets() {
     ));
     server_store.put(chunk.into()).unwrap();
 
-    let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-    let mut server = swarm_with_store(server_store);
-
     let server_overlay = overlay(2);
-    connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+    let mut client = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+    let mut server = client_node(2, server_overlay, server_store);
+
+    connect_and_activate(&mut client, &mut server, activate_client).await;
 
     let (tx, rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::RetrieveChunk {
-            address,
-            response: tx,
-            originated: true,
-        },
-    });
+    client
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated: true,
+            },
+        });
 
-    let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+    let result = drive_until_retrieved(&mut client.swarm, &mut server.swarm, rx).await;
     assert!(
         result.is_err(),
         "an expired SOC must not be served; the stream resets so the requester forwards"
@@ -280,23 +260,34 @@ async fn cache_miss_resets_with_stub_forwarder() {
     // serve nor forward, so the substream resets and the requester fails.
     let address = *content_chunk(b"never cached").address();
 
-    let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-    let mut server = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-
     let server_overlay = overlay(2);
-    connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+    let mut client = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+    let mut server = client_node(
+        2,
+        server_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+
+    connect_and_activate(&mut client, &mut server, activate_client).await;
 
     let (tx, rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::RetrieveChunk {
-            address,
-            response: tx,
-            originated: true,
-        },
-    });
+    client
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::RetrieveChunk {
+                address,
+                response: tx,
+                originated: true,
+            },
+        });
 
-    let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+    let result = drive_until_retrieved(&mut client.swarm, &mut server.swarm, rx).await;
     assert!(
         result.is_err(),
         "a cache miss with the stub forwarder must reset the stream"
@@ -309,27 +300,38 @@ async fn inbound_pushsync_resets_with_stub_forwarder() {
     // stub forward fails, the substream resets, and no receipt is signed.
     let chunk = content_chunk(b"pushed chunk");
 
-    let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-    let mut server = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-
     let server_overlay = overlay(2);
-    connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+    let mut client = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+    let mut server = client_node(
+        2,
+        server_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+
+    connect_and_activate(&mut client, &mut server, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    client.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: server_overlay,
-        command: PeerCommand::PushChunk {
-            chunk,
-            response: tx,
-            originated: true,
-        },
-    });
+    client
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: server_overlay,
+            command: PeerCommand::PushChunk {
+                chunk,
+                response: tx,
+                originated: true,
+            },
+        });
 
     let drive = async {
         loop {
             tokio::select! {
-                _ = client.select_next_some() => {}
-                _ = server.select_next_some() => {}
+                _ = client.swarm.select_next_some() => {}
+                _ = server.swarm.select_next_some() => {}
                 res = &mut rx => return res.expect("sender not dropped"),
             }
         }
@@ -348,113 +350,28 @@ async fn inbound_pushsync_resets_with_stub_forwarder() {
 // A storer holds a `StorerCapability`: a responsible delivery is stored and
 // acknowledged with a signed receipt; a non-responsible delivery forwards
 // (verbatim-relay), which resets under the stub forwarder. Both branches run
-// through the real libp2p handler.
+// through the real libp2p handler. The reserve is the canonical `MockReserve`
+// mutable point store: a fixed responsibility flag pins either branch.
 
-/// In-memory `ReserveStore` for the ingest tests. `is_responsible_for` is a
-/// fixed flag so a test can pin either branch; the proximity-axis accounting
-/// methods are stubs since the ingest path only uses `is_responsible_for`,
-/// `put`, and `storage_radius`.
-struct MockReserve {
-    chunks: std::sync::Mutex<
-        std::collections::HashMap<
-            nectar_primitives::ChunkAddress,
-            vertex_swarm_primitives::CachedChunk,
-        >,
-    >,
+/// Storer harness node holding the ingest capability. Returns the node, the
+/// shared reserve (to assert what was stored), the signer and nonce (to assert
+/// the receipt recovers to the storer's overlay).
+///
+/// The node presents as `Client` to the connection registry, matching how a
+/// pusher labels a serving peer; the storer role comes from the behaviour's
+/// `for_role(Storer)` config and its installed capability, not the registry
+/// label.
+fn storer_node(
+    seed: u8,
+    overlay: OverlayAddress,
     responsible: bool,
-    radius: vertex_swarm_api::StorageRadius,
-}
-
-impl MockReserve {
-    fn new(responsible: bool, radius: vertex_swarm_api::StorageRadius) -> Self {
-        Self {
-            chunks: std::sync::Mutex::new(std::collections::HashMap::new()),
-            responsible,
-            radius,
-        }
-    }
-}
-
-impl SwarmLocalStore for MockReserve {
-    fn put(
-        &self,
-        chunk: vertex_swarm_primitives::CachedChunk,
-    ) -> vertex_swarm_api::SwarmResult<()> {
-        self.chunks.lock().unwrap().insert(*chunk.address(), chunk);
-        Ok(())
-    }
-    fn get(
-        &self,
-        address: &nectar_primitives::ChunkAddress,
-    ) -> vertex_swarm_api::SwarmResult<Option<vertex_swarm_primitives::CachedChunk>> {
-        Ok(self.chunks.lock().unwrap().get(address).cloned())
-    }
-    fn contains(&self, address: &nectar_primitives::ChunkAddress) -> bool {
-        self.chunks.lock().unwrap().contains_key(address)
-    }
-    fn remove(
-        &self,
-        address: &nectar_primitives::ChunkAddress,
-    ) -> vertex_swarm_api::SwarmResult<()> {
-        self.chunks.lock().unwrap().remove(address);
-        Ok(())
-    }
-}
-
-impl vertex_swarm_api::ReserveStore for MockReserve {
-    fn storage_radius(&self) -> vertex_swarm_api::StorageRadius {
-        self.radius
-    }
-    fn is_responsible_for(&self, _address: &nectar_primitives::ChunkAddress) -> bool {
-        self.responsible
-    }
-    fn count(&self) -> vertex_swarm_api::SwarmResult<u64> {
-        Ok(self.chunks.lock().unwrap().len() as u64)
-    }
-    fn capacity(&self) -> u64 {
-        u64::MAX
-    }
-    fn count_in(
-        &self,
-        _po: nectar_primitives::ProximityOrder,
-    ) -> vertex_swarm_api::SwarmResult<u64> {
-        Ok(0)
-    }
-    fn evict_furthest(
-        &self,
-    ) -> vertex_swarm_api::SwarmResult<Option<nectar_primitives::ChunkAddress>> {
-        Ok(None)
-    }
-    fn evict_from_bin(
-        &self,
-        _bin: nectar_primitives::Bin,
-        _max: u64,
-    ) -> vertex_swarm_api::SwarmResult<u64> {
-        Ok(0)
-    }
-    fn evict_batch(
-        &self,
-        _batch: vertex_swarm_primitives::BatchId,
-        _up_to_bin: Option<nectar_primitives::Bin>,
-        _max: u64,
-    ) -> vertex_swarm_api::SwarmResult<u64> {
-        Ok(0)
-    }
-}
-
-/// Server swarm holding the storer ingest capability. Returns the swarm, the
-/// shared reserve (to assert what was stored), the signer and nonce (to
-/// assert the receipt recovers to the storer's overlay).
-fn storer_swarm(
-    responsible: bool,
-    radius: vertex_swarm_api::StorageRadius,
+    radius: StorageRadius,
 ) -> (
-    Swarm<ClientBehaviour>,
+    HarnessNode<ClientBehaviour>,
     Arc<MockReserve>,
-    alloy_signer_local::PrivateKeySigner,
+    PrivateKeySigner,
     vertex_swarm_primitives::Nonce,
 ) {
-    use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::NetworkId;
     use vertex_swarm_identity::Identity;
     use vertex_swarm_primitives::Nonce;
@@ -464,17 +381,16 @@ fn storer_swarm(
     let signer = PrivateKeySigner::random();
     let nonce = Nonce::from([0x5a; 32]);
 
-    let reserve_for_swarm = Arc::clone(&reserve);
-    let signer_for_swarm = signer.clone();
-    let swarm = Swarm::new_ephemeral_tokio(move |keypair| {
-        let identity = register_identity(keypair.public().to_peer_id());
+    let reserve_for_node = Arc::clone(&reserve);
+    let signer_for_node = signer.clone();
+    let node = node_with_overlay(seed, overlay, move |ctx| {
         // The reserve serves on retrieval too, so it is the behaviour's store.
-        let store: Arc<dyn SwarmLocalStore> = Arc::clone(&reserve_for_swarm) as _;
+        let store: Arc<dyn SwarmLocalStore> = Arc::clone(&reserve_for_node) as _;
         let mut behaviour = ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Storer),
             store,
             Arc::new(StubForwarder),
-            identity,
+            ctx.identities.clone(),
         );
         behaviour.set_network_id(NetworkId::MAINNET);
         let spec = Arc::new(
@@ -482,48 +398,54 @@ fn storer_swarm(
                 .network_id(NetworkId::MAINNET.get())
                 .build(),
         );
-        let identity = Identity::new(signer_for_swarm.clone(), nonce, spec, SwarmNodeType::Storer);
+        let identity = Identity::new(signer_for_node.clone(), nonce, spec, SwarmNodeType::Storer);
         let capability = crate::protocol::StorerCapability::new(
-            Arc::clone(&reserve_for_swarm) as Arc<dyn vertex_swarm_api::ReserveStore>,
+            Arc::clone(&reserve_for_node) as Arc<dyn vertex_swarm_api::ReserveStore>,
             Arc::new(identity) as Arc<dyn vertex_swarm_primitives::OverlaySigner + Send + Sync>,
         );
         behaviour.set_storer(capability);
         behaviour
     });
-    (swarm, reserve, signer, nonce)
+    (node, reserve, signer, nonce)
 }
 
 #[tokio::test]
 async fn responsible_storer_stores_and_signs_a_receipt() {
     use nectar_primitives::{NetworkId, compute_overlay};
-    use vertex_swarm_api::StorageRadius;
     use vertex_swarm_primitives::Bin;
 
     let chunk = content_chunk(b"stored by the responsible storer");
     let address = *chunk.address();
     let radius = StorageRadius::new(Bin::new(4).unwrap());
 
-    let (mut storer, reserve, signer, nonce) = storer_swarm(true, radius);
-    let mut pusher = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-
     let storer_overlay = overlay(2);
-    connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
+    let (mut storer, reserve, signer, nonce) = storer_node(2, storer_overlay, true, radius);
+    let mut pusher = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+
+    connect_and_activate(&mut pusher, &mut storer, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    pusher.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: storer_overlay,
-        command: PeerCommand::PushChunk {
-            chunk,
-            response: tx,
-            originated: true,
-        },
-    });
+    pusher
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: storer_overlay,
+            command: PeerCommand::PushChunk {
+                chunk,
+                response: tx,
+                originated: true,
+            },
+        });
 
     let drive = async {
         loop {
             tokio::select! {
-                _ = pusher.select_next_some() => {}
-                _ = storer.select_next_some() => {}
+                _ = pusher.swarm.select_next_some() => {}
+                _ = storer.swarm.select_next_some() => {}
                 res = &mut rx => return res.expect("sender not dropped"),
             }
         }
@@ -550,7 +472,6 @@ async fn responsible_storer_stores_and_signs_a_receipt() {
 
 #[tokio::test]
 async fn non_responsible_storer_forwards_instead_of_storing() {
-    use vertex_swarm_api::StorageRadius;
     use vertex_swarm_primitives::Bin;
 
     // The storer holds the ingest capability but is NOT responsible, so it
@@ -560,27 +481,34 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
     let address = *chunk.address();
     let radius = StorageRadius::new(Bin::new(4).unwrap());
 
-    let (mut storer, reserve, _signer, _nonce) = storer_swarm(false, radius);
-    let mut pusher = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
-
     let storer_overlay = overlay(2);
-    connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
+    let (mut storer, reserve, _signer, _nonce) = storer_node(2, storer_overlay, false, radius);
+    let mut pusher = client_node(
+        1,
+        overlay(1),
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
+
+    connect_and_activate(&mut pusher, &mut storer, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    pusher.behaviour_mut().on_command(ClientCommand::Peer {
-        peer: storer_overlay,
-        command: PeerCommand::PushChunk {
-            chunk,
-            response: tx,
-            originated: true,
-        },
-    });
+    pusher
+        .swarm
+        .behaviour_mut()
+        .on_command(ClientCommand::Peer {
+            peer: storer_overlay,
+            command: PeerCommand::PushChunk {
+                chunk,
+                response: tx,
+                originated: true,
+            },
+        });
 
     let drive = async {
         loop {
             tokio::select! {
-                _ = pusher.select_next_some() => {}
-                _ = storer.select_next_some() => {}
+                _ = pusher.swarm.select_next_some() => {}
+                _ = storer.swarm.select_next_some() => {}
                 res = &mut rx => return res.expect("sender not dropped"),
             }
         }
@@ -656,12 +584,13 @@ fn overlay_at_proximity(
 /// topology) over a `ClientHandle` wired back into B. Returns B and the
 /// receiver carrying B's outbound relay commands.
 fn relay_node(
+    seed: u8,
     store: Arc<dyn SwarmLocalStore>,
     local: OverlayAddress,
     storer: OverlayAddress,
     accounting: Arc<RelayAccounting>,
 ) -> (
-    Swarm<ClientBehaviour>,
+    HarnessNode<ClientBehaviour>,
     tokio::sync::mpsc::Receiver<ClientCommand>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel::<ClientCommand>(16);
@@ -680,13 +609,12 @@ fn relay_node(
         crate::NoLatencyHint,
         Arc::new(NoTriggeredSettle),
     );
-    let swarm = Swarm::new_ephemeral_tokio(move |keypair| {
-        let identity = register_identity(keypair.public().to_peer_id());
+    let node = node_with_overlay(seed, local, move |ctx| {
         let mut behaviour = ClientBehaviour::new(
             Config::for_role(SwarmNodeType::Client),
             store,
             Arc::new(StubForwarder),
-            identity,
+            ctx.identities.clone(),
         );
         // Inbound receipts are recovered against this network id; the storer
         // test receipts are ground against it too.
@@ -698,7 +626,7 @@ fn relay_node(
         behaviour.set_forwarder(forwarder);
         behaviour
     });
-    (swarm, rx)
+    (node, rx)
 }
 
 #[tokio::test]
@@ -721,20 +649,25 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
     c_store.put(chunk.clone().into()).unwrap();
     let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
 
-    let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+    let mut a = client_node(
+        1,
+        a_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
     let (mut b, mut b_commands) = relay_node(
+        2,
         Arc::clone(&b_store),
         b_overlay,
         c_overlay,
         Arc::clone(&accounting),
     );
-    let mut c = swarm_with_store(c_store);
+    let mut c = client_node(3, c_overlay, c_store);
 
-    connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
-    connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+    connect_and_activate(&mut a, &mut b, activate_client).await;
+    connect_and_activate(&mut b, &mut c, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::Peer {
+    a.swarm.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
         command: PeerCommand::RetrieveChunk {
             address,
@@ -748,10 +681,10 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
         let drive = async {
             loop {
                 tokio::select! {
-                    _ = a.select_next_some() => {}
-                    _ = b.select_next_some() => {}
-                    _ = c.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                    _ = a.swarm.select_next_some() => {}
+                    _ = b.swarm.select_next_some() => {}
+                    _ = c.swarm.select_next_some() => {}
+                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
                     res = &mut rx => return res.expect("sender not dropped"),
                 }
             }
@@ -816,20 +749,25 @@ async fn relay_does_not_cache_a_forwarded_soc() {
     c_store.put(chunk.clone().into()).unwrap();
     let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, u64::MAX));
 
-    let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+    let mut a = client_node(
+        1,
+        a_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
     let (mut b, mut b_commands) = relay_node(
+        2,
         Arc::clone(&b_store),
         b_overlay,
         c_overlay,
         Arc::clone(&accounting),
     );
-    let mut c = swarm_with_store(c_store);
+    let mut c = client_node(3, c_overlay, c_store);
 
-    connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
-    connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+    connect_and_activate(&mut a, &mut b, activate_client).await;
+    connect_and_activate(&mut b, &mut c, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::Peer {
+    a.swarm.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
         command: PeerCommand::RetrieveChunk {
             address,
@@ -842,10 +780,10 @@ async fn relay_does_not_cache_a_forwarded_soc() {
         let drive = async {
             loop {
                 tokio::select! {
-                    _ = a.select_next_some() => {}
-                    _ = b.select_next_some() => {}
-                    _ = c.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                    _ = a.swarm.select_next_some() => {}
+                    _ = b.swarm.select_next_some() => {}
+                    _ = c.swarm.select_next_some() => {}
+                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
                     res = &mut rx => return res.expect("sender not dropped"),
                 }
             }
@@ -884,18 +822,23 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
     let accounting = relay_accounting();
     let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
 
-    let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+    let mut a = client_node(
+        1,
+        a_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
     let (mut b, mut b_commands) = relay_node(
+        2,
         Arc::clone(&b_store),
         b_overlay,
         sideways,
         Arc::clone(&accounting),
     );
 
-    connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
+    connect_and_activate(&mut a, &mut b, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::Peer {
+    a.swarm.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
         command: PeerCommand::RetrieveChunk {
             address,
@@ -908,9 +851,9 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
         let drive = async {
             loop {
                 tokio::select! {
-                    _ = a.select_next_some() => {}
-                    _ = b.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                    _ = a.swarm.select_next_some() => {}
+                    _ = b.swarm.select_next_some() => {}
+                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
                     res = &mut rx => return res.expect("sender not dropped"),
                 }
             }
@@ -982,8 +925,13 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
     let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
     let c_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
 
-    let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+    let mut a = client_node(
+        1,
+        a_overlay,
+        Arc::new(ChunkStore::with_budget(1 << 20, 1_000)),
+    );
     let (mut b, mut b_commands) = relay_node(
+        2,
         Arc::clone(&b_store),
         b_overlay,
         c_overlay,
@@ -994,17 +942,18 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
     let deeper = overlay_at_proximity(&address, 24);
     let c_accounting = relay_accounting();
     let (mut c, mut c_commands) = relay_node(
+        3,
         Arc::clone(&c_store),
         c_overlay,
         deeper,
         Arc::clone(&c_accounting),
     );
 
-    connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
-    connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+    connect_and_activate(&mut a, &mut b, activate_client).await;
+    connect_and_activate(&mut b, &mut c, activate_client).await;
 
     let (tx, mut rx) = oneshot::channel();
-    a.behaviour_mut().on_command(ClientCommand::Peer {
+    a.swarm.behaviour_mut().on_command(ClientCommand::Peer {
         peer: b_overlay,
         command: PeerCommand::PushChunk {
             chunk,
@@ -1017,10 +966,10 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
         let drive = async {
             loop {
                 tokio::select! {
-                    _ = a.select_next_some() => {}
-                    _ = b.select_next_some() => {}
-                    _ = c.select_next_some() => {}
-                    Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                    _ = a.swarm.select_next_some() => {}
+                    _ = b.swarm.select_next_some() => {}
+                    _ = c.swarm.select_next_some() => {}
+                    Some(cmd) = b_commands.recv() => b.swarm.behaviour_mut().on_command(cmd),
                     // C is the storer: answer its outbound push with the
                     // signed receipt instead of forwarding on.
                     Some(cmd) = c_commands.recv() => {
