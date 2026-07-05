@@ -26,10 +26,9 @@ use vertex_swarm_primitives::{
     Bin, NeighborhoodDepth, OverlayAddress, ProximityOrder, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
 };
-// The neighborhood stability clock is the timer-coherent monotonic clock from
-// `vertex_tasks::time` on both targets.
+// The neighborhood stability and connection-phase clocks are both the
+// timer-coherent monotonic clock from `vertex_tasks::time` on both targets.
 use vertex_tasks::time::Instant;
-use vertex_tasks::time::Instant as PhaseInstant;
 
 /// Connection phase for capacity tracking. `Dialing` is outbound by
 /// construction; the later phases carry the direction so the per-bin outbound
@@ -232,7 +231,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
         let topology_phase = Mutex::new(PhaseTracker::new(
             config.phase_stability_window,
-            PhaseInstant::now(),
+            Instant::now(),
         ));
         // Publish the initial phase gauge so operators see Bootstrap from
         // startup rather than no phase until the first transition.
@@ -759,7 +758,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let depth = self.depth();
         let saturated = self.neighborhood_saturated(depth);
         let mut tracker = self.topology_phase.lock();
-        let transition = tracker.evaluate(depth, saturated, PhaseInstant::now())?;
+        let transition = tracker.evaluate(depth, saturated, Instant::now())?;
 
         // Record while the tracker lock is held so concurrent evaluations
         // committing back-to-back transitions cannot interleave their logs
@@ -778,7 +777,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// Current topology phase and the time spent in it.
     pub(crate) fn phase_status(&self) -> (TopologyPhase, Duration) {
         let tracker = self.topology_phase.lock();
-        (tracker.phase(), tracker.time_in_phase(PhaseInstant::now()))
+        (tracker.phase(), tracker.time_in_phase(Instant::now()))
     }
 
     /// Connected peers in the neighborhood (bins >= depth).
