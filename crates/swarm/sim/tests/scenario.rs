@@ -235,3 +235,71 @@ fn placement_matches_the_hosted_identity() {
     );
     assert_eq!(anchor.proximity(&overlay).get(), 2);
 }
+
+/// The `AcceptThenDrop` script does more than name a variant: a dialer that
+/// completes the handshake is observed being cleanly dropped once the hold
+/// elapses, so the fault the schedule leans on actually fires on the wire.
+#[test]
+fn accept_then_drop_is_observed_dropping() {
+    use libp2p::swarm::SwarmEvent;
+    use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, NoAddresses};
+    use vertex_swarm_sim::handshake_summary;
+
+    const HOLD: Duration = Duration::from_secs(5);
+
+    let mut world = SimWorld::builder()
+        .seed(SEED)
+        .duration(Duration::from_secs(120))
+        .build();
+
+    let mut scenario = Scenario::new(&world, spec());
+    scenario.add_peer(
+        &mut world,
+        "flapper",
+        STORER,
+        PeerScript::AcceptThenDrop { hold: HOLD },
+        None,
+    );
+    let target = scenario
+        .peers()
+        .first()
+        .expect("one scripted peer")
+        .multiaddr
+        .clone();
+
+    world.client("dialer", move |ctx| async move {
+        let identity = Arc::new(ctx.identity(spec(), SwarmNodeType::Client));
+        let swarm = ctx.swarm(SimAuth::Plaintext, move |_keypair| {
+            HandshakeBehaviour::new(identity, Arc::new(NoAddresses), "sim")
+        });
+        let mut traced = ctx.traced(swarm, handshake_summary);
+        // Fixed virtual delay so the scripted peer is always listening first.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        traced.swarm_mut().dial(target)?;
+
+        let completed = traced
+            .drive_until(Duration::from_secs(30), |event| {
+                matches!(
+                    event,
+                    SwarmEvent::Behaviour(HandshakeEvent::Completed { .. })
+                )
+            })
+            .await;
+        if !completed {
+            return Err("handshake never completed against the scripted peer".into());
+        }
+
+        // The peer holds the connection for `HOLD`, then closes it cleanly.
+        let dropped = traced
+            .drive_until(HOLD + Duration::from_secs(30), |event| {
+                matches!(event, SwarmEvent::ConnectionClosed { .. })
+            })
+            .await;
+        if !dropped {
+            return Err("scripted peer never dropped the connection".into());
+        }
+        Ok(())
+    });
+
+    world.run();
+}
