@@ -207,6 +207,30 @@ where
     B::ToSwarm: std::fmt::Debug,
     A: Fn(&mut B, PeerId, OverlayAddress, SwarmNodeType),
 {
+    // The homogeneous case is the heterogeneous one with a shared hook applied
+    // to each side; `&activate` implements the per-side `FnOnce` bound.
+    connect_and_activate_hetero(a, b, &activate, &activate).await;
+}
+
+/// Connect two seeded nodes whose behaviours differ, marking each peer active in
+/// the other's registry and running a per-side activation hook.
+///
+/// A heterogeneous pair (a real behaviour against a bespoke probe handler, say)
+/// cannot share one activation closure the way [`connect_and_activate`] does, so
+/// each side takes its own; pass a no-op for a side that gates on nothing.
+pub async fn connect_and_activate_hetero<B1, B2, A1, A2>(
+    a: &mut HarnessNode<B1>,
+    b: &mut HarnessNode<B2>,
+    activate_a: A1,
+    activate_b: A2,
+) where
+    B1: NetworkBehaviour + Send,
+    B1::ToSwarm: std::fmt::Debug,
+    B2: NetworkBehaviour + Send,
+    B2::ToSwarm: std::fmt::Debug,
+    A1: FnOnce(&mut B1, PeerId, OverlayAddress, SwarmNodeType),
+    A2: FnOnce(&mut B2, PeerId, OverlayAddress, SwarmNodeType),
+{
     listen_memory(&mut a.swarm).await;
     listen_memory(&mut b.swarm).await;
     a.swarm.connect(&mut b.swarm).await;
@@ -214,8 +238,8 @@ where
     activate_in_registry(&a.identities, b.peer_id, b.overlay);
     activate_in_registry(&b.identities, a.peer_id, a.overlay);
 
-    activate(a.swarm.behaviour_mut(), b.peer_id, b.overlay, b.node_type);
-    activate(b.swarm.behaviour_mut(), a.peer_id, a.overlay, a.node_type);
+    activate_a(a.swarm.behaviour_mut(), b.peer_id, b.overlay, b.node_type);
+    activate_b(b.swarm.behaviour_mut(), a.peer_id, a.overlay, a.node_type);
 }
 
 /// Drive two nodes until `predicate` holds or `timeout` elapses, returning
