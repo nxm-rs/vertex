@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures_timer::Delay;
+use vertex_tasks::time::SendDelay;
 
 use crate::{KeyedRateLimiter, Quota, RateLimitedErr};
 
@@ -49,7 +49,7 @@ struct Item<T> {
 /// admitted and re-armed whenever the head changes.
 struct Parked<T> {
     queue: VecDeque<Item<T>>,
-    timer: Delay,
+    timer: SendDelay,
 }
 
 /// Outbound self-rate-limiter keyed by `K` (typically a `PeerId`).
@@ -116,6 +116,9 @@ impl<K: Eq + Hash + Clone, T> SelfRateLimiter<K, T> {
     /// returned; it will later surface from [`Self::poll_ready`] once the bucket
     /// has refilled. `Err(value)` hands the value back when the cost exceeds the
     /// bucket capacity and so can never be admitted.
+    ///
+    /// Parking arms a [`SendDelay`], which on native builds a tokio timer, so a
+    /// call that parks must run inside a tokio runtime context.
     pub fn enqueue(&mut self, key: K, cost: u32, value: T) -> Result<Option<T>, T> {
         if self.cost_exceeds_capacity(key.clone(), cost) {
             return Err(value);
@@ -137,7 +140,7 @@ impl<K: Eq + Hash + Clone, T> SelfRateLimiter<K, T> {
                     queue.push_back(Item { cost, value });
                     e.insert(Parked {
                         queue,
-                        timer: Delay::new(d),
+                        timer: SendDelay::new(d),
                     });
                     Ok(None)
                 }
@@ -353,8 +356,10 @@ mod tests {
         assert_eq!(rl.parked_keys(), 0);
     }
 
-    #[test]
-    fn enqueue_parks_when_over_budget() {
+    // Parking arms a `SendDelay`, which builds a tokio timer on native and so
+    // needs a runtime in scope; a bare `#[test]` has none.
+    #[tokio::test]
+    async fn enqueue_parks_when_over_budget() {
         let mut rl = SelfRateLimiter::<&'static str, u32>::new(quota_n_per(1, 60_000));
         assert_eq!(rl.enqueue("alice", 1, 10), Ok(Some(10)));
         // Second item cannot be admitted now; it is parked.
@@ -402,8 +407,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn clear_releases_key_and_parked_items() {
+    // Parking arms a `SendDelay`, which builds a tokio timer on native and so
+    // needs a runtime in scope; a bare `#[test]` has none.
+    #[tokio::test]
+    async fn clear_releases_key_and_parked_items() {
         let mut rl = SelfRateLimiter::<&'static str, u32>::new(quota_n_per(1, 60_000));
         assert_eq!(rl.enqueue("alice", 1, 1), Ok(Some(1)));
         assert_eq!(rl.enqueue("alice", 1, 2), Ok(None));
@@ -417,8 +424,9 @@ mod tests {
     #[tokio::test]
     async fn parked_item_drains_after_replenish() {
         // One token per 30 ms: the parked item becomes ready a short, bounded
-        // wait later. A real timer drives this (futures-timer), so the assertion
-        // is "becomes ready within a generous bound" rather than an exact tick.
+        // wait later. The bucket refills on the monotonic wall clock, so the
+        // assertion is "becomes ready within a generous bound" rather than an
+        // exact tick.
         let mut rl = SelfRateLimiter::<&'static str, u32>::new(quota_n_per(1, 30));
         assert_eq!(rl.enqueue("alice", 1, 10), Ok(Some(10)));
         assert_eq!(rl.enqueue("alice", 1, 20), Ok(None));

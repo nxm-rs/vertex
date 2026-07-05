@@ -35,7 +35,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_client_behaviour::{ForwardError, closer_candidates};
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_tasks::time::Duration;
+use vertex_tasks::time::{Duration, send_sleep};
 
 use crate::retrieval_latency::{RetrievalLatency, adaptive_stagger};
 use crate::selection::SettlementTrigger;
@@ -854,10 +854,11 @@ where
                 }
                 settle_drives += 1;
                 counter!("swarm.client.retrieval_settle_drive").increment(1);
-                // `futures_timer::Delay`, not `vertex_tasks::time::sleep`: the
-                // latter is `!Send` on wasm and this future carries the async-trait
-                // `Send` bound. `Delay` is the Send-safe timer the race staggers use.
-                futures_timer::Delay::new(RETRIEVE_SETTLE_DRIVE_BACKOFF).await;
+                // `send_sleep`, not `vertex_tasks::time::sleep`: this future carries
+                // the async-trait `Send` bound and `sleep` is `!Send` on wasm.
+                // `send_sleep` is `Send` on both targets and, unlike a wall-clock
+                // timer, follows the tokio clock so paused-time tests control it.
+                send_sleep(RETRIEVE_SETTLE_DRIVE_BACKOFF).await;
                 continue;
             }
 

@@ -13,10 +13,11 @@ thiserror.workspace = true
 # Monotonic clock via web-time so the GCRA limiter runs in the wasm cone instead
 # of reaching the std clock, which panics on wasm32-unknown-unknown.
 vertex-util-runtime.workspace = true
-# Delay timer for the outbound self-limiter's parking queue. The wasm-bindgen
-# feature routes the timer through the browser clock on wasm32 instead of the
-# std clock, which panics on wasm32-unknown-unknown.
-futures-timer = { workspace = true }
+# Send-bounded, re-armable timer (SendDelay) for the outbound self-limiter's
+# parking queue. vertex-tasks is the one timer home: it drives the tokio clock on
+# native (so paused-time tests control the parking) and the browser clock on
+# wasm32, where the std clock panics.
+vertex-tasks.workspace = true
 
 [dev-dependencies]
 futures.workspace = true

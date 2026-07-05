@@ -40,7 +40,7 @@ use futures::{
     future::{self, Either},
     stream::FuturesUnordered,
 };
-use futures_timer::Delay;
+use vertex_tasks::time::SendDelay;
 
 /// Default stagger between retrieval candidates joining a [`race_candidates`]
 /// race.
@@ -213,11 +213,11 @@ where
         return Err(RaceFailure::NoCandidates);
     }
 
-    let mut stagger_tick = Delay::new(stagger).fuse();
+    let mut stagger_tick = SendDelay::new(stagger).fuse();
     // No deadline: a never-ready arm the select never wakes on, so the race is
     // bounded only by the budget and the candidate source.
     let mut deadline_tick = match deadline {
-        Some(deadline) => Either::Left(Delay::new(deadline)),
+        Some(deadline) => Either::Left(SendDelay::new(deadline)),
         None => Either::Right(future::pending::<()>()),
     }
     .fuse();
@@ -246,7 +246,7 @@ where
                 if in_flight.len() >= max_in_flight
                     || dispatch_next(&mut in_flight, &mut dispatched)
                 {
-                    stagger_tick = Delay::new(stagger).fuse();
+                    stagger_tick = SendDelay::new(stagger).fuse();
                 }
             },
             _ = deadline_tick => {
@@ -339,6 +339,30 @@ mod tests {
             .await;
 
         assert!(matches!(outcome, Err(RaceFailure::NoCandidates)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stagger_tick_rides_the_tokio_clock() {
+        // The head withholds forever; the second can only win once the stagger
+        // tick fires. Under paused time that tick rides the tokio clock, so
+        // auto-advance resolves the race at exactly one stagger with no
+        // wall-clock wait, proving the migrated timer is controllable.
+        let stagger = Duration::from_secs(2);
+        let start = tokio::time::Instant::now();
+        let outcome = race_candidates(0..2u32, stagger, |candidate| async move {
+            if candidate == 0 {
+                std::future::pending::<()>().await;
+            }
+            Ok::<u32, &str>(candidate)
+        })
+        .await;
+
+        assert_eq!(outcome.ok(), Some(1), "the staggered second wins");
+        assert_eq!(
+            start.elapsed(),
+            stagger,
+            "the race resolves exactly on the stagger tick"
+        );
     }
 
     #[tokio::test]
