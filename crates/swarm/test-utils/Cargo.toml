@@ -41,8 +41,19 @@ proptest-arbitrary-interop = { workspace = true, optional = true }
 vertex-swarm-node = { workspace = true, optional = true }
 vertex-swarm-topology = { workspace = true, optional = true }
 vertex-tasks = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["sync", "rt", "macros"] }
+tokio = { workspace = true, optional = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "time",
+    "test-util",
+] }
 eyre = { workspace = true, optional = true }
+
+# Swarm-test harness (gated by the `harness` feature)
+libp2p-swarm-test = { workspace = true, optional = true }
+vertex-net-peer-registry = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -62,4 +73,14 @@ cluster = [
     "dep:vertex-tasks",
     "dep:tokio",
     "dep:eyre",
+]
+# Vertex harness over `libp2p-swarm-test`: seeded identities, connect-and-activate,
+# drive helpers, and panic-safe spawning for behaviour-level tests. Dev-only, so
+# it is behaviour-agnostic and never enters a shipped cone.
+harness = [
+    "dep:libp2p-swarm-test",
+    "dep:vertex-net-peer-registry",
+    "dep:vertex-tasks",
+    "dep:tokio",
+    "dep:futures",
 ]
