@@ -479,7 +479,7 @@ pub enum ClientOutboundInfo {
         address: ChunkAddress,
         response: super::events::RetrievalResponseTx,
         /// When the outbound substream was requested, for latency scoring.
-        requested_at: vertex_util_runtime::time::Instant,
+        requested_at: vertex_tasks::time::Instant,
         /// True for an origin request, false for a forwarder relay leg. Stamped
         /// onto the completion event so only origin requests are debited.
         originated: bool,
@@ -489,7 +489,7 @@ pub enum ClientOutboundInfo {
         address: ChunkAddress,
         response: super::events::PushResponseTx,
         /// When the outbound substream was requested, for latency scoring.
-        requested_at: vertex_util_runtime::time::Instant,
+        requested_at: vertex_tasks::time::Instant,
         /// True for an origin push, false for a forwarder relay leg. Stamped
         /// onto the completion event so only origin pushes are debited.
         originated: bool,

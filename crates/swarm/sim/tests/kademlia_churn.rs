@@ -45,7 +45,7 @@ fn churn_storm_recovers_depth() {
         }
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
     let converged = run_until(
         &mut world,
@@ -60,11 +60,10 @@ fn churn_storm_recovers_depth() {
         .saturation_floor(sat);
 
     // Three 30% bounce bursts: each drops connections across the table; the
-    // evaluator re-dials the restarted supply and depth returns. Every peer
-    // has served the node, so the bursts read as blameless churn and the
-    // restarted supply stays immediately re-dialable.
-    let overlays: Vec<_> = scenario.peers().iter().map(|p| p.overlay).collect();
-    common::mark_overlays_productive(&handle, &overlays);
+    // evaluator re-dials the restarted supply and depth returns. A burst that
+    // catches a young, unserved connection arms the early-disconnect backoff,
+    // and the jittered window expires under virtual advance well inside the
+    // recovery budget, so no victim needs pre-marking as productive.
     let start = world.elapsed();
     FaultSchedule::new()
         .at(
@@ -92,8 +91,6 @@ fn churn_storm_recovers_depth() {
                 handle.routing_stats()
             );
             always.assert(&handle.routing_stats(), seed);
-            // The refilled connections must be blameless for the next burst.
-            common::mark_overlays_productive(&handle, &overlays);
         })
         .expect("schedule applies");
 

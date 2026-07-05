@@ -32,6 +32,6 @@ vertex-swarm-test-utils = { workspace = true, features = ["harness"] }
 vertex-swarm-topology.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 vertex-swarm-node = { workspace = true, features = ["storer"] }
 vertex-tasks.workspace = true

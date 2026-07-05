@@ -1,7 +1,12 @@
 //! Backoff starvation: when every known peer fails its dial, each candidate
-//! enters backoff after one attempt and the evaluation loop reaches a fixed
-//! point with no re-dials. This is the routing-level starvation the
-//! behaviour-layer isolation probe exists to break.
+//! arms the dial backoff after one attempt and the table reaches a
+//! connection-level fixed point. Bookkeeping clocks ride the virtual
+//! timeline, so the jittered backoff windows expire and re-dial attempts
+//! resume with exponentially doubled re-arms, but this population can never
+//! connect: the dark peers refuse the transport, and re-dials of the
+//! handshake-failing peers abort against the connection the failed exchange
+//! left open. This is the routing-level starvation the behaviour-layer
+//! isolation probe exists to break.
 
 mod common;
 
@@ -56,7 +61,7 @@ fn all_backoff_is_starvation_without_redial() {
         names.push(refuser);
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     let overlays: Vec<_> = scenario.peers().iter().map(|p| p.overlay).collect();
     gossip(&handle, &mut scenario, &names);
 
@@ -81,8 +86,9 @@ fn all_backoff_is_starvation_without_redial() {
         "every gossiped candidate must be dialled once (seed={seed})"
     );
 
-    // The fixed point: across many further evaluation rounds nothing is
-    // re-dialled, so the countable hosts see no new connection attempts.
+    // The connection fixed point: across many further evaluation rounds and
+    // several expired backoff windows, no re-dial ever reaches a countable
+    // host again (the aborted attempts never touch its transport).
     world
         .run_for(Duration::from_secs(60))
         .expect("world advances");
@@ -99,10 +105,19 @@ fn all_backoff_is_starvation_without_redial() {
         .collect();
     assert_eq!(
         attempts_before, attempts_after,
-        "an all-backoff table must not re-dial (seed={seed})"
+        "an all-backoff table must not reconnect a failing candidate (seed={seed})"
     );
+    // The dark half never even accepts a transport connection.
+    for bin in 0..3u8 {
+        assert_eq!(
+            trace_count(&world, &format!("dark-{bin}"), "established"),
+            0,
+            "an unreachable candidate never sees a connection (seed={seed})"
+        );
+    }
 
-    // The fixed point is the dial backoff holding every candidate.
+    // Every candidate's failure count keeps the backoff armed: no dial ever
+    // succeeded, so nothing reset it.
     assert!(
         overlays
             .iter()

@@ -1,10 +1,17 @@
-//! Wall-clock and monotonic time.
+//! The platform wall clock and monotonic time, always real.
 //!
 //! The time types are re-exported from `web-time`, which is itself a
 //! `std::time` re-export on native targets and a browser-clock shim on
 //! `wasm32`. Because `web-time` already resolves the platform difference, this
 //! module needs no `cfg(target_arch = "wasm32")` gating of its own; it is a
 //! thin, documented surface over that crate plus a few deduplicated helpers.
+//!
+//! Contract with `vertex_tasks::time`: wire-visible timestamps, log and
+//! metric stamps, and any comparison against a remote-produced timestamp read
+//! here, because remote peers validate them against their own real clocks.
+//! Internal bookkeeping and persistence timestamps read the runtime wall
+//! clock in `vertex_tasks::time` instead, which paused-clock tests and the
+//! sim can advance.
 //!
 //! Reach for the helpers ([`now_unix_secs`], [`now_unix_millis`],
 //! [`now_unix_nanos`], [`now`]) instead of re-deriving Unix timestamps from

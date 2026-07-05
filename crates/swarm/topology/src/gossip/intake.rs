@@ -10,7 +10,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use hashlink::LruCache;
 use metrics::gauge;

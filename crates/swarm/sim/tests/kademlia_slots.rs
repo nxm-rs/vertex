@@ -88,7 +88,7 @@ fn empty_slots_dilute_a_subprefix_monoculture() {
     );
     diverse.push("dup".to_owned());
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &first);
     let monoculture = run_until(
         &mut world,

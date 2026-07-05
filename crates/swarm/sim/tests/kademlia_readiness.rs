@@ -53,7 +53,7 @@ fn boundary_flap_holds_the_readiness_clock() {
     );
     names.push("flapper".to_owned());
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &names);
     let converged = run_until(
         &mut world,
@@ -74,10 +74,10 @@ fn boundary_flap_holds_the_readiness_clock() {
 
     // Flap cycles: each bounce dips the neighbourhood one peer below the
     // threshold until the re-dial restores it. The clock must hold through
-    // every sample of every dip. The flapper has served the node, so its
-    // drop is blameless churn, not a failing dial that arms backoff.
+    // every sample of every dip. A bounce that catches the flapper young
+    // arms the early-disconnect backoff, which expires under virtual
+    // advance inside the restore window.
     for cycle in 0..3 {
-        common::mark_productive(&handle, &scenario);
         world.bounce("flapper");
         let deadline = world.elapsed() + Duration::from_secs(6);
         while world.elapsed() < deadline {

@@ -73,7 +73,7 @@ fn outbound_quota_holds_under_inbound_flood() {
         scenario.add_peer(&mut world, name, STORER, PeerScript::Honest, slot0);
     }
 
-    let handle = await_handle(&mut world, &probe);
+    let (handle, _marker) = await_handle(&mut world, &probe);
     gossip(&handle, &mut scenario, &anchors);
 
     // The attacker flood meets bin 0's count target by inbound alone.

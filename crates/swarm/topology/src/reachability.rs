@@ -41,7 +41,7 @@ use std::sync::Arc;
 use libp2p::PeerId;
 use parking_lot::RwLock;
 use tracing::{debug, trace};
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 /// Number of consecutive negative liveness signals (failed ping or handshake
 /// fault) within [`FAILURE_DECAY`] that flip a peer to
@@ -506,7 +506,12 @@ mod tests {
         {
             let mut guard = tracker.inner.write();
             let entry = guard.get_mut(&peer).expect("entry exists after failure");
-            entry.first_failure_at = Some(Instant::now() - FAILURE_DECAY * 2);
+            // checked_sub keeps the underflow failure mode explicit; tokio
+            // instants panic on bare subtraction when the clock is young.
+            let backdated = Instant::now()
+                .checked_sub(FAILURE_DECAY * 2)
+                .expect("monotonic clock predates the decay window");
+            entry.first_failure_at = Some(backdated);
         }
 
         for _ in 0..(FAILURE_THRESHOLD - 1) {

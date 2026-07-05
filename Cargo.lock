@@ -8456,7 +8456,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vertex-metrics",
- "vertex-util-runtime",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -8509,7 +8509,7 @@ dependencies = [
  "parking_lot",
  "strum 0.28.0",
  "tokio",
- "vertex-util-runtime",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -8541,7 +8541,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vertex-tasks",
- "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8945,7 +8944,7 @@ dependencies = [
  "vertex-swarm-net-swap",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
- "vertex-util-runtime",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -9147,7 +9146,7 @@ dependencies = [
  "tracing",
  "vertex-metrics",
  "vertex-net-local",
- "vertex-util-runtime",
+ "vertex-tasks",
  "void",
 ]
 

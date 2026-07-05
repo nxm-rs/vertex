@@ -60,14 +60,17 @@ pub(crate) fn place(seed: u64, bin: u8) -> Option<Placement> {
     ))
 }
 
+/// Sender that queues productivity marks to the node host.
+pub(crate) type ProductivityMarker = tokio::sync::mpsc::UnboundedSender<OverlayAddress>;
+
+/// The node's topology handle plus its productivity-mark queue.
+pub(crate) type NodeHandles = (TopologyHandle<Identity>, ProductivityMarker);
+
 /// Register the node under test; its topology handle arrives on the probe
 /// once the node is built and listening. The host future never completes,
 /// so the world keeps stepping for the whole scenario.
-pub(crate) fn launch_node(
-    world: &mut SimWorld,
-    routing: KademliaConfig,
-) -> Probe<TopologyHandle<Identity>> {
-    let probe: Probe<TopologyHandle<Identity>> = Probe::default();
+pub(crate) fn launch_node(world: &mut SimWorld, routing: KademliaConfig) -> Probe<NodeHandles> {
+    let probe: Probe<NodeHandles> = Probe::default();
     let publish = probe.clone();
     world.client(NODE, move |ctx| async move {
         // Bind the executor to this host's runtime before any node build.
@@ -84,9 +87,29 @@ pub(crate) fn launch_node(
             .map_err(|e| format!("build client node: {e:#}"))?;
         node.start_listening()
             .map_err(|e| format!("start listening: {e:#}"))?;
-        publish.publish(node.topology_handle().clone());
 
         let executor = TaskExecutor::current();
+
+        // Apply productivity marks on this host so the stamp reads the
+        // node's clock; a test-thread report would timestamp in the past
+        // of a virtually-stamped connection and never exempt it.
+        let (mark_tx, mut mark_rx) = tokio::sync::mpsc::unbounded_channel::<OverlayAddress>();
+        let peer_manager = Arc::clone(node.topology_handle().peer_manager());
+        let _marker = executor.spawn(async move {
+            use vertex_swarm_api::{ReportSource, SwarmScoringEvent};
+            while let Some(overlay) = mark_rx.recv().await {
+                peer_manager.report_peer(
+                    &overlay,
+                    SwarmScoringEvent::RetrievalSuccess {
+                        latency: Duration::from_millis(50),
+                    },
+                    ReportSource::Protocol("retrieval"),
+                );
+            }
+        });
+
+        publish.publish((node.topology_handle().clone(), mark_tx));
+
         let _run =
             executor.spawn_with_graceful_shutdown_signal("sim-node", move |graceful| async move {
                 let _ = node.run(graceful).await;
@@ -99,14 +122,11 @@ pub(crate) fn launch_node(
 }
 
 /// Step the world until the node publishes its topology handle.
-pub(crate) fn await_handle(
-    world: &mut SimWorld,
-    probe: &Probe<TopologyHandle<Identity>>,
-) -> TopologyHandle<Identity> {
+pub(crate) fn await_handle(world: &mut SimWorld, probe: &Probe<NodeHandles>) -> NodeHandles {
     let deadline = world.elapsed() + Duration::from_secs(60);
     loop {
-        if let Some(handle) = probe.get() {
-            return handle;
+        if let Some(handles) = probe.get() {
+            return handles;
         }
         assert!(
             world.elapsed() < deadline,
@@ -133,30 +153,23 @@ pub(crate) fn gossip(handle: &TopologyHandle<Identity>, scenario: &mut Scenario,
 /// retrieval would.
 ///
 /// A productive connection is exempt from the early-disconnect penalty, so a
-/// later scripted drop reads as blameless churn (the peer stays re-dialable)
-/// rather than as a failing dial that arms backoff. The exemption is also a
-/// virtual-time necessity: connection duration and dial backoff are measured
-/// on wall clocks, so under the sim every drop looks instant and an armed
-/// backoff never expires.
-pub(crate) fn mark_productive(handle: &TopologyHandle<Identity>, scenario: &Scenario) {
+/// later scripted drop reads as blameless churn (the peer stays immediately
+/// re-dialable) rather than arming the dial backoff. Use it only in scenarios
+/// that genuinely model productive service: bookkeeping clocks ride the
+/// virtual timeline, so an armed backoff simply expires under advance and
+/// connection age is measured in virtual time.
+///
+/// Marks are queued to the node host and applied on the next world step, so
+/// the productivity stamp reads the node's clock.
+pub(crate) fn mark_productive(marker: &ProductivityMarker, scenario: &Scenario) {
     let overlays: Vec<OverlayAddress> = scenario.peers().iter().map(|p| p.overlay).collect();
-    mark_overlays_productive(handle, &overlays);
+    mark_overlays_productive(marker, &overlays);
 }
 
 /// [`mark_productive`] over an explicit overlay list.
-pub(crate) fn mark_overlays_productive(
-    handle: &TopologyHandle<Identity>,
-    overlays: &[OverlayAddress],
-) {
-    use vertex_swarm_api::{ReportSource, SwarmScoringEvent};
+pub(crate) fn mark_overlays_productive(marker: &ProductivityMarker, overlays: &[OverlayAddress]) {
     for overlay in overlays {
-        handle.peer_manager().report_peer(
-            overlay,
-            SwarmScoringEvent::RetrievalSuccess {
-                latency: Duration::from_millis(50),
-            },
-            ReportSource::Protocol("retrieval"),
-        );
+        let _ = marker.send(*overlay);
     }
 }
 

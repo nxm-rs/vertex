@@ -1583,7 +1583,7 @@ mod tests {
     mod phase_gauges {
         use super::*;
 
-        use std::time::Instant;
+        use vertex_tasks::time::Instant;
 
         use libp2p::Multiaddr;
         use libp2p::swarm::ConnectionId;

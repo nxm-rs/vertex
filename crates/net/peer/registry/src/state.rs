@@ -1,7 +1,7 @@
 //! Connection state for peers in the registry.
 
 use libp2p::{PeerId, swarm::ConnectionId};
-use vertex_util_runtime::time::Instant;
+use vertex_tasks::time::Instant;
 
 use crate::ConnectionDirection;
 
