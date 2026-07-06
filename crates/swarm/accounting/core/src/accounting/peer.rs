@@ -1,6 +1,6 @@
 //! Atomic per-peer balance tracking for lock-free bandwidth recording.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use vertex_swarm_api::{Au, SwarmPeerState};
 
@@ -86,6 +86,10 @@ pub struct PeerState {
     cumulative_repayment: AtomicU64,
     /// The cumulative-repayment value the next serve-line raise triggers past.
     growth_checkpoint: AtomicI64,
+    /// Set on any balance mutation, cleared when persisted. The write-behind
+    /// flush drains the peers whose flag is set; a concurrent mutation after the
+    /// clear re-arms it, so a mark is never permanently lost.
+    dirty: AtomicBool,
 }
 
 impl PeerState {
@@ -117,7 +121,26 @@ impl PeerState {
             allowance_rate: AtomicI64::new(allowance_rate.get()),
             cumulative_repayment: AtomicU64::new(0),
             growth_checkpoint: AtomicI64::new(first_checkpoint(allowance_rate).get()),
+            dirty: AtomicBool::new(false),
         }
+    }
+
+    /// Restore the balance from a persisted snapshot without marking the peer
+    /// dirty: the loaded value already matches the store.
+    pub(crate) fn restore_balance(&self, balance: Au) {
+        self.balance.store(balance.get(), Ordering::Relaxed);
+    }
+
+    /// Flag the peer for the next write-behind flush.
+    pub(crate) fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Claim and clear the dirty flag, returning whether it was set. The flush
+    /// clears before reading the balance so a racing mutation re-arms rather
+    /// than losing its mark.
+    pub(crate) fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::Relaxed)
     }
 
     /// The receive leg's outstanding-reservation counter.
@@ -137,8 +160,12 @@ impl PeerState {
 
     /// Add to the balance atomically, saturating at the [`i64`] bounds so an
     /// adversarial price or settlement sequence cannot wrap and flip owed/owes.
+    ///
+    /// Every balance commit routes through here, so marking dirty on the write
+    /// is the single choke point that queues the peer for the next flush.
     pub fn add_balance(&self, amount: Au) {
         saturating_fetch_add(&self.balance, amount.get());
+        self.mark_dirty();
     }
 
     /// Get the reserved balance in AU.

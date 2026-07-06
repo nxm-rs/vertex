@@ -323,6 +323,8 @@ impl ClientLauncher {
             })
         });
 
+        // The embedded launcher keeps balances in-memory: the browser client has
+        // no shared redb database wired for accounting persistence.
         let parts: ClientNodeParts<(SwarmAddress, PeerId)> = tail.finish(
             &executor,
             NodeRunParts {
@@ -332,6 +334,7 @@ impl ClientLauncher {
                 run,
             },
             (overlay, peer_id),
+            None,
         );
 
         let ClientNodeParts {

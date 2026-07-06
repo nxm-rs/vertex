@@ -40,6 +40,7 @@ use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::SwarmSettlementProvider;
 
 use crate::constants::{DEFAULT_MAX_INFLIGHT_GLOBAL, DEFAULT_MAX_INFLIGHT_PER_PEER};
+use crate::persistence::{BalanceStore, BalanceStoreError, PersistedBalance};
 
 /// The lower clamp on an adopted settle line, in refresh-rate units: a peer
 /// cannot drive our settle timing tighter than twice the refresh rate.
@@ -85,6 +86,9 @@ pub struct Accounting<C, I: SwarmIdentity> {
     /// Outstanding reservations across all peers and both legs, shared into
     /// every [`Reservation`] so the resolution drop is the single release point.
     inflight_global: Arc<AtomicU64>,
+    /// Optional write-behind persistence for per-peer balances. `None` leaves the
+    /// ledger purely in-memory (no node database, or the wasm client).
+    store: Option<Arc<dyn BalanceStore>>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -97,6 +101,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             peers: RwLock::new(HashMap::default()),
             caps: ReservationCaps::default(),
             inflight_global: Arc::new(AtomicU64::new(0)),
+            store: None,
         }
     }
 
@@ -116,6 +121,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             peers: RwLock::new(HashMap::default()),
             caps: ReservationCaps::default(),
             inflight_global: Arc::new(AtomicU64::new(0)),
+            store: None,
         }
     }
 
@@ -123,6 +129,90 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     pub fn with_reservation_caps(mut self, caps: ReservationCaps) -> Self {
         self.caps = caps;
         self
+    }
+
+    /// Attach a write-behind balance store. `None` keeps the ledger in-memory.
+    pub fn with_balance_store(mut self, store: Option<Arc<dyn BalanceStore>>) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Reload persisted balances into the ledger. Must run at construction,
+    /// before any request is served, so a restarted debtor knows what it owes.
+    ///
+    /// Returns the number of peers restored. A store error is surfaced to the
+    /// caller rather than panicking; the caller logs and continues on an
+    /// empty ledger, the only safe degrade.
+    pub fn restore(&self) -> Result<usize, BalanceStoreError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(0);
+        };
+        let records = store.load()?;
+        let restored = records.len();
+        let mut peers = self.peers.write();
+        for (peer, record) in records {
+            peers
+                .entry(peer)
+                .or_insert_with(|| self.new_peer_state())
+                .restore_balance(Au::new(record.balance));
+        }
+        Ok(restored)
+    }
+
+    /// Drain the dirty set and upsert those balances. Called on the persistence
+    /// tick and on shutdown; a no-op without a store.
+    ///
+    /// The dirty flag is cleared before the balance is read (race-free with a
+    /// concurrent apply), and re-armed if the write fails so the next tick
+    /// retries rather than dropping the mark.
+    pub fn flush(&self) -> Result<(), BalanceStoreError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        // Collect the dirty peers under the read lock; the store write runs off
+        // the lock. Each entry keeps its state so a failed write can re-arm it.
+        let dirty: Vec<(OverlayAddress, Arc<PeerState>)> = {
+            let peers = self.peers.read();
+            peers
+                .iter()
+                .filter(|(_, state)| state.take_dirty())
+                .map(|(peer, state)| (*peer, Arc::clone(state)))
+                .collect()
+        };
+        if dirty.is_empty() {
+            return Ok(());
+        }
+        let records: Vec<(OverlayAddress, PersistedBalance)> = dirty
+            .iter()
+            .map(|(peer, state)| {
+                (
+                    *peer,
+                    PersistedBalance {
+                        balance: state.balance().get(),
+                    },
+                )
+            })
+            .collect();
+        if let Err(e) = store.flush(&records) {
+            for (_, state) in &dirty {
+                state.mark_dirty();
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Seed a fresh peer state at the config-derived default lines. The serve
+    /// line defaults to the stricter client line (healed by `connect_peer` once
+    /// the node type is known) and the settle line to the full local payment
+    /// threshold (tightened by a later announcement).
+    fn new_peer_state(&self) -> Arc<PeerState> {
+        Arc::new(PeerState::new(
+            self.config.client_payment_threshold(),
+            self.config.payment_threshold(),
+            self.config.disconnect_threshold(),
+            self.config.client_refresh_rate(),
+        ))
     }
 
     /// Returns the names of the active settlement providers.
@@ -264,27 +354,13 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             return Arc::clone(state);
         }
 
-        // Slow path: write lock
+        // Slow path: write lock. connect_peer heals the serve line in place once
+        // the handshake node type is known; a later announcement tightens the
+        // settle line through adopt_settle_line.
         self.peers
             .write()
             .entry(peer)
-            .or_insert_with(|| {
-                // Default the serve line to the stricter client line: a dispatch
-                // task can reach a peer over the channel before the handshake
-                // connect hook seeds the real node type, so an unknown peer must
-                // never be served on the full storer line. connect_peer heals it
-                // in place once the type is known.
-                // Seed the settle line with the full local payment threshold, not
-                // the client serve line: an un-announced peer must settle on
-                // exactly today's config-derived timing. A peer announcement
-                // tightens it later through adopt_settle_line.
-                Arc::new(PeerState::new(
-                    self.config.client_payment_threshold(),
-                    self.config.payment_threshold(),
-                    self.config.disconnect_threshold(),
-                    self.config.client_refresh_rate(),
-                ))
-            })
+            .or_insert_with(|| self.new_peer_state())
             .clone()
     }
 
@@ -1739,5 +1815,107 @@ mod tests {
             accounting.prepare_provide(adopted, au(1_350_001)),
             Err(AccountingError::PaymentThreshold { .. })
         ));
+    }
+
+    // --- Persistence ------------------------------------------------------
+
+    use crate::persistence::DbBalanceStore;
+
+    fn shared_db() -> Arc<vertex_storage_redb::RedbDatabase> {
+        vertex_storage_redb::RedbDatabase::in_memory()
+            .unwrap()
+            .into_arc()
+    }
+
+    fn persistent_accounting(
+        db: &Arc<vertex_storage_redb::RedbDatabase>,
+    ) -> Accounting<AccountingConfig, Identity> {
+        let store = DbBalanceStore::new(db.clone());
+        store.init().unwrap();
+        let accounting = Accounting::new(AccountingConfig::default(), test_identity())
+            .with_balance_store(Some(Arc::new(store)));
+        accounting.restore().unwrap();
+        accounting
+    }
+
+    #[test]
+    fn restart_round_trip_restores_debtor_and_creditor_balances() {
+        let db = shared_db();
+        let debtor = OverlayAddress::from([1u8; 32]);
+        let creditor = OverlayAddress::from([2u8; 32]);
+
+        {
+            let accounting = persistent_accounting(&db);
+            // We owe the debtor peer (negative), the creditor owes us (positive).
+            accounting
+                .for_peer(debtor)
+                .record(au(3_000), Direction::Download);
+            accounting
+                .for_peer(creditor)
+                .record(au(5_000), Direction::Upload);
+            accounting.flush().unwrap();
+        }
+
+        // Reconstruct over the same database: balances survive the restart.
+        let reloaded = persistent_accounting(&db);
+        assert_eq!(reloaded.balance(&debtor), au(-3_000));
+        assert_eq!(reloaded.balance(&creditor), au(5_000));
+    }
+
+    #[test]
+    fn flush_persists_only_dirty_peers_and_a_later_apply_rearms() {
+        let db = shared_db();
+        let peer_a = OverlayAddress::from([1u8; 32]);
+        let peer_b = OverlayAddress::from([2u8; 32]);
+
+        let accounting = persistent_accounting(&db);
+        accounting
+            .for_peer(peer_a)
+            .record(au(1_000), Direction::Upload);
+        accounting.flush().unwrap();
+
+        // A no-op flush (nothing dirty) writes nothing and must not clobber A.
+        accounting.flush().unwrap();
+
+        // A later apply on B re-arms the dirty set; the next flush picks it up.
+        accounting
+            .for_peer(peer_b)
+            .record(au(2_000), Direction::Upload);
+        accounting.flush().unwrap();
+
+        let reloaded = persistent_accounting(&db);
+        assert_eq!(reloaded.balance(&peer_a), au(1_000));
+        assert_eq!(reloaded.balance(&peer_b), au(2_000));
+    }
+
+    #[test]
+    fn restore_without_a_store_is_a_noop() {
+        let accounting = test_accounting();
+        assert_eq!(accounting.restore().unwrap(), 0);
+        // Flush without a store must also be a harmless no-op.
+        accounting.flush().unwrap();
+    }
+
+    #[test]
+    fn restored_balance_is_not_marked_dirty() {
+        let db = shared_db();
+        let peer = OverlayAddress::from([7u8; 32]);
+
+        {
+            let accounting = persistent_accounting(&db);
+            accounting
+                .for_peer(peer)
+                .record(au(1_500), Direction::Upload);
+            accounting.flush().unwrap();
+        }
+
+        // On reload the restored peer is clean, so the first flush writes nothing
+        // new; the store still holds the original balance.
+        let reloaded = persistent_accounting(&db);
+        assert!(
+            !reloaded.peer_state(peer).take_dirty(),
+            "a restored balance must not be dirty"
+        );
+        assert_eq!(reloaded.balance(&peer), au(1_500));
     }
 }

@@ -8,7 +8,10 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer};
+use vertex_swarm_accounting::{
+    Accounting, BalanceStore, ClientAccounting, DbBalanceStore, DefaultAccountingConfig,
+    FixedPricer,
+};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, SwarmLaunchConfig, SwarmNodeType, construct,
 };
@@ -114,6 +117,23 @@ fn create_peer_store(db: &Option<Arc<RedbDatabase>>) -> Option<PeerStore> {
         }
         Err(e) => {
             warn!(error = %e, "Failed to init peer snapshot table");
+            None
+        }
+    }
+}
+
+/// Build the write-behind balance store when a database is present, so per-peer
+/// balances survive a restart. Returns `None` in-memory (no database).
+fn create_balance_store(db: &Option<Arc<RedbDatabase>>) -> Option<Arc<dyn BalanceStore>> {
+    let db = db.as_ref()?;
+    let store = DbBalanceStore::new(db.clone());
+    match store.init() {
+        Ok(()) => {
+            info!("Balance persistence: shared database");
+            Some(Arc::new(store) as Arc<dyn BalanceStore>)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to init balance table; balances will not persist");
             None
         }
     }
@@ -329,6 +349,7 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
 
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
+    let balance_store = create_balance_store(&db);
 
     let tail_params = ClientTailParams {
         node_type,
@@ -360,7 +381,7 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
         )
         .await?;
 
-    let parts = tail.finish(ctx.executor(), parts, store);
+    let parts = tail.finish(ctx.executor(), parts, store, balance_store);
 
     info!(%node_type, "Node built successfully");
     Ok(parts)

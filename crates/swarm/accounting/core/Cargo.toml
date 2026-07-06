@@ -9,25 +9,27 @@ repository.workspace = true
 description = "Core bandwidth accounting for Swarm data availability"
 
 [dependencies]
-nectar-primitives = { workspace = true }
+nectar-primitives = { workspace = true, features = ["serde"] }
 vertex-swarm-primitives = { workspace = true }
 vertex-metrics = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarm-accounting-pricing = { workspace = true }
 vertex-swarm-spec = { workspace = true }
+vertex-storage = { workspace = true, features = ["nectar"] }
 async-trait = { workspace = true }
 auto_impl = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 vertex-swarm-test-utils = { workspace = true }
+vertex-storage-redb = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
-cli = ["dep:clap", "dep:serde", "vertex-swarm-accounting-pricing/cli"]
+cli = ["dep:clap", "vertex-swarm-accounting-pricing/cli"]

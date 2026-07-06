@@ -11,9 +11,10 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 use vertex_swarm_accounting::{
-    Accounting, AccountingBuilder, ClientAccounting, DefaultAccountingConfig, FixedPricer,
+    Accounting, AccountingBuilder, BalanceStore, ClientAccounting, DefaultAccountingConfig,
+    FixedPricer,
 };
 use vertex_swarm_accounting_pseudosettle::{
     PseudosettleCommand, PseudosettleEvent, PseudosettleHandle, PseudosettleProvider,
@@ -39,8 +40,6 @@ use alloy_chains::NamedChain;
 use alloy_primitives::Address;
 #[cfg(feature = "swap")]
 use alloy_signer_local::PrivateKeySigner;
-#[cfg(feature = "swap")]
-use tracing::info;
 #[cfg(feature = "swap")]
 use vertex_chain::SharedChainProvider;
 #[cfg(feature = "swap")]
@@ -130,6 +129,10 @@ pub struct ClientCoreCtx {
     pub extra_settlement: Vec<Box<dyn SwarmSettlementProvider>>,
     /// The peer-scoring authority accounting and the service report through.
     pub reporter: Arc<dyn PeerReporter>,
+    /// Optional write-behind balance persistence. Balances reload here, before
+    /// the accounting is shared or any request served; `None` keeps the ledger
+    /// in-memory.
+    pub balance_store: Option<Arc<dyn BalanceStore>>,
 }
 
 /// Assemble the shared client middle: build the accounting with its settlement
@@ -150,6 +153,7 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         pseudosettle_provider,
         extra_settlement,
         reporter,
+        balance_store,
     } = ctx;
 
     // Pseudosettle is registered first so soft accounting forgives total debt
@@ -158,7 +162,16 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         .with_pricer_from_config(spec)
         .with_settlement(pseudosettle_provider)
         .with_settlements(extra_settlement)
+        .with_balance_store(balance_store)
         .build(&identity);
+    // Reload persisted balances before the accounting is shared or any request is
+    // served: a restarted debtor must know what it owes so pseudosettle keeps
+    // paying. A store error degrades to an empty ledger rather than a panic.
+    match accounting.accounting().restore() {
+        Ok(0) => {}
+        Ok(restored) => info!(restored, "reloaded persisted peer balances"),
+        Err(e) => warn!(error = %e, "failed to reload persisted peer balances"),
+    }
     // One accounting instance is shared by the selector, forwarder, service, and
     // settlement services.
     let accounting: SharedAccounting = Arc::new(accounting);
@@ -230,6 +243,55 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
         client_service,
         client_handle,
     }
+}
+
+/// Interval between write-behind balance flushes.
+///
+/// A crash loses at most this much desync from the on-disk ledger, so it trades
+/// durability against write volume; the balances are also flushed on shutdown.
+#[cfg(not(target_arch = "wasm32"))]
+const BALANCE_FLUSH_INTERVAL: vertex_tasks::time::Duration =
+    vertex_tasks::time::Duration::from_secs(30);
+
+/// Drive the accounting balance flush on the runtime clock plus a final flush on
+/// shutdown.
+///
+/// The tick reads `vertex_tasks::time` (the pausable runtime clock): this is
+/// bookkeeping, never wire-visible, so it must not read the platform clock. The
+/// shutdown branch drains once more before the guard drops, so balances dirtied
+/// since the last tick still reach disk.
+///
+/// Native only: the wasm client keeps balances in-memory, and the browser timer
+/// future is `!Send`, so it cannot go through the Send-bounded spawner.
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_accounting_persistence_task(
+    executor: &TaskExecutor,
+    accounting: Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>,
+    interval: vertex_tasks::time::Duration,
+) {
+    executor.spawn_with_graceful_shutdown_signal(
+        "swarm.accounting_persistence",
+        move |shutdown| async move {
+            let mut shutdown = std::pin::pin!(shutdown);
+            let mut ticker = vertex_tasks::time::interval_after(interval, interval);
+            loop {
+                tokio::select! {
+                    guard = &mut shutdown => {
+                        if let Err(e) = accounting.flush() {
+                            warn!(error = %e, "accounting balance flush on shutdown failed");
+                        }
+                        drop(guard);
+                        break;
+                    }
+                    () = ticker.tick() => {
+                        if let Err(e) = accounting.flush() {
+                            warn!(error = %e, "accounting balance flush failed");
+                        }
+                    }
+                }
+            }
+        },
+    );
 }
 
 /// Channels connecting the pseudosettle provider, service, and node.
@@ -739,6 +801,7 @@ impl ClientCoreTail {
         executor: &TaskExecutor,
         parts: NodeRunParts,
         provider_store: P,
+        balance_store: Option<Arc<dyn BalanceStore>>,
     ) -> ClientNodeParts<P> {
         let NodeRunParts {
             topology,
@@ -780,6 +843,10 @@ impl ClientCoreTail {
             Vec::new()
         };
 
+        // Spawn the persistence tick only when a store is wired (native only).
+        #[cfg(not(target_arch = "wasm32"))]
+        let persist_balances = balance_store.is_some();
+
         let core = assemble_client_core(ClientCoreCtx {
             spec: Arc::clone(&self.spec),
             identity: self.identity.clone(),
@@ -790,7 +857,19 @@ impl ClientCoreTail {
             pseudosettle_provider: self.pseudosettle_provider,
             extra_settlement,
             reporter: Arc::clone(&reporter),
+            balance_store,
         });
+
+        // Write-behind balance persistence: drain the dirty set on the runtime
+        // clock and once more on shutdown, so a crash loses at most one interval.
+        #[cfg(not(target_arch = "wasm32"))]
+        if persist_balances {
+            spawn_accounting_persistence_task(
+                executor,
+                core.accounting.accounting().clone(),
+                BALANCE_FLUSH_INTERVAL,
+            );
+        }
 
         // One dispatch engine for every origin and relay path. The routing table's
         // max bin is a spec constant; read it once here and hand it to the engine as
@@ -1174,6 +1253,71 @@ mod tests {
                 }
             ),
             "a chainless SWAP client must error with Required{{Client}}, got {err:?}"
+        );
+    }
+
+    /// The persistence task drains the dirty set on graceful shutdown, not only
+    /// on the periodic tick: a long tick interval never fires, yet a balance
+    /// dirtied before shutdown still reaches the store.
+    #[test]
+    fn persistence_task_flushes_on_shutdown() {
+        use std::sync::Mutex;
+        use vertex_swarm_accounting::{BalanceStoreError, PersistedBalance};
+        use vertex_swarm_api::{Au, Direction, SwarmPeerAccounting};
+        use vertex_swarm_primitives::OverlayAddress;
+
+        #[derive(Default)]
+        struct RecordingStore {
+            flushed: Mutex<Vec<(OverlayAddress, i64)>>,
+        }
+        impl vertex_swarm_accounting::BalanceStore for RecordingStore {
+            fn load(&self) -> Result<Vec<(OverlayAddress, PersistedBalance)>, BalanceStoreError> {
+                Ok(Vec::new())
+            }
+            fn flush(
+                &self,
+                records: &[(OverlayAddress, PersistedBalance)],
+            ) -> Result<(), BalanceStoreError> {
+                let mut flushed = self.flushed.lock().unwrap();
+                for (peer, record) in records {
+                    flushed.push((*peer, record.balance));
+                }
+                Ok(())
+            }
+        }
+
+        let identity = test_identity_arc();
+        let store = Arc::new(RecordingStore::default());
+        let client = AccountingBuilder::new(DefaultAccountingConfig::default())
+            .with_pricer_from_config(identity.spec().clone())
+            .with_balance_store(Some(store.clone() as Arc<dyn BalanceStore>))
+            .build(&identity);
+        let accounting = client.accounting().clone();
+
+        let peer = OverlayAddress::from([9u8; 32]);
+        accounting
+            .for_peer(peer)
+            .record(Au::new(4_200), Direction::Upload);
+
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let manager = vertex_tasks::TaskManager::new(runtime.handle().clone());
+        let executor = manager.executor();
+
+        // A tick interval far past the test lifetime, so only the shutdown branch
+        // can drive the observed flush.
+        spawn_accounting_persistence_task(
+            &executor,
+            accounting,
+            vertex_tasks::time::Duration::from_secs(3_600),
+        );
+
+        manager.graceful_shutdown();
+
+        let flushed = store.flushed.lock().unwrap();
+        assert_eq!(
+            flushed.as_slice(),
+            &[(peer, 4_200)],
+            "the shutdown drain persists the peer dirtied before shutdown"
         );
     }
 }
