@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use redb::backends::InMemoryBackend;
+use redb::{TableDefinition, TableHandle};
 use vertex_storage::{Database, DatabaseError, DatabaseErrorInfo, DbTxMut};
 
 pub mod cursor;
@@ -92,6 +93,41 @@ impl Database for RedbDatabase {
             DatabaseError::InitTx(DatabaseErrorInfo::with_source("begin write tx", e))
         })?;
         Ok(RedbWriteTx::new(inner))
+    }
+
+    fn table_names(&self) -> Result<Option<Vec<String>>, DatabaseError> {
+        let tx = self.inner.begin_read().map_err(|e| {
+            DatabaseError::Read(DatabaseErrorInfo::with_source(
+                "begin read tx for table list",
+                e,
+            ))
+        })?;
+        let names = tx
+            .list_tables()
+            .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source("list tables", e)))?
+            .map(|handle| handle.name().to_string())
+            .collect();
+        Ok(Some(names))
+    }
+
+    fn drop_table(&self, name: &str) -> Result<bool, DatabaseError> {
+        let tx = self.inner.begin_write().map_err(|e| {
+            DatabaseError::InitTx(DatabaseErrorInfo::with_source(
+                "begin write tx for drop table",
+                e,
+            ))
+        })?;
+        let existed = {
+            let def: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new(name);
+            tx.delete_table(def).map_err(|e| {
+                DatabaseError::Delete(DatabaseErrorInfo::with_source(
+                    format!("delete table {name}"),
+                    e,
+                ))
+            })?
+        };
+        tx.commit().map_err(DatabaseError::commit_err)?;
+        Ok(existed)
     }
 }
 
@@ -325,6 +361,78 @@ mod tests {
         .unwrap();
         let val = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
         assert_eq!(val, Some(TestValue("file".into())));
+    }
+
+    table!(OrphanTable, "orphan", TestKey, TestValue);
+
+    #[test]
+    fn test_table_names_lists_created_tables() {
+        let db = setup();
+        db.update(|tx| tx.ensure_table(OrphanTable::NAME)).unwrap();
+        let mut names = db.table_names().unwrap().unwrap();
+        names.sort();
+        assert_eq!(names, vec!["orphan".to_string(), "test".to_string()]);
+    }
+
+    #[test]
+    fn test_drop_table_removes_only_the_named_table() {
+        let db = setup();
+        db.update(|tx| tx.ensure_table(OrphanTable::NAME)).unwrap();
+
+        assert!(db.drop_table("orphan").unwrap(), "table existed");
+        assert!(!db.drop_table("orphan").unwrap(), "already dropped");
+
+        let names = db.table_names().unwrap().unwrap();
+        assert_eq!(names, vec!["test".to_string()], "registered table survives");
+    }
+
+    #[test]
+    fn test_sweep_log_only_retains_unknown_tables() {
+        let db = setup();
+        db.update(|tx| tx.ensure_table(OrphanTable::NAME)).unwrap();
+
+        let report =
+            sweep_unknown_tables(db.as_ref(), TestTables::NAMES, UnknownTablePolicy::Log).unwrap();
+        assert_eq!(report.unknown, vec!["orphan".to_string()]);
+        assert!(report.vacuumed.is_empty(), "log policy never drops");
+
+        // The orphan is still on disk after a log-only sweep.
+        let names = db.table_names().unwrap().unwrap();
+        assert!(names.contains(&"orphan".to_string()));
+    }
+
+    #[test]
+    fn test_sweep_vacuum_drops_unknown_but_never_registered() {
+        let db = setup();
+        db.update(|tx| tx.ensure_table(OrphanTable::NAME)).unwrap();
+        // Prove the registered table holds live data the sweep must not touch.
+        db.update(|tx| tx.put::<TestTable>(TestKey(1), TestValue("keep".into())))
+            .unwrap();
+
+        let report =
+            sweep_unknown_tables(db.as_ref(), TestTables::NAMES, UnknownTablePolicy::Vacuum)
+                .unwrap();
+        assert_eq!(report.unknown, vec!["orphan".to_string()]);
+        assert_eq!(report.vacuumed, vec!["orphan".to_string()]);
+
+        let names = db.table_names().unwrap().unwrap();
+        assert_eq!(
+            names,
+            vec!["test".to_string()],
+            "registered table untouched"
+        );
+        let kept = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
+        assert_eq!(kept, Some(TestValue("keep".into())), "live data survives");
+    }
+
+    #[test]
+    fn test_sweep_noop_when_registry_covers_all_tables() {
+        let db = setup();
+        let report =
+            sweep_unknown_tables(db.as_ref(), TestTables::NAMES, UnknownTablePolicy::Vacuum)
+                .unwrap();
+        assert!(report.unknown.is_empty());
+        assert!(report.vacuumed.is_empty());
     }
 }
 

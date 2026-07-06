@@ -92,6 +92,24 @@ pub trait Database: Send + Sync + 'static {
         tx.commit()?;
         Ok(result)
     }
+
+    /// Names of every table physically present, whether or not it is in the
+    /// current registry. Backends that cannot enumerate their tables return
+    /// `Ok(None)`, which makes the registry sweep a no-op for them.
+    fn table_names(&self) -> Result<Option<Vec<String>>, DatabaseError> {
+        Ok(None)
+    }
+
+    /// Drop a physical table by name, returning whether it existed.
+    ///
+    /// Only backends that implement [`Database::table_names`] override this; the
+    /// default refuses so a mis-wired vacuum cannot silently succeed as a no-op.
+    fn drop_table(&self, name: &str) -> Result<bool, DatabaseError> {
+        let _ = name;
+        Err(DatabaseError::other(
+            "this backend does not support dropping tables",
+        ))
+    }
 }
 
 /// Read-only transaction operations.
