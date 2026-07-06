@@ -8,6 +8,7 @@ use vertex_swarm_api::{
     SwarmSettlementProvider, SwarmSpec,
 };
 
+use crate::persistence::BalanceStore;
 use crate::{Accounting, ClientAccounting};
 
 /// Builder for bandwidth accounting with integrated pricing.
@@ -27,6 +28,7 @@ pub struct AccountingBuilder<C, P = NoPricer> {
     config: C,
     pricing: P,
     providers: Vec<Box<dyn SwarmSettlementProvider>>,
+    balance_store: Option<Arc<dyn BalanceStore>>,
 }
 
 impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
@@ -36,6 +38,7 @@ impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
             config,
             pricing: NoPricer,
             providers: Vec::new(),
+            balance_store: None,
         }
     }
 }
@@ -50,7 +53,15 @@ impl<C, P> AccountingBuilder<C, P> {
             config: self.config,
             pricing,
             providers: self.providers,
+            balance_store: self.balance_store,
         }
+    }
+
+    /// Attach a write-behind balance store so balances survive a restart.
+    /// `None` keeps the ledger in-memory.
+    pub fn with_balance_store(mut self, store: Option<Arc<dyn BalanceStore>>) -> Self {
+        self.balance_store = store;
+        self
     }
 
     /// Add a settlement provider.
@@ -98,7 +109,8 @@ impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send 
         self,
         identity: &I,
     ) -> ClientAccounting<Arc<Accounting<C, I>>, P> {
-        let accounting = Accounting::with_providers(self.config, identity.clone(), self.providers);
+        let accounting = Accounting::with_providers(self.config, identity.clone(), self.providers)
+            .with_balance_store(self.balance_store);
         ClientAccounting::new(Arc::new(accounting), self.pricing)
     }
 }

@@ -47,6 +47,7 @@ mod builder;
 mod client_accounting;
 mod config;
 mod constants;
+mod persistence;
 #[cfg(test)]
 mod settlement;
 
@@ -59,6 +60,7 @@ pub use args::AccountingArgs;
 pub use builder::AccountingBuilder;
 pub use client_accounting::ClientAccounting;
 pub use config::{AccountingConfig, DefaultAccountingConfig};
+pub use persistence::{BalanceStore, BalanceStoreError, DbBalanceStore, PersistedBalance};
 #[cfg(test)]
 pub(crate) use settlement::NoSettlement;
 pub use vertex_swarm_accounting_pricing::{FixedPricer, FixedPricingConfig, NoPricer};

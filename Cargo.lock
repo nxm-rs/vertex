@@ -8747,6 +8747,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vertex-metrics",
+ "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
