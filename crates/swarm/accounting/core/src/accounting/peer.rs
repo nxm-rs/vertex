@@ -132,15 +132,21 @@ impl PeerState {
     }
 
     /// Flag the peer for the next write-behind flush.
+    ///
+    /// `Release` pairs with the `Acquire` in [`take_dirty`](Self::take_dirty):
+    /// the balance write sequenced before this store is then visible to the
+    /// flusher that observes the mark, so it can never persist a stale balance
+    /// while clearing the flag (a lost update on a weakly-ordered target).
     pub(crate) fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Relaxed);
+        self.dirty.store(true, Ordering::Release);
     }
 
     /// Claim and clear the dirty flag, returning whether it was set. The flush
     /// clears before reading the balance so a racing mutation re-arms rather
-    /// than losing its mark.
+    /// than losing its mark; the `Acquire` makes the marking writer's balance
+    /// commit visible to the subsequent balance read.
     pub(crate) fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, Ordering::Relaxed)
+        self.dirty.swap(false, Ordering::Acquire)
     }
 
     /// The receive leg's outstanding-reservation counter.
