@@ -19,7 +19,9 @@ use crate::manager::PeerManager;
 /// purged in-process, so without this bound the persisted table would hoard
 /// records unreachable for weeks and spend bin-admission capacity that the
 /// freshest-first restore owes to live peers. A week keeps peers across a
-/// realistic downtime while discarding the long-dead.
+/// realistic downtime while discarding the long-dead. A currently-connected
+/// peer is exempt: the live connection is proof of reachability regardless of
+/// how long ago `last_seen` was stamped.
 const SNAPSHOT_STALE_SECS: u64 = 7 * 24 * 3600;
 
 /// Whether a record last seen at `last_seen` is fresh enough to persist at the
@@ -71,16 +73,23 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// claim, and persisting them would let junk records survive restarts.
     /// Gossip re-delivers any that are real. Records last seen longer ago than
     /// [`SNAPSHOT_STALE_SECS`] are pruned so the persisted table does not
-    /// accumulate dead peers across restarts.
+    /// accumulate dead peers across restarts, unless the peer is still
+    /// connected (a live connection is proof it is worth keeping).
     pub fn snapshot(&self) {
         let Some(ref store) = self.store else { return };
         let now = unix_timestamp_secs();
         let records: Vec<PeerSnapshot> = self
             .peers
             .iter()
-            .filter(|r| r.value().is_verified())
+            .filter(|r| {
+                let entry = r.value();
+                // A live connection proves reachability even when `last_seen`
+                // (stamped at connect) has aged past the bound, so a peer held
+                // open longer than the bound is kept rather than pruned.
+                entry.is_verified()
+                    && (entry.is_connected() || snapshot_is_fresh(now, entry.last_seen()))
+            })
             .map(|r| PeerSnapshot::from(r.value().as_ref()))
-            .filter(|s| snapshot_is_fresh(now, s.last_seen))
             .collect();
         match store.store(&records) {
             Ok(()) => debug!(peers = records.len(), "wrote peer snapshot"),
@@ -277,6 +286,25 @@ mod tests {
                 "under cap, every record is restored"
             );
         }
+    }
+
+    #[test]
+    fn equal_last_seen_ties_break_on_overlay_deterministically() {
+        // Two peers in bin 0 with identical last_seen, cap 1, stored so the
+        // higher overlay leads. Without the overlay tiebreak the survivor
+        // would depend on store enumeration order; with it the lower overlay
+        // wins regardless, so the drop decision is deterministic.
+        let store = store_with(&[snap(0xC0, 20), snap(0x80, 20)]);
+        let pm = seeded_manager(store, 1);
+
+        assert!(
+            pm.swarm_peer(&make_overlay(0x80)).is_some(),
+            "lower overlay wins the tie"
+        );
+        assert!(
+            pm.swarm_peer(&make_overlay(0xC0)).is_none(),
+            "higher overlay dropped when last_seen ties"
+        );
     }
 
     #[test]
