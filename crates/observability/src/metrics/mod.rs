@@ -22,8 +22,8 @@ mod server;
 mod task;
 
 pub use buckets::{
-    CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, HistogramBucketConfig,
-    LOCK_CONTENTION, POLL_DURATION,
+    CONNECTION_LIFETIME, DIAL_ADDR_COUNT, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS,
+    HistogramBucketConfig, LOCK_CONTENTION, PEER_EXCHANGE_COUNT, PING_RTT_SECONDS, POLL_DURATION,
 };
 #[cfg(feature = "prometheus")]
 pub use hooks::{Hook, Hooks, HooksBuilder};

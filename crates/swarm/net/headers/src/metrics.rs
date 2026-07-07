@@ -1,16 +1,14 @@
 //! Unified protocol exchange metrics for all headered protocols.
 
 use metrics::{counter, histogram};
-use vertex_metrics::HistogramBucketConfig;
 use vertex_metrics::labels::{direction, outcome, reason};
+use vertex_metrics::{DURATION_NETWORK, HistogramBucketConfig};
 use vertex_util_runtime::time::Instant;
 
 /// Histogram bucket configurations for protocol exchange metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[HistogramBucketConfig {
     suffix: "protocol_exchange_duration_seconds",
-    buckets: &[
-        0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 30.0,
-    ],
+    buckets: DURATION_NETWORK,
 }];
 
 /// Tracks metrics for a single protocol exchange (inbound or outbound).

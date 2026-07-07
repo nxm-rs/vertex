@@ -261,7 +261,7 @@ impl ClientHandler {
     fn push_event(&mut self, event: HandlerEvent) {
         if self.pending_events.push(event).is_err() {
             warn!("Handler event queue full, dropping event");
-            metrics::counter!("swarm.client.handler.events_dropped").increment(1);
+            metrics::counter!("swarm_client_handler_events_dropped_total").increment(1);
         }
     }
 
@@ -321,7 +321,7 @@ impl ClientHandler {
         }
         if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
             warn!(%request_id, "Pending response map full, dropping oldest");
-            metrics::counter!("swarm.client.handler.responses_dropped").increment(1);
+            metrics::counter!("swarm_client_handler_responses_dropped_total").increment(1);
             if let Some(&oldest_id) = self
                 .pending_responses
                 .iter()
@@ -370,7 +370,7 @@ impl ClientHandler {
                 .is_err()
         {
             warn!("Handler command queue full, dropping superseded announcement");
-            metrics::counter!("swarm.client.handler.commands_dropped").increment(1);
+            metrics::counter!("swarm_client_handler_commands_dropped_total").increment(1);
         }
     }
 
@@ -536,7 +536,8 @@ impl ClientHandler {
                 // cancellable downstream, so this is the delivery-side over-fetch
                 // the staggered race trades for failover latency.
                 if originated && delivered.is_err() {
-                    metrics::counter!("swarm.client.retrieval_overfetch_delivered").increment(1);
+                    metrics::counter!("swarm_client_retrieval_overfetch_delivered_total")
+                        .increment(1);
                 }
             }
         }
@@ -816,7 +817,7 @@ impl ConnectionHandler for ClientHandler {
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         if self.pending_commands.push(event).is_err() {
             warn!("Handler command queue full, dropping command");
-            metrics::counter!("swarm.client.handler.commands_dropped").increment(1);
+            metrics::counter!("swarm_client_handler_commands_dropped_total").increment(1);
         }
     }
 
@@ -882,7 +883,7 @@ impl ConnectionHandler for ClientHandler {
                             .map_or(FailureKind::Protocol, |e| e.retrieval_failure_kind());
                         if timed_out {
                             // Sole emission site for the retrieval timeout counter.
-                            metrics::counter!("swarm.client.retrieval_timeouts_total").increment(1);
+                            metrics::counter!("swarm_client_retrieval_timeouts_total").increment(1);
                             debug!(
                                 peer_overlay = ?self.overlay(),
                                 %address,
@@ -918,7 +919,7 @@ impl ConnectionHandler for ClientHandler {
                             .map_or(FailureKind::Protocol, |e| e.pushsync_failure_kind());
                         if timed_out {
                             // Sole emission site for the pushsync timeout counter.
-                            metrics::counter!("swarm.client.pushsync_timeouts_total").increment(1);
+                            metrics::counter!("swarm_client_pushsync_timeouts_total").increment(1);
                             debug!(
                                 peer_overlay = ?self.overlay(),
                                 %address,

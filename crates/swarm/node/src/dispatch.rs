@@ -781,8 +781,8 @@ where
                 .await;
             if let Ok(result) = primary {
                 let dispatched = attempts.load(Ordering::Relaxed);
-                histogram!("swarm.client.retrieval_attempts").record(dispatched as f64);
-                counter!("swarm.client.retrieval_total", "outcome" => "hit", "path" => "bin_route")
+                histogram!("swarm_client_retrieval_attempts").record(dispatched as f64);
+                counter!("swarm_client_retrieval_total", "outcome" => "hit", "path" => "bin_route")
                     .increment(1);
                 record_overfetch(dispatched, "bin_route");
                 return Ok(ChunkRetrievalResult {
@@ -853,7 +853,7 @@ where
                     self.settlement.trigger_settlement(peer);
                 }
                 settle_drives += 1;
-                counter!("swarm.client.retrieval_settle_drive").increment(1);
+                counter!("swarm_client_retrieval_settle_drive_total").increment(1);
                 // `send_sleep`, not `vertex_tasks::time::sleep`: this future carries
                 // the async-trait `Send` bound and `sleep` is `!Send` on wasm.
                 // `send_sleep` is `Send` on both targets and, unlike a wall-clock
@@ -919,14 +919,14 @@ where
         };
 
         let dispatched = attempts.load(Ordering::Relaxed);
-        histogram!("swarm.client.retrieval_attempts").record(dispatched as f64);
+        histogram!("swarm_client_retrieval_attempts").record(dispatched as f64);
         let outcome_label = match &outcome {
             Ok(_) => "hit",
             Err(RaceFailure::NoCandidates) => "no_peers",
             Err(RaceFailure::AllFailed(_)) => "exhausted",
             Err(RaceFailure::TimedOut) => "timed_out",
         };
-        counter!("swarm.client.retrieval_total", "outcome" => outcome_label, "path" => "fallback")
+        counter!("swarm_client_retrieval_total", "outcome" => outcome_label, "path" => "fallback")
             .increment(1);
         if outcome.is_ok() {
             // `dispatched` spans both phases, so a fallback win also counts the
@@ -1063,7 +1063,7 @@ pub(crate) fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
 /// `swarm.client.retrieval_overfetch_delivered`, emitted by the handler.
 fn record_overfetch(attempts: usize, path: &'static str) {
     if let Some(extra) = attempts.checked_sub(1).filter(|extra| *extra > 0) {
-        counter!("swarm.client.retrieval_overfetch_total", "path" => path).increment(extra as u64);
+        counter!("swarm_client_retrieval_overfetch_total", "path" => path).increment(extra as u64);
     }
 }
 

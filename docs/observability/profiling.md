@@ -223,7 +223,6 @@ The dialer crate (`vertex-net-dialer`) tracks its own per-purpose state, where `
 | Metric | Type | Description | Target |
 |--------|------|-------------|--------|
 | `topology_routing_phases_lock_seconds` | Histogram | Connection phases RwLock hold time | < 100us p99 |
-| `topology_routing_candidates_lock_seconds` | Histogram | Candidates Mutex hold time | < 100us p99 |
 
 ### Poll Loop Performance
 
@@ -282,6 +281,21 @@ Hive emits only peer-count and validation families; its exchange metrics are the
 | `identify_error_total` | Counter | `purpose`, `kind` | Identify errors (`timeout`/`apply`) |
 | `identify_duration_seconds` | Histogram | `purpose`, `direction`, `outcome` | Identify exchange duration |
 
+### Swarm Client and Pullsync
+
+Back-pressure drop counters: each increments when a bounded internal channel or queue is full and a signal is shed. A sustained rate signals a saturated run loop or handler, not a wire fault.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `swarm_client_commands_dropped_total` | Counter | | Client commands shed at the service command channel |
+| `swarm_client_events_dropped_total` | Counter | | Client events shed at the node event forward channel |
+| `swarm_client_handler_events_dropped_total` | Counter | | Handler events shed at the connection handler queue |
+| `swarm_client_handler_responses_dropped_total` | Counter | | Handler responses shed at the connection handler queue |
+| `swarm_client_handler_commands_dropped_total` | Counter | | Handler commands shed at the connection handler queue |
+| `swarm_client_behaviour_events_dropped_total` | Counter | | Behaviour events shed at the behaviour pending-event queue |
+| `swarm_pullsync_commands_dropped_total` | Counter | | Pullsync commands shed at the storer command bridge |
+| `swarm_pullsync_events_dropped_total` | Counter | | Pullsync events shed at the storer event forward channel |
+
 ### Peer Manager
 
 | Metric | Type | Labels | Description |
@@ -327,11 +341,11 @@ Hive emits only peer-count and validation families; its exchange metrics are the
 | `db_operation_duration_seconds` | Histogram | `table`, `operation` | Per-operation duration |
 | `db_tx_duration_seconds` | Histogram | `mode` | Transaction lifetime (`read`/`write`) |
 | `db_tx_commit_duration_seconds` | Histogram | | Write-transaction commit duration |
-| `db_entries` | Gauge | `table` | Entry count per table |
+| `redb_entries` | Gauge | `table` | Entry count per table |
 | `redb_file_size_bytes` | Gauge | | Database file size |
 | `redb_stored_bytes` / `redb_metadata_bytes` / `redb_fragmented_bytes` | Gauge | `table` | Per-table byte breakdown (also exported as `*_total` aggregates without the label) |
 | `redb_tree_height` / `redb_leaf_pages` / `redb_branch_pages` | Gauge | `table` | Per-table B-tree shape |
-| `redb_cache_evictions_total` | Gauge | | Cumulative cache evictions |
+| `redb_cache_evictions_total` | Counter | | Cumulative cache evictions |
 
 ### Task Executor
 
@@ -348,28 +362,27 @@ Hive emits only peer-count and validation families; its exchange metrics are the
 
 Histograms only render as Prometheus histograms (with `_bucket` series) when a bucket configuration is registered for their name suffix. The requirements aggregate in two steps: `vertex-swarm-node` exposes the protocol-cone const `metrics::HISTOGRAM_BUCKETS` (the `vertex-swarm-net-headers`, `vertex-swarm-topology`, `vertex-swarm-net-handshake`, `vertex-swarm-net-hive`, and `vertex-swarm-net-identify` groups), and `vertex-swarm-builder::histogram_buckets()` extends it with the `vertex-storage-redb` backend group. `bin/vertex` installs that aggregate through a `HistogramRegistry` with the Prometheus recorder (`bin/vertex/src/cli.rs`). Each crate declares its suffixes as a `HISTOGRAM_BUCKETS` const next to its metrics.
 
-The six reusable bucket presets (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`) live in `vertex_metrics::buckets` and are re-exported from `vertex-observability`. A crate may also inline a bespoke bucket list when no preset fits.
+The reusable bucket presets (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`, `PEER_EXCHANGE_COUNT`, `DIAL_ADDR_COUNT`, `PING_RTT_SECONDS`) live in `vertex_metrics::buckets` and are re-exported from `vertex-observability`. Every registered histogram picks a preset; add a new preset there rather than inlining a bespoke bucket array at the metric site.
 
 Registered histogram suffixes (a registration matches any metric name ending in the suffix, so `handshake_stage_duration_seconds` matches the `stage_duration_seconds` registration):
 
 | Suffix | Source crate | Buckets |
 |--------|--------------|---------|
-| `protocol_exchange_duration_seconds` | headers | 10ms - 30s (bespoke) |
+| `protocol_exchange_duration_seconds` | headers | `DURATION_NETWORK` |
 | `handshake_duration_seconds` | handshake | `DURATION_SECONDS` |
 | `stage_duration_seconds` | handshake | `DURATION_FINE` |
 | `identify_duration_seconds` | identify | `DURATION_SECONDS` |
 | `hive_validation_duration_seconds` | hive | `DURATION_FINE` |
-| `hive_peers_per_exchange` | hive | 1 - 100 (bespoke counts) |
+| `hive_peers_per_exchange` | hive | `PEER_EXCHANGE_COUNT` |
 | `topology_connection_duration_seconds` | topology | `CONNECTION_LIFETIME` |
 | `topology_dial_duration_seconds` | topology | `DURATION_NETWORK` |
-| `topology_dial_addr_count` | topology | 1 - 50 (bespoke counts) |
-| `topology_ping_rtt_seconds` | topology | 1ms - 5s (bespoke) |
+| `topology_dial_addr_count` | topology | `DIAL_ADDR_COUNT` |
+| `topology_ping_rtt_seconds` | topology | `PING_RTT_SECONDS` |
 | `topology_poll_duration_seconds` | topology | `POLL_DURATION` |
-| `topology_routing_candidates_lock_seconds` | topology | `LOCK_CONTENTION` |
 | `topology_routing_phases_lock_seconds` | topology | `LOCK_CONTENTION` |
-| `db_operation_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
-| `db_tx_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
-| `db_tx_commit_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
+| `db_operation_duration_seconds` | storage-redb | `POLL_DURATION` |
+| `db_tx_duration_seconds` | storage-redb | `POLL_DURATION` |
+| `db_tx_commit_duration_seconds` | storage-redb | `POLL_DURATION` |
 
 A histogram whose name matches no registered suffix is not given buckets, so the Prometheus exporter renders it as a summary (quantile series), not a default-bucket histogram. There is no implicit "0.005s to 10s default histogram" fallback for unregistered families. When adding a histogram that should produce `_bucket` series, register its suffix in the owning crate's `HISTOGRAM_BUCKETS` and add the crate's const to the protocol aggregate in `vertex-swarm-node` (backend crates join in `vertex-swarm-builder`).
 

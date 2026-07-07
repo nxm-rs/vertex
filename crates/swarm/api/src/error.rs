@@ -70,10 +70,6 @@ pub enum AccountingError {
     },
 }
 
-impl AccountingError {
-    vertex_metrics::impl_record_error!("accounting_errors_total");
-}
-
 /// Error type for Swarm API operations.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -254,8 +250,6 @@ impl SwarmError {
         internal => Internal { message },
         payment_required => PaymentRequired { reason },
     }
-
-    vertex_metrics::impl_record_error!("swarm_errors_total");
 
     /// Whether this error represents a transient failure that may succeed on retry.
     ///

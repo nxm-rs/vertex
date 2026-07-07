@@ -99,9 +99,5 @@ pub enum TopologyError {
     TasksAlreadySpawned,
 }
 
-impl TopologyError {
-    vertex_metrics::impl_record_error!("topology_errors_total");
-}
-
 /// Result type for topology operations.
 pub type TopologyResult<T> = Result<T, TopologyError>;

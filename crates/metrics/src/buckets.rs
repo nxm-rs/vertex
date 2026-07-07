@@ -47,6 +47,18 @@ pub const POLL_DURATION: &[f64] = &[
     0.00001, 0.0001, 0.0005, 0.001, 0.005, 0.010, 0.050, 0.100, 0.500, 1.0,
 ];
 
+/// Peers per gossip exchange: integer counts 1–100 (10 buckets).
+pub const PEER_EXCHANGE_COUNT: &[f64] =
+    &[1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 100.0];
+
+/// Addresses attempted per dial: integer counts 1–50 (10 buckets).
+pub const DIAL_ADDR_COUNT: &[f64] = &[1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0];
+
+/// Ping round-trip duration: 1ms–5s (11 buckets).
+pub const PING_RTT_SECONDS: &[f64] = &[
+    0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
+];
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing)]
@@ -71,5 +83,8 @@ mod tests {
         assert_sorted("LOCK_CONTENTION", LOCK_CONTENTION);
         assert_sorted("CONNECTION_LIFETIME", CONNECTION_LIFETIME);
         assert_sorted("POLL_DURATION", POLL_DURATION);
+        assert_sorted("PEER_EXCHANGE_COUNT", PEER_EXCHANGE_COUNT);
+        assert_sorted("DIAL_ADDR_COUNT", DIAL_ADDR_COUNT);
+        assert_sorted("PING_RTT_SECONDS", PING_RTT_SECONDS);
     }
 }

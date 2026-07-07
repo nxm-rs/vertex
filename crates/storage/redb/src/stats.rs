@@ -1,6 +1,6 @@
 //! Periodic database stats collection for gauge metrics.
 
-use metrics::gauge;
+use metrics::{counter, gauge};
 use redb::{ReadableTableMetadata, TableHandle};
 
 use crate::RedbDatabase;
@@ -20,9 +20,10 @@ pub fn collect_db_metrics(db: &RedbDatabase) {
         gauge!("redb_file_size_bytes").set(meta.len() as f64);
     }
 
-    // Cache stats.
+    // Cache stats. Evictions are a monotonic count, so publish as a counter set
+    // to its absolute value rather than a gauge.
     let cache = db.inner().cache_stats();
-    gauge!("redb_cache_evictions_total").set(cache.evictions() as f64);
+    counter!("redb_cache_evictions_total").absolute(cache.evictions());
 
     // Per-table stats via read transaction.
     let Ok(tx) = db.inner().begin_read() else {
@@ -45,9 +46,9 @@ pub fn collect_db_metrics(db: &RedbDatabase) {
             continue;
         };
 
-        // Row count (db-agnostic metric).
+        // Row count per table.
         if let Ok(len) = table.len() {
-            gauge!("db_entries", "table" => name.clone()).set(len as f64);
+            gauge!("redb_entries", "table" => name.clone()).set(len as f64);
         }
 
         // redb-specific per-table stats.

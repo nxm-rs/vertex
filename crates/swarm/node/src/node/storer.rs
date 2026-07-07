@@ -74,7 +74,7 @@ impl PullsyncControl for StorerPullsyncControl {
             .try_send(PullsyncCommand::FetchCursors { peer, request_id })
             .is_err()
         {
-            metrics::counter!("swarm.pullsync.commands_dropped").increment(1);
+            metrics::counter!("swarm_pullsync_commands_dropped_total").increment(1);
         }
     }
 
@@ -89,7 +89,7 @@ impl PullsyncControl for StorerPullsyncControl {
             })
             .is_err()
         {
-            metrics::counter!("swarm.pullsync.commands_dropped").increment(1);
+            metrics::counter!("swarm_pullsync_commands_dropped_total").increment(1);
         }
     }
 }
@@ -517,7 +517,7 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
     fn route_client_event(&self, event: ClientEvent) {
         if let Err(e) = self.client_event_tx.try_send(event) {
             warn!(%e, "Failed to send client event to service");
-            metrics::counter!("swarm.client.events_dropped").increment(1);
+            metrics::counter!("swarm_client_events_dropped_total").increment(1);
         }
     }
 
@@ -526,7 +526,7 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
             return;
         };
         if puller.deliver(event).is_err() {
-            metrics::counter!("swarm.pullsync.events_dropped").increment(1);
+            metrics::counter!("swarm_pullsync_events_dropped_total").increment(1);
         }
     }
 

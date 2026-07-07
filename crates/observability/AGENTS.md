@@ -28,7 +28,8 @@ Consumer enablement: `vertex-node-core` enables nothing (plain config structs on
 - Derive `strum::IntoStaticStr` on every label enum. `LabelValue` is what makes labels zero-allocation.
 - Use the lazy macros (`lazy_counter!`, `lazy_gauge!`, `lazy_histogram!`) instead of `metrics::counter!` in hot paths; they handle registration ordering.
 - Per-poll timing in a behaviour hot path goes through `TimingSampler` over a cached `lazy_histogram!` handle, never a fresh `histogram!` per poll. The sampler pays the clock read and record on one poll in `interval` and skips the rest with a decrement and branch.
-- Histograms must pick a documented bucket config (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`). Do not invent new buckets without updating `HistogramBucketConfig`.
+- Name metrics in `snake_case`, never dot-separated. The Prometheus exporter sanitizes `.` to `_`, so a dot-separated source name (`swarm.client.commands_dropped`) never matches a dashboard or `grep` written against the source string. Suffix every counter with `_total`; leave gauges and histograms unsuffixed. Prefix each family with its subsystem (`redb_`, `topology_`, `swarm_client_`) so siblings group together.
+- Histograms must pick a documented bucket preset (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`, `PEER_EXCHANGE_COUNT`, `DIAL_ADDR_COUNT`, `PING_RTT_SECONDS`) from `vertex_metrics::buckets`. Add a named preset there rather than inlining a bespoke bucket array at the metric site, and register the suffix in the owning crate's `HISTOGRAM_BUCKETS`.
 - Span boundaries follow `docs/observability/design.md`. Read it before adding a new top-level span.
 
 ## Donts

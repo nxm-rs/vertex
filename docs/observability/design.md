@@ -268,21 +268,24 @@ The full topology family list, including per-bin gauges, dial, lock-contention, 
 | `db_operation_duration_seconds` | Histogram | `table`, `operation` |
 | `db_tx_duration_seconds` | Histogram | `mode` |
 | `db_tx_commit_duration_seconds` | Histogram | None |
-| `db_entries` | Gauge | `table` |
-| `redb_*` (file size, stored/metadata/fragmented bytes, tree height, pages, cache evictions) | Gauge | `table` where per-table |
+| `redb_entries` | Gauge | `table` |
+| `redb_*` (file size, stored/metadata/fragmented bytes, tree height, pages) | Gauge | `table` where per-table |
+| `redb_cache_evictions_total` | Counter | None |
 
 ### Client service (`vertex-swarm-node`)
 
-The client service drop counters use dot-separated source names that the Prometheus exporter sanitizes to underscores (so `swarm.client.commands_dropped` is exported as `vertex_swarm_client_commands_dropped`):
+Back-pressure drop counters, one per bounded internal channel or queue. Names are `snake_case` with a `_total` suffix so the recorded name matches the exported name:
 
-| Metric (recorded) | Type | Exported as |
-|-------------------|------|-------------|
-| `swarm.client.commands_dropped` | Counter | `vertex_swarm_client_commands_dropped` |
-| `swarm.client.events_dropped` | Counter | `vertex_swarm_client_events_dropped` |
-| `swarm.client.behaviour.events_dropped` | Counter | `vertex_swarm_client_behaviour_events_dropped` |
-| `swarm.client.handler.events_dropped` | Counter | `vertex_swarm_client_handler_events_dropped` |
-| `swarm.client.handler.responses_dropped` | Counter | `vertex_swarm_client_handler_responses_dropped` |
-| `swarm.client.handler.commands_dropped` | Counter | `vertex_swarm_client_handler_commands_dropped` |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `swarm_client_commands_dropped_total` | Counter | None |
+| `swarm_client_events_dropped_total` | Counter | None |
+| `swarm_client_behaviour_events_dropped_total` | Counter | None |
+| `swarm_client_handler_events_dropped_total` | Counter | None |
+| `swarm_client_handler_responses_dropped_total` | Counter | None |
+| `swarm_client_handler_commands_dropped_total` | Counter | None |
+| `swarm_pullsync_commands_dropped_total` | Counter | None |
+| `swarm_pullsync_events_dropped_total` | Counter | None |
 
 ### Process and allocator (`vertex-observability`, `metrics-process`)
 

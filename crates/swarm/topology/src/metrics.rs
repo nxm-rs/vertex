@@ -8,8 +8,8 @@ use std::time::Duration;
 use metrics::{Counter, Histogram, counter, gauge, histogram};
 use vertex_metrics::labels::outcome;
 use vertex_metrics::{
-    CONNECTION_LIFETIME, DURATION_NETWORK, HistogramBucketConfig, LOCK_CONTENTION, LabelValue,
-    POLL_DURATION, lazy_counter, lazy_histogram,
+    CONNECTION_LIFETIME, DIAL_ADDR_COUNT, DURATION_NETWORK, HistogramBucketConfig, LOCK_CONTENTION,
+    LabelValue, PING_RTT_SECONDS, POLL_DURATION, lazy_counter, lazy_histogram,
 };
 use vertex_swarm_primitives::SwarmNodeType;
 
@@ -50,25 +50,17 @@ pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
         suffix: "topology_dial_duration_seconds",
         buckets: DURATION_NETWORK,
     },
-    // Addresses attempted per dial: integer counts (no matching preset).
     HistogramBucketConfig {
         suffix: "topology_dial_addr_count",
-        buckets: &[1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0],
+        buckets: DIAL_ADDR_COUNT,
     },
-    // Ping RTT: 1ms to 5s (no matching preset).
     HistogramBucketConfig {
         suffix: "topology_ping_rtt_seconds",
-        buckets: &[
-            0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
-        ],
+        buckets: PING_RTT_SECONDS,
     },
     HistogramBucketConfig {
         suffix: "topology_poll_duration_seconds",
         buckets: POLL_DURATION,
-    },
-    HistogramBucketConfig {
-        suffix: "topology_routing_candidates_lock_seconds",
-        buckets: LOCK_CONTENTION,
     },
     HistogramBucketConfig {
         suffix: "topology_routing_phases_lock_seconds",
