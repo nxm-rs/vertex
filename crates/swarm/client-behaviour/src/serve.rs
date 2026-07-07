@@ -125,7 +125,7 @@ async fn respond_and_commit<Op: ServeOp>(
         }
         Err(e) => {
             debug!(
-                peer = %op.peer(),
+                overlay = %op.peer(),
                 address = %op.address(),
                 error = %e,
                 "serve delivery refused by the peer"

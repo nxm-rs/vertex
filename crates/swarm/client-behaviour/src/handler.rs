@@ -884,7 +884,7 @@ impl ConnectionHandler for ClientHandler {
                             // Sole emission site for the retrieval timeout counter.
                             metrics::counter!("swarm_client_retrieval_timeouts_total").increment(1);
                             debug!(
-                                peer_overlay = ?self.overlay(),
+                                overlay = ?self.overlay(),
                                 %address,
                                 elapsed = ?requested_at.elapsed(),
                                 "Retrieval timed out waiting on a withholding peer"
@@ -919,7 +919,7 @@ impl ConnectionHandler for ClientHandler {
                             // Sole emission site for the pushsync timeout counter.
                             metrics::counter!("swarm_client_pushsync_timeouts_total").increment(1);
                             debug!(
-                                peer_overlay = ?self.overlay(),
+                                overlay = ?self.overlay(),
                                 %address,
                                 elapsed = ?requested_at.elapsed(),
                                 "Pushsync timed out waiting on a withholding peer"
