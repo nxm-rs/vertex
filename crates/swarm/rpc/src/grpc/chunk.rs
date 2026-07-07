@@ -9,7 +9,8 @@ use crate::proto::chunk::{
 };
 use futures::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmError};
+use vertex_rpc_server::GrpcMethod;
+use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk};
 use vertex_swarm_stream::{
     ChunkClient, ChunkClientExt, StreamConfig, VerifiedChunk, get_stream_from, parse_address,
 };
@@ -70,19 +71,6 @@ fn parse_stamped_chunk(req: &UploadChunkRequest) -> Result<StampedChunk, Status>
     StampedChunk::reconstruct(address, req.data.clone().into(), stamp).map_err(|e| {
         Status::invalid_argument(format!("chunk does not match the supplied address: {e}"))
     })
-}
-
-/// Exhausted retrieval becomes `unavailable` (absence is not provable, so the
-/// caller may retry), no-storer `not_found`, all else `internal`.
-#[allow(clippy::result_large_err)]
-fn retrieval_status(error: &SwarmError) -> Status {
-    match error {
-        SwarmError::RetrievalExhausted { .. } => {
-            Status::unavailable(format!("retrieval exhausted: {error}"))
-        }
-        SwarmError::NoStorer { .. } => Status::not_found(format!("chunk not found: {error}")),
-        other => Status::internal(format!("chunk retrieval failed: {other}")),
-    }
 }
 
 fn retrieved_response(
@@ -168,7 +156,10 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
         // `get` verifies the bytes answer the address, so wrong bytes error.
         match self.provider.get(address).await {
             Ok(verified) => Ok(Response::new(verified_response(address, verified))),
-            Err(e) => Err(retrieval_status(&e)),
+            Err(e) => Err(crate::observe::boundary_status(
+                GrpcMethod::RetrieveChunk,
+                e,
+            )),
         }
     }
 
@@ -198,7 +189,7 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
             .provider
             .put(stamped, validate)
             .await
-            .map_err(|e| Status::internal(format!("chunk upload failed: {e}")))?;
+            .map_err(|e| crate::observe::boundary_status(GrpcMethod::UploadChunk, e))?;
 
         Ok(Response::new(receipt_response(address, receipt)))
     }

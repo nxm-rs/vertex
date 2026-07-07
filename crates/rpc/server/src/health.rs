@@ -16,16 +16,33 @@ use crate::proto::health::{
     health_server::Health,
 };
 
+/// Live readiness source for the overall server status.
+///
+/// Consulted per check so `grpc.health.v1` reflects the node's real readiness
+/// rather than a constant.
+pub type ReadinessSource = Arc<dyn Fn() -> ServingStatus + Send + Sync>;
+
 /// Health service implementation.
 ///
 /// Tracks the health status of various services and provides
-/// both unary and streaming health check endpoints.
-#[derive(Debug)]
+/// both unary and streaming health check endpoints. The overall ("") status is
+/// derived from a live [`ReadinessSource`] when one is wired, otherwise from the
+/// stored map (`SERVING` by default).
 pub struct HealthService {
     /// Service name -> status mapping.
     statuses: Arc<RwLock<HashMap<String, ServingStatus>>>,
     /// Broadcast channel for status updates.
     status_tx: broadcast::Sender<(String, ServingStatus)>,
+    /// Live readiness for the overall status, if wired.
+    readiness: Option<ReadinessSource>,
+}
+
+impl std::fmt::Debug for HealthService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthService")
+            .field("has_readiness", &self.readiness.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for HealthService {
@@ -41,6 +58,7 @@ impl Default for HealthService {
         Self {
             statuses,
             status_tx,
+            readiness: None,
         }
     }
 }
@@ -49,6 +67,27 @@ impl HealthService {
     /// Create a new health service.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Wire a live readiness source for the overall ("") status.
+    #[must_use]
+    pub fn with_readiness(mut self, readiness: ReadinessSource) -> Self {
+        self.readiness = Some(readiness);
+        self
+    }
+
+    /// The overall status: the live readiness source when wired, else the stored
+    /// overall status (`SERVING` by default).
+    fn overall_status(&self) -> ServingStatus {
+        match &self.readiness {
+            Some(readiness) => readiness(),
+            None => self
+                .statuses
+                .read()
+                .get("")
+                .copied()
+                .unwrap_or(ServingStatus::Serving),
+        }
     }
 
     /// Set the health status of a service.
@@ -85,12 +124,15 @@ impl Health for HealthService {
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let service = &request.get_ref().service;
 
-        let status = self
-            .statuses
-            .read()
-            .get(service)
-            .copied()
-            .unwrap_or(ServingStatus::ServiceUnknown);
+        let status = if service.is_empty() {
+            self.overall_status()
+        } else {
+            self.statuses
+                .read()
+                .get(service)
+                .copied()
+                .unwrap_or(ServingStatus::ServiceUnknown)
+        };
 
         // Return NOT_FOUND for unknown services (per spec)
         if status == ServingStatus::ServiceUnknown && !service.is_empty() {
@@ -112,12 +154,15 @@ impl Health for HealthService {
         let service = request.into_inner().service;
 
         // Get initial status
-        let initial_status = self
-            .statuses
-            .read()
-            .get(&service)
-            .copied()
-            .unwrap_or(ServingStatus::ServiceUnknown);
+        let initial_status = if service.is_empty() {
+            self.overall_status()
+        } else {
+            self.statuses
+                .read()
+                .get(&service)
+                .copied()
+                .unwrap_or(ServingStatus::ServiceUnknown)
+        };
 
         // Subscribe to updates
         let mut rx = self.status_tx.subscribe();
@@ -176,5 +221,38 @@ mod tests {
     fn test_health_service_unknown_service() {
         let service = HealthService::new();
         assert_eq!(service.get_status("unknown"), None);
+    }
+
+    #[test]
+    fn overall_status_without_readiness_uses_stored_map() {
+        let service = HealthService::new();
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
+        service.set_not_serving();
+        assert_eq!(service.overall_status(), ServingStatus::NotServing);
+    }
+
+    #[test]
+    fn overall_status_reflects_live_readiness_over_stored_map() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let probe = ready.clone();
+        let service = HealthService::new().with_readiness(Arc::new(move || {
+            if probe.load(Ordering::SeqCst) {
+                ServingStatus::Serving
+            } else {
+                ServingStatus::NotServing
+            }
+        }));
+
+        // The stored overall status is SERVING by default, but the live source
+        // overrides it.
+        assert_eq!(service.overall_status(), ServingStatus::NotServing);
+        ready.store(true, Ordering::SeqCst);
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
+
+        // Writing the stored map does not shadow the live source.
+        service.set_not_serving();
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
     }
 }

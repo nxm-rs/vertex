@@ -4,11 +4,16 @@
 
 mod adapter;
 mod grpc;
+mod observe;
 
 pub use adapter::GrpcAdapter;
 pub use grpc::chunk::{ChunkService, StampValidation};
 pub use grpc::node::NodeService;
 pub use grpc::reserve::ReserveService;
+
+/// Histogram bucket presets emitted by the gRPC observability layer, re-exported
+/// so the launch-path aggregate can register them.
+pub use vertex_rpc_server::HISTOGRAM_BUCKETS;
 
 pub mod proto {
     pub mod node {

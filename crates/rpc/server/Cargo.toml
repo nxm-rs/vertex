@@ -10,16 +10,23 @@ description = "gRPC server implementation for Vertex"
 
 [dependencies]
 vertex-rpc-core.workspace = true
+vertex-metrics.workspace = true
+vertex-util-runtime.workspace = true
 
 async-stream = "0.3"
 http = "1.0"
+http-body.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 eyre.workspace = true
+metrics.workspace = true
 parking_lot.workspace = true
+pin-project-lite.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tonic.workspace = true
 tonic-reflection.workspace = true
+tower-layer.workspace = true
 prost.workspace = true
 tracing.workspace = true
 

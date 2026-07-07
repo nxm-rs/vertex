@@ -37,6 +37,7 @@
 //! ```
 
 mod health;
+mod observe;
 mod registry;
 mod transport;
 
@@ -50,7 +51,8 @@ use tonic::transport::Server;
 use tracing::{info, warn};
 pub use vertex_rpc_core::RpcServer;
 
-pub use health::HealthService;
+pub use health::{HealthService, ReadinessSource};
+pub use observe::{GrpcMethod, GrpcObserveLayer, HISTOGRAM_BUCKETS};
 pub use registry::{GrpcRegistry, GrpcServerHandle};
 pub use transport::{GrpcTransport, ServeWith, Transport, TransportServer};
 
@@ -166,6 +168,7 @@ impl RpcServer for GrpcServer {
         let mut shutdown_rx = self.shutdown_rx.clone();
 
         let result = Server::builder()
+            .layer(GrpcObserveLayer::new())
             .add_service(health_server)
             .add_service(reflection_service)
             .serve_with_shutdown(self.config.addr, async move {

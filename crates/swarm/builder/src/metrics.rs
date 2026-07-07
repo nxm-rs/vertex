@@ -2,7 +2,8 @@
 
 use vertex_metrics::buckets::HistogramBucketConfig;
 
-/// Every bucket config the launch path wires: the protocol cone plus the redb storage backend.
+/// Every bucket config the launch path wires: the protocol cone, the redb
+/// storage backend, and the gRPC request-observability layer.
 pub fn histogram_buckets() -> Vec<HistogramBucketConfig> {
     vertex_swarm_node::metrics::HISTOGRAM_BUCKETS
         .iter()
@@ -12,6 +13,7 @@ pub fn histogram_buckets() -> Vec<HistogramBucketConfig> {
                 .iter()
                 .copied(),
         )
+        .chain(vertex_swarm_rpc::HISTOGRAM_BUCKETS.iter().copied())
         .collect()
 }
 
@@ -29,8 +31,10 @@ mod tests {
             buckets.len(),
             "duplicate histogram suffix across the launch aggregate",
         );
-        // A protocol-cone sentinel and a storage-backend sentinel must both appear.
+        // A protocol-cone sentinel, a storage-backend sentinel, and the gRPC
+        // request-observability sentinel must all appear.
         assert!(suffixes.contains("handshake_duration_seconds"));
         assert!(suffixes.contains("db_operation_duration_seconds"));
+        assert!(suffixes.contains("grpc_request_duration_seconds"));
     }
 }
