@@ -222,4 +222,37 @@ mod tests {
         let service = HealthService::new();
         assert_eq!(service.get_status("unknown"), None);
     }
+
+    #[test]
+    fn overall_status_without_readiness_uses_stored_map() {
+        let service = HealthService::new();
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
+        service.set_not_serving();
+        assert_eq!(service.overall_status(), ServingStatus::NotServing);
+    }
+
+    #[test]
+    fn overall_status_reflects_live_readiness_over_stored_map() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let probe = ready.clone();
+        let service = HealthService::new().with_readiness(Arc::new(move || {
+            if probe.load(Ordering::SeqCst) {
+                ServingStatus::Serving
+            } else {
+                ServingStatus::NotServing
+            }
+        }));
+
+        // The stored overall status is SERVING by default, but the live source
+        // overrides it.
+        assert_eq!(service.overall_status(), ServingStatus::NotServing);
+        ready.store(true, Ordering::SeqCst);
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
+
+        // Writing the stored map does not shadow the live source.
+        service.set_not_serving();
+        assert_eq!(service.overall_status(), ServingStatus::Serving);
+    }
 }
