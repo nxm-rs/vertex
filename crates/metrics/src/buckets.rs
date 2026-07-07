@@ -17,34 +17,46 @@ pub struct HistogramBucketConfig {
     pub buckets: &'static [f64],
 }
 
-/// Total handshake duration: 1ms–15s (13 buckets).
+/// Total handshake duration: 1ms-15s (13 buckets).
 pub const DURATION_SECONDS: &[f64] = &[
     0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 15.0,
 ];
 
-/// Per-stage fine-grained duration: 0.1ms–2.5s (12 buckets).
+/// Per-stage fine-grained duration: 0.1ms-2.5s (12 buckets).
 pub const DURATION_FINE: &[f64] = &[
     0.0001, 0.0005, 0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5,
 ];
 
-/// Network round-trip duration: 10ms–30s (11 buckets).
+/// Network round-trip duration: 10ms-30s (11 buckets).
 pub const DURATION_NETWORK: &[f64] = &[
     0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 30.0,
 ];
 
-/// Lock contention hold time: 1us–50ms (10 buckets).
+/// Lock contention hold time: 1us-50ms (10 buckets).
 pub const LOCK_CONTENTION: &[f64] = &[
     0.000001, 0.000005, 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.010, 0.050,
 ];
 
-/// Connection lifetime: 1s–1day (11 buckets).
+/// Connection lifetime: 1s-1day (11 buckets).
 pub const CONNECTION_LIFETIME: &[f64] = &[
     1.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 7200.0, 21600.0, 86400.0,
 ];
 
-/// Poll loop iteration: 10us–1s (10 buckets).
+/// Poll loop iteration: 10us-1s (10 buckets).
 pub const POLL_DURATION: &[f64] = &[
     0.00001, 0.0001, 0.0005, 0.001, 0.005, 0.010, 0.050, 0.100, 0.500, 1.0,
+];
+
+/// Peers per gossip exchange: integer counts 1-100 (10 buckets).
+pub const PEER_EXCHANGE_COUNT: &[f64] =
+    &[1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 100.0];
+
+/// Addresses attempted per dial: integer counts 1-50 (10 buckets).
+pub const DIAL_ADDR_COUNT: &[f64] = &[1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0];
+
+/// Ping round-trip duration: 1ms-5s (11 buckets).
+pub const PING_RTT_SECONDS: &[f64] = &[
+    0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
 ];
 
 #[cfg(test)]
@@ -71,5 +83,8 @@ mod tests {
         assert_sorted("LOCK_CONTENTION", LOCK_CONTENTION);
         assert_sorted("CONNECTION_LIFETIME", CONNECTION_LIFETIME);
         assert_sorted("POLL_DURATION", POLL_DURATION);
+        assert_sorted("PEER_EXCHANGE_COUNT", PEER_EXCHANGE_COUNT);
+        assert_sorted("DIAL_ADDR_COUNT", DIAL_ADDR_COUNT);
+        assert_sorted("PING_RTT_SECONDS", PING_RTT_SECONDS);
     }
 }

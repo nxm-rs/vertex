@@ -1,26 +1,24 @@
 //! Metrics constants and histogram buckets for database operations.
 
-use vertex_metrics::HistogramBucketConfig;
+use vertex_metrics::{HistogramBucketConfig, POLL_DURATION};
 
 /// Histogram bucket configurations for database operation metrics.
+///
+/// Database operations share the poll-loop range (10us-1s), so they reuse the
+/// [`POLL_DURATION`] preset rather than a bespoke array.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
     HistogramBucketConfig {
         suffix: "db_operation_duration_seconds",
-        buckets: DURATION_DB,
+        buckets: POLL_DURATION,
     },
     HistogramBucketConfig {
         suffix: "db_tx_duration_seconds",
-        buckets: DURATION_DB,
+        buckets: POLL_DURATION,
     },
     HistogramBucketConfig {
         suffix: "db_tx_commit_duration_seconds",
-        buckets: DURATION_DB,
+        buckets: POLL_DURATION,
     },
-];
-
-/// Database operation duration: 10us-1s (10 buckets).
-const DURATION_DB: &[f64] = &[
-    0.00001, 0.0001, 0.0005, 0.001, 0.005, 0.010, 0.050, 0.100, 0.500, 1.0,
 ];
 
 /// Database operation names for label values.

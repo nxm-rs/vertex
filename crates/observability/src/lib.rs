@@ -46,8 +46,8 @@ pub use guard::TracingGuard;
 pub use metrics::jemalloc_metrics_hook;
 // Platform-neutral histogram presets, always available (including wasm).
 pub use metrics::{
-    CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, HistogramBucketConfig,
-    LOCK_CONTENTION, POLL_DURATION,
+    CONNECTION_LIFETIME, DIAL_ADDR_COUNT, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS,
+    HistogramBucketConfig, LOCK_CONTENTION, PEER_EXCHANGE_COUNT, PING_RTT_SECONDS, POLL_DURATION,
 };
 // Prometheus recorder, registry, and process hooks.
 #[cfg(feature = "prometheus")]

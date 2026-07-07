@@ -166,7 +166,7 @@ impl ClientHandle {
         self.command_tx.try_send(command).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => {
                 warn!("Client command channel full");
-                metrics::counter!("swarm.client.commands_dropped").increment(1);
+                metrics::counter!("swarm_client_commands_dropped_total").increment(1);
                 ChunkTransferError::ChannelClosed
             }
             mpsc::error::TrySendError::Closed(_) => ChunkTransferError::ChannelClosed,
@@ -512,32 +512,32 @@ impl ClientService {
 
                 PeerEvent::InboundServed => {
                     debug!(%peer, "Served inbound retrieval from cache");
-                    metrics::counter!("swarm.client.inbound_served").increment(1);
+                    metrics::counter!("swarm_client_inbound_served_total").increment(1);
                 }
 
                 PeerEvent::InboundForwarded => {
                     debug!(%peer, "Forwarded inbound retrieval to a closer peer");
-                    metrics::counter!("swarm.client.inbound_forwarded").increment(1);
+                    metrics::counter!("swarm_client_inbound_forwarded_total").increment(1);
                 }
 
                 PeerEvent::InboundMissed { address } => {
                     debug!(%peer, %address, "Inbound retrieval missed (substream reset)");
-                    metrics::counter!("swarm.client.inbound_missed").increment(1);
+                    metrics::counter!("swarm_client_inbound_missed_total").increment(1);
                 }
 
                 PeerEvent::InboundRelayed => {
                     debug!(%peer, "Relayed pushsync receipt to pusher");
-                    metrics::counter!("swarm.client.inbound_relayed").increment(1);
+                    metrics::counter!("swarm_client_inbound_relayed_total").increment(1);
                 }
 
                 PeerEvent::InboundStored => {
                     debug!(%peer, "Stored inbound pushsync delivery and signed a receipt");
-                    metrics::counter!("swarm.client.inbound_stored").increment(1);
+                    metrics::counter!("swarm_client_inbound_stored_total").increment(1);
                 }
 
                 PeerEvent::InboundPushFailed { address } => {
                     debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
-                    metrics::counter!("swarm.client.inbound_push_failed").increment(1);
+                    metrics::counter!("swarm_client_inbound_push_failed_total").increment(1);
                 }
 
                 PeerEvent::ReceiptReceived {
@@ -572,7 +572,7 @@ impl ClientService {
                     match kind {
                         FailureKind::InvalidChunk => {
                             metrics::counter!(
-                                "swarm.client.invalid_chunk",
+                                "swarm_client_invalid_chunk_total",
                                 "protocol" => "retrieval",
                             )
                             .increment(1);
@@ -581,7 +581,7 @@ impl ClientService {
                         FailureKind::Protocol => {
                             // Blameless miss: counted but not scored.
                             metrics::counter!(
-                                "swarm.client.retrieval_miss",
+                                "swarm_client_retrieval_miss_total",
                                 "protocol" => "retrieval",
                             )
                             .increment(1);
@@ -600,7 +600,7 @@ impl ClientService {
                     match kind {
                         FailureKind::InvalidChunk => {
                             metrics::counter!(
-                                "swarm.client.invalid_chunk",
+                                "swarm_client_invalid_chunk_total",
                                 "protocol" => "pushsync",
                             )
                             .increment(1);
@@ -608,7 +608,7 @@ impl ClientService {
                         }
                         FailureKind::Protocol => {
                             metrics::counter!(
-                                "swarm.client.retrieval_miss",
+                                "swarm_client_retrieval_miss_total",
                                 "protocol" => "pushsync",
                             )
                             .increment(1);
@@ -621,7 +621,7 @@ impl ClientService {
                     // relay; score the sender adversely.
                     warn!(%peer, %protocol, "Inbound malformed data rejected");
                     metrics::counter!(
-                        "swarm.client.invalid_chunk",
+                        "swarm_client_invalid_chunk_total",
                         "protocol" => protocol,
                     )
                     .increment(1);

@@ -16,7 +16,6 @@ workspace = true
 alloy-primitives.workspace = true
 nectar-postage.workspace = true
 nectar-primitives = { workspace = true, features = ["serde"] }
-vertex-metrics.workspace = true
 vertex-storage = { workspace = true, features = ["nectar"] }
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true

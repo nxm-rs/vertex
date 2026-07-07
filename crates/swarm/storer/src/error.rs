@@ -31,7 +31,3 @@ pub enum StorerError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
-
-impl StorerError {
-    vertex_metrics::impl_record_error!("storer_errors_total");
-}

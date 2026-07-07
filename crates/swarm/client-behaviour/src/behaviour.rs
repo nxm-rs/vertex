@@ -168,7 +168,7 @@ impl ClientBehaviour {
     fn push_event(&mut self, event: ToSwarm<ClientEvent, HandlerCommand>) {
         if self.at_capacity() {
             warn!("Behaviour event queue full, dropping event");
-            metrics::counter!("swarm.client.behaviour.events_dropped").increment(1);
+            metrics::counter!("swarm_client_behaviour_events_dropped_total").increment(1);
             return;
         }
         self.pending_events.push_back(event);
@@ -206,7 +206,7 @@ impl ClientBehaviour {
                 // cap; an unknown peer refuses a responder-carrying command and
                 // drops the rest.
                 if command.is_request() && self.at_capacity() {
-                    metrics::counter!("swarm.client.behaviour.commands_refused").increment(1);
+                    metrics::counter!("swarm_client_behaviour_commands_refused_total").increment(1);
                     command.refuse(ChunkTransferError::Overloaded);
                 } else if let Some(peer_id) = self.active_peers.active_peer_id(&peer) {
                     self.push_command(peer_id, HandlerCommand::Peer(command));
