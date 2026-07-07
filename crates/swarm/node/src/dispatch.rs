@@ -1060,7 +1060,7 @@ pub(crate) fn spill_bins(b: u8, max_bin: u8) -> Vec<u8> {
 /// a dropped loser is not cancelled downstream, so it still fetches and meters a
 /// duplicate. This is the dispatch-side over-fetch signal (an upper bound). The
 /// delivery-side count of duplicates that actually arrived is
-/// `swarm.client.retrieval_overfetch_delivered`, emitted by the handler.
+/// `swarm_client_retrieval_overfetch_delivered_total`, emitted by the handler.
 fn record_overfetch(attempts: usize, path: &'static str) {
     if let Some(extra) = attempts.checked_sub(1).filter(|extra| *extra > 0) {
         counter!("swarm_client_retrieval_overfetch_total", "path" => path).increment(extra as u64);

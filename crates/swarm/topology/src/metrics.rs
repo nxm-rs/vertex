@@ -296,7 +296,7 @@ impl TopologyMetrics {
 
     /// Decrement the connected counter for a replaced connection and push gauges.
     ///
-    /// Called when `ActivateResult::Replaced` occurs — the old connection's `PeerReady`
+    /// Called when `ActivateResult::Replaced` occurs - the old connection's `PeerReady`
     /// increment will never be balanced by a `PeerDisconnected` because the registry
     /// entry was already overwritten.
     pub fn decrement_connected(&self, node_type: SwarmNodeType) {
@@ -438,7 +438,7 @@ mod tests {
         let metrics = TopologyMetrics::new();
         assert_eq!(metrics.connected_clients(), 0);
 
-        // Disconnect a client that was never connected — must not wrap to u64::MAX.
+        // Disconnect a client that was never connected - must not wrap to u64::MAX.
         let event = TopologyEvent::PeerDisconnected {
             overlay: test_overlay(0),
             reason: DisconnectReason::RemoteClose,
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(metrics.connected_storers(), 1);
         assert_eq!(metrics.connected_clients(), 1);
 
-        // Simulate connection replacement — decrement for replaced storer
+        // Simulate connection replacement - decrement for replaced storer
         metrics.decrement_connected(SwarmNodeType::Storer);
         assert_eq!(metrics.connected_storers(), 0);
         assert_eq!(metrics.connected_clients(), 1);
