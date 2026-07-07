@@ -73,9 +73,9 @@ where
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let method = method_label(req.uri().path());
-        counter!("grpc_requests_total", "method" => method.clone()).increment(1);
-        let span = info_span!("grpc_request", method = %method);
+        let method = GrpcMethod::from_path(req.uri().path());
+        counter!("grpc_requests_total", "method" => method.as_label()).increment(1);
+        let span = info_span!("grpc_request", method = method.as_label());
         let record = RequestRecord {
             method,
             start: Instant::now(),
@@ -187,7 +187,7 @@ impl Body for ObservedBody {
 /// Per-request timing and outcome recorder. Emits the duration histogram and the
 /// outcome counter exactly once.
 struct RequestRecord {
-    method: String,
+    method: GrpcMethod,
     start: Instant,
     done: bool,
 }
@@ -198,11 +198,11 @@ impl RequestRecord {
             return;
         }
         self.done = true;
-        histogram!("grpc_request_duration_seconds", "method" => self.method.clone())
+        histogram!("grpc_request_duration_seconds", "method" => self.method.as_label())
             .record(self.start.elapsed().as_secs_f64());
         counter!(
             "grpc_request_outcomes_total",
-            "method" => self.method.clone(),
+            "method" => self.method.as_label(),
             "code" => code_label(code),
         )
         .increment(1);
@@ -215,13 +215,81 @@ impl Drop for RequestRecord {
     }
 }
 
-/// The request path without its leading slash, or `unknown` when absent.
-fn method_label(path: &str) -> String {
-    let trimmed = path.trim_start_matches('/');
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.to_string()
+/// Bounded `method` label: the registered gRPC method set plus a single
+/// `unknown` sink.
+///
+/// The label must have a fixed finite domain so a probe hitting an unimplemented
+/// route cannot mint a fresh Prometheus series. This is also the join key shared
+/// with the `grpc_errors_total` family emitted at the swarm service boundary, so
+/// the two vectors align on `method`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrpcMethod {
+    /// `vertex.health.v1.Health/Check`
+    Check,
+    /// `vertex.health.v1.Health/Watch`
+    Watch,
+    /// `vertex.swarm.chunk.v1.Chunk/RetrieveChunk`
+    RetrieveChunk,
+    /// `vertex.swarm.chunk.v1.Chunk/HasChunk`
+    HasChunk,
+    /// `vertex.swarm.chunk.v1.Chunk/UploadChunk`
+    UploadChunk,
+    /// `vertex.swarm.chunk.v1.Chunk/UploadChunks`
+    UploadChunks,
+    /// `vertex.swarm.chunk.v1.Chunk/RetrieveChunks`
+    RetrieveChunks,
+    /// `vertex.swarm.chunk.v1.Chunk/HasChunks`
+    HasChunks,
+    /// `vertex.swarm.node.v1.Node/GetStatus`
+    GetStatus,
+    /// `vertex.swarm.node.v1.Node/GetTopology`
+    GetTopology,
+    /// `vertex.swarm.reserve.v1.Reserve/GetReserveState`
+    GetReserveState,
+    /// `vertex.swarm.reserve.v1.Reserve/GetReserveBins`
+    GetReserveBins,
+    /// Any path outside the registered method set.
+    Unknown,
+}
+
+impl GrpcMethod {
+    /// Snake_case metric label drawn from a fixed finite domain.
+    pub const fn as_label(self) -> &'static str {
+        match self {
+            Self::Check => "check",
+            Self::Watch => "watch",
+            Self::RetrieveChunk => "retrieve_chunk",
+            Self::HasChunk => "has_chunk",
+            Self::UploadChunk => "upload_chunk",
+            Self::UploadChunks => "upload_chunks",
+            Self::RetrieveChunks => "retrieve_chunks",
+            Self::HasChunks => "has_chunks",
+            Self::GetStatus => "get_status",
+            Self::GetTopology => "get_topology",
+            Self::GetReserveState => "get_reserve_state",
+            Self::GetReserveBins => "get_reserve_bins",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Map a request path (`/package.Service/Method`) to its bounded method,
+    /// collapsing every unrecognised path to [`GrpcMethod::Unknown`].
+    pub fn from_path(path: &str) -> Self {
+        match path.trim_start_matches('/') {
+            "vertex.health.v1.Health/Check" => Self::Check,
+            "vertex.health.v1.Health/Watch" => Self::Watch,
+            "vertex.swarm.chunk.v1.Chunk/RetrieveChunk" => Self::RetrieveChunk,
+            "vertex.swarm.chunk.v1.Chunk/HasChunk" => Self::HasChunk,
+            "vertex.swarm.chunk.v1.Chunk/UploadChunk" => Self::UploadChunk,
+            "vertex.swarm.chunk.v1.Chunk/UploadChunks" => Self::UploadChunks,
+            "vertex.swarm.chunk.v1.Chunk/RetrieveChunks" => Self::RetrieveChunks,
+            "vertex.swarm.chunk.v1.Chunk/HasChunks" => Self::HasChunks,
+            "vertex.swarm.node.v1.Node/GetStatus" => Self::GetStatus,
+            "vertex.swarm.node.v1.Node/GetTopology" => Self::GetTopology,
+            "vertex.swarm.reserve.v1.Reserve/GetReserveState" => Self::GetReserveState,
+            "vertex.swarm.reserve.v1.Reserve/GetReserveBins" => Self::GetReserveBins,
+            _ => Self::Unknown,
+        }
     }
 }
 
@@ -260,13 +328,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_label_trims_leading_slash() {
+    fn from_path_maps_registered_methods() {
         assert_eq!(
-            method_label("/vertex.swarm.node.v1.Node/GetStatus"),
-            "vertex.swarm.node.v1.Node/GetStatus"
+            GrpcMethod::from_path("/vertex.swarm.node.v1.Node/GetStatus"),
+            GrpcMethod::GetStatus
         );
-        assert_eq!(method_label("/"), "unknown");
-        assert_eq!(method_label(""), "unknown");
+        assert_eq!(
+            GrpcMethod::from_path("/vertex.swarm.chunk.v1.Chunk/RetrieveChunk"),
+            GrpcMethod::RetrieveChunk
+        );
+        assert_eq!(
+            GrpcMethod::from_path("/vertex.health.v1.Health/Check"),
+            GrpcMethod::Check
+        );
+    }
+
+    #[test]
+    fn unknown_paths_collapse_to_one_bounded_label() {
+        // Probes, unimplemented routes, and reflection all fold into the single
+        // `unknown` sink so no path can mint a fresh Prometheus series.
+        for path in [
+            "/",
+            "",
+            "/vertex.swarm.chunk.v1.Chunk/DoesNotExist",
+            "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+            "/probe/../../etc/passwd",
+        ] {
+            assert_eq!(GrpcMethod::from_path(path), GrpcMethod::Unknown);
+            assert_eq!(GrpcMethod::from_path(path).as_label(), "unknown");
+        }
     }
 
     #[test]

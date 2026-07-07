@@ -1,6 +1,7 @@
 //! Reserve service: storer reserve state, radius, capacity, and per-bin order.
 
 use tonic::{Request, Response, Status};
+use vertex_rpc_server::GrpcMethod;
 use vertex_swarm_api::BinCursorStore;
 use vertex_swarm_primitives::ProximityOrder;
 
@@ -29,7 +30,7 @@ impl<R: BinCursorStore + Send + Sync + 'static> Reserve for ReserveService<R> {
         let count = self
             .reserve
             .count()
-            .map_err(|e| crate::observe::boundary_status("get_reserve_state", e))?;
+            .map_err(|e| crate::observe::boundary_status(GrpcMethod::GetReserveState, e))?;
 
         Ok(Response::new(GetReserveStateResponse {
             storage_radius: u32::from(self.reserve.storage_radius().get()),
@@ -56,11 +57,11 @@ impl<R: BinCursorStore + Send + Sync + 'static> Reserve for ReserveService<R> {
             let count = self
                 .reserve
                 .count_in(po)
-                .map_err(|e| crate::observe::boundary_status("get_reserve_bins", e))?;
+                .map_err(|e| crate::observe::boundary_status(GrpcMethod::GetReserveBins, e))?;
             let cursor = self
                 .reserve
                 .bin_cursor(po.into())
-                .map_err(|e| crate::observe::boundary_status("get_reserve_bins", e))?;
+                .map_err(|e| crate::observe::boundary_status(GrpcMethod::GetReserveBins, e))?;
             bins.push(ReserveBin {
                 proximity_order: u32::from(po_raw),
                 count,

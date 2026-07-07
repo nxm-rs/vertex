@@ -289,9 +289,12 @@ The client service drop counters use dot-separated source names that the Prometh
 ### gRPC request layer (`vertex-rpc-server`, `vertex-swarm-rpc`)
 
 The tower observability layer records per-request families labelled by `method`
-(the request path) and `code` (the terminal gRPC status). The `reason` family
-carries the domain error taxonomy (the `IntoStaticStr` discriminant) recorded at
-the service boundary where a `SwarmError` becomes a `Status`:
+and `code` (the terminal gRPC status). The `method` label is the bounded
+`GrpcMethod` set (the registered method names plus a single `unknown` sink), so
+an unrecognised path cannot mint a fresh series. The `reason` family carries the
+domain error taxonomy (the `IntoStaticStr` discriminant) recorded at the service
+boundary where a `SwarmError` becomes a `Status`; it shares the same bounded
+`method` values, so the two families join on `method`:
 
 | Metric | Type | Labels |
 |--------|------|--------|

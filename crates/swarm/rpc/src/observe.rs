@@ -8,13 +8,16 @@
 
 use tonic::{Code, Status};
 use tracing::warn;
+use vertex_rpc_server::GrpcMethod;
 use vertex_swarm_api::SwarmError;
 
 /// Convert a [`SwarmError`] to a [`Status`] at the RPC boundary.
 ///
 /// Records `grpc_errors_total{method, reason}` with the taxonomy label and logs
-/// the failure once with its source chain.
-pub(crate) fn boundary_status(method: &'static str, error: SwarmError) -> Status {
+/// the failure once with its source chain. The `method` label is the bounded
+/// [`GrpcMethod`] so this family joins the tower request families on `method`.
+pub(crate) fn boundary_status(method: GrpcMethod, error: SwarmError) -> Status {
+    let method = method.as_label();
     let reason: &'static str = (&error).into();
     let code = status_code(&error);
 
@@ -82,7 +85,7 @@ mod tests {
     #[test]
     fn boundary_status_carries_display_message() {
         let status = boundary_status(
-            "retrieve_chunk",
+            GrpcMethod::RetrieveChunk,
             SwarmError::NoStorer {
                 chunk_address: ChunkAddress::default(),
             },

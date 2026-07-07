@@ -52,7 +52,7 @@ use tracing::{info, warn};
 pub use vertex_rpc_core::RpcServer;
 
 pub use health::{HealthService, ReadinessSource};
-pub use observe::{GrpcObserveLayer, HISTOGRAM_BUCKETS};
+pub use observe::{GrpcMethod, GrpcObserveLayer, HISTOGRAM_BUCKETS};
 pub use registry::{GrpcRegistry, GrpcServerHandle};
 pub use transport::{GrpcTransport, ServeWith, Transport, TransportServer};
 

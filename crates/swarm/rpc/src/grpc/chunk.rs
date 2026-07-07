@@ -9,6 +9,7 @@ use crate::proto::chunk::{
 };
 use futures::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
+use vertex_rpc_server::GrpcMethod;
 use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk};
 use vertex_swarm_stream::{
     ChunkClient, ChunkClientExt, StreamConfig, VerifiedChunk, get_stream_from, parse_address,
@@ -155,7 +156,10 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
         // `get` verifies the bytes answer the address, so wrong bytes error.
         match self.provider.get(address).await {
             Ok(verified) => Ok(Response::new(verified_response(address, verified))),
-            Err(e) => Err(crate::observe::boundary_status("retrieve_chunk", e)),
+            Err(e) => Err(crate::observe::boundary_status(
+                GrpcMethod::RetrieveChunk,
+                e,
+            )),
         }
     }
 
@@ -185,7 +189,7 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
             .provider
             .put(stamped, validate)
             .await
-            .map_err(|e| crate::observe::boundary_status("upload_chunk", e))?;
+            .map_err(|e| crate::observe::boundary_status(GrpcMethod::UploadChunk, e))?;
 
         Ok(Response::new(receipt_response(address, receipt)))
     }
