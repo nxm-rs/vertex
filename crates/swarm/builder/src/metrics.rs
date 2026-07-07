@@ -31,8 +31,10 @@ mod tests {
             buckets.len(),
             "duplicate histogram suffix across the launch aggregate",
         );
-        // A protocol-cone sentinel and a storage-backend sentinel must both appear.
+        // A protocol-cone sentinel, a storage-backend sentinel, and the gRPC
+        // request-observability sentinel must all appear.
         assert!(suffixes.contains("handshake_duration_seconds"));
         assert!(suffixes.contains("db_operation_duration_seconds"));
+        assert!(suffixes.contains("grpc_request_duration_seconds"));
     }
 }
