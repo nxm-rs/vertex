@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
 
+# Observability
+metrics.workspace = true
+tracing.workspace = true
+
 # gRPC
 tonic.workspace = true
 prost.workspace = true

@@ -3,6 +3,9 @@
 
 use std::net::SocketAddr;
 use tonic::service::Routes;
+use tower_layer::{Identity, Stack};
+
+use crate::observe::GrpcObserveLayer;
 
 /// Collects gRPC services and reflection file descriptors, then builds a tonic
 /// server.
@@ -107,10 +110,7 @@ impl GrpcServerHandle {
 
     pub async fn serve(self) -> Result<(), tonic::transport::Error> {
         if let Some(routes) = self.routes {
-            configure_server(tonic::transport::Server::builder())
-                .add_routes(routes)
-                .serve(self.addr)
-                .await
+            configure_server().add_routes(routes).serve(self.addr).await
         } else {
             Ok(())
         }
@@ -122,7 +122,7 @@ impl GrpcServerHandle {
         F: std::future::Future<Output = ()>,
     {
         if let Some(routes) = self.routes {
-            configure_server(tonic::transport::Server::builder())
+            configure_server()
                 .add_routes(routes)
                 .serve_with_shutdown(self.addr, signal)
                 .await
@@ -139,12 +139,14 @@ const MAX_CONCURRENT_STREAMS: u32 = 256;
 /// Max in-flight requests served concurrently per connection.
 const MAX_CONNECTION_CONCURRENCY: usize = 256;
 
-/// Connection-level limits bounding the gRPC amplification surface; streaming
-/// chunk RPCs are reachable by untrusted clients.
-fn configure_server(builder: tonic::transport::Server) -> tonic::transport::Server {
-    builder
+/// Connection-level limits bounding the gRPC amplification surface (streaming
+/// chunk RPCs are reachable by untrusted clients), plus the per-request
+/// observability layer wrapping every service.
+fn configure_server() -> tonic::transport::Server<Stack<GrpcObserveLayer, Identity>> {
+    tonic::transport::Server::builder()
         .concurrency_limit_per_connection(MAX_CONNECTION_CONCURRENCY)
         .max_concurrent_streams(Some(MAX_CONCURRENT_STREAMS))
+        .layer(GrpcObserveLayer::new())
 }
 
 #[cfg(test)]

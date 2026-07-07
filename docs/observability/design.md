@@ -61,8 +61,9 @@ Spans track **causally related work** across async boundaries. The spans that ex
 | Headered protocol stream | Per-exchange | `protocol` with `protocol`, `direction` (opened in `vertex-swarm-net-headers`, with W3C trace-context inject/extract across the wire on native; the wasm sibling is a no-op) |
 | Headered request handling | Per-request | `handle_request` (`vertex-swarm-net-headers`) |
 | Storage operation | Per-operation | `db_get`, `db_put`, `db_delete`, `db_clear`, `db_count`, `db_entries`, `db_keys`, `db_commit` (`vertex-storage-redb`) |
+| gRPC request | Per-request | `grpc_request` with `method` (opened by the tower observability layer in `vertex-rpc-server`, wrapping every gRPC method) |
 
-There is no RPC, retrieval, or pushsync span yet: those protocol crates carry no instrumentation. Add the span when the protocol lands rather than documenting it ahead of the code.
+There is no retrieval or pushsync span yet: those protocol crates carry no instrumentation. Add the span when the protocol lands rather than documenting it ahead of the code.
 
 **Do NOT create spans for:**
 - Individual message encode/decode
@@ -124,6 +125,7 @@ Existing span names:
 - `protocol` (fields: `protocol`, `direction`)
 - `handle_request`
 - `db_get`, `db_put`, `db_delete`, `db_clear`, `db_count`, `db_entries`, `db_keys`, `db_commit`
+- `grpc_request` (field: `method`)
 
 ### Span Fields
 
@@ -283,6 +285,20 @@ The client service drop counters use dot-separated source names that the Prometh
 | `swarm.client.handler.events_dropped` | Counter | `vertex_swarm_client_handler_events_dropped` |
 | `swarm.client.handler.responses_dropped` | Counter | `vertex_swarm_client_handler_responses_dropped` |
 | `swarm.client.handler.commands_dropped` | Counter | `vertex_swarm_client_handler_commands_dropped` |
+
+### gRPC request layer (`vertex-rpc-server`, `vertex-swarm-rpc`)
+
+The tower observability layer records per-request families labelled by `method`
+(the request path) and `code` (the terminal gRPC status). The `reason` family
+carries the domain error taxonomy (the `IntoStaticStr` discriminant) recorded at
+the service boundary where a `SwarmError` becomes a `Status`:
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `grpc_requests_total` | Counter | `method` |
+| `grpc_request_outcomes_total` | Counter | `method`, `code` |
+| `grpc_request_duration_seconds` | Histogram | `method` |
+| `grpc_errors_total` | Counter | `method`, `reason` |
 
 ### Process and allocator (`vertex-observability`, `metrics-process`)
 

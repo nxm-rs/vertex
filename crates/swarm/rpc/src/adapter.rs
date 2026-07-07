@@ -6,7 +6,11 @@
 //! impls (one per concrete container) to avoid overlapping blanket impls for the
 //! optional chunk capability.
 
-use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
+use std::sync::Arc;
+
+use vertex_rpc_server::proto::health::health_check_response::ServingStatus;
+use vertex_rpc_server::proto::health::health_server::HealthServer;
+use vertex_rpc_server::{GrpcRegistry, HealthService, RegistersGrpcServices};
 use vertex_swarm_api::{
     BinCursorStore, BootnodeComponents, ClientComponents, HasChunkClient, HasReserve, HasStore,
     HasTopology, StampValidation, StorerComponents, SwarmTopologyPeers, SwarmTopologyState,
@@ -107,6 +111,28 @@ impl<C> GrpcAdapter<C> {
         registry.add_service(chunk_server);
     }
 
+    /// Register the health service wired to the node's live readiness.
+    ///
+    /// `grpc.health.v1` reports `SERVING` once the node holds at least one
+    /// connected peer (it can serve chunk traffic), read from authoritative
+    /// topology state per check rather than from a constant.
+    pub fn register_health(&self, registry: &mut GrpcRegistry)
+    where
+        C: HasTopology,
+        C::Topology: SwarmTopologyStats + Clone + Send + Sync + 'static,
+    {
+        let topology = self.components.topology().clone();
+        let health = HealthService::default().with_readiness(Arc::new(move || {
+            if topology.connected_peers_count() > 0 {
+                ServingStatus::Serving
+            } else {
+                ServingStatus::NotServing
+            }
+        }));
+        registry.add_service(HealthServer::new(health));
+        registry.add_descriptor(vertex_rpc_server::proto::FILE_DESCRIPTOR_SET);
+    }
+
     /// Register the storer reserve service.
     pub fn register_reserve(&self, registry: &mut GrpcRegistry)
     where
@@ -126,6 +152,7 @@ where
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
+        self.register_health(registry);
     }
 }
 
@@ -138,6 +165,7 @@ where
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
         self.register_chunk(registry, self.components.stamp_validation());
+        self.register_health(registry);
     }
 }
 
@@ -154,5 +182,6 @@ where
         self.register_node(registry);
         self.register_chunk(registry, self.components.stamp_validation());
         self.register_reserve(registry);
+        self.register_health(registry);
     }
 }

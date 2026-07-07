@@ -29,7 +29,7 @@ impl<R: BinCursorStore + Send + Sync + 'static> Reserve for ReserveService<R> {
         let count = self
             .reserve
             .count()
-            .map_err(|e| Status::internal(format!("reserve count failed: {e}")))?;
+            .map_err(|e| crate::observe::boundary_status("get_reserve_state", e))?;
 
         Ok(Response::new(GetReserveStateResponse {
             storage_radius: u32::from(self.reserve.storage_radius().get()),
@@ -56,11 +56,11 @@ impl<R: BinCursorStore + Send + Sync + 'static> Reserve for ReserveService<R> {
             let count = self
                 .reserve
                 .count_in(po)
-                .map_err(|e| Status::internal(format!("reserve bin count failed: {e}")))?;
+                .map_err(|e| crate::observe::boundary_status("get_reserve_bins", e))?;
             let cursor = self
                 .reserve
                 .bin_cursor(po.into())
-                .map_err(|e| Status::internal(format!("reserve bin cursor failed: {e}")))?;
+                .map_err(|e| crate::observe::boundary_status("get_reserve_bins", e))?;
             bins.push(ReserveBin {
                 proximity_order: u32::from(po_raw),
                 count,
