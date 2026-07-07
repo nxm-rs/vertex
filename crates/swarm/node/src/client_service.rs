@@ -449,7 +449,7 @@ impl ClientService {
                 error,
             } => {
                 warn!(
-                    peer = ?peer,
+                    overlay = ?peer,
                     peer_id = ?peer_id,
                     %protocol,
                     %error,
@@ -464,7 +464,7 @@ impl ClientService {
                 event,
             } => match event {
                 PeerEvent::PaymentThresholdReceived { threshold } => {
-                    debug!(%peer_id, %peer, %threshold, "Received payment threshold");
+                    debug!(%peer_id, overlay = %peer, %threshold, "Received payment threshold");
                     if let Some(adopter) = &self.threshold_adopter {
                         // An out-of-spec value saturates to the maximum AU; the
                         // clamp inside accounting caps it at the local threshold.
@@ -474,7 +474,7 @@ impl ClientService {
                 }
 
                 PeerEvent::PaymentThresholdSent => {
-                    debug!(%peer, "Payment threshold sent");
+                    debug!(overlay = %peer, "Payment threshold sent");
                 }
 
                 PeerEvent::ChunkReceived {
@@ -490,7 +490,7 @@ impl ClientService {
                     // is committed by the dispatch reservation, not here; a relay leg
                     // is accounted by the forwarder. Cache and scoring apply to every
                     // delivery.
-                    debug!(%peer, %address, ?latency, "Chunk received");
+                    debug!(overlay = %peer, %address, ?latency, "Chunk received");
                     // Feed the per-PO latency estimate so the chunk provider can pace
                     // its staggered race to the forwarding distance. Only originated
                     // retrievals: a relay leg's latency is the requester's chain, not
@@ -511,32 +511,32 @@ impl ClientService {
                 }
 
                 PeerEvent::InboundServed => {
-                    debug!(%peer, "Served inbound retrieval from cache");
+                    debug!(overlay = %peer, "Served inbound retrieval from cache");
                     metrics::counter!("swarm_client_inbound_served_total").increment(1);
                 }
 
                 PeerEvent::InboundForwarded => {
-                    debug!(%peer, "Forwarded inbound retrieval to a closer peer");
+                    debug!(overlay = %peer, "Forwarded inbound retrieval to a closer peer");
                     metrics::counter!("swarm_client_inbound_forwarded_total").increment(1);
                 }
 
                 PeerEvent::InboundMissed { address } => {
-                    debug!(%peer, %address, "Inbound retrieval missed (substream reset)");
+                    debug!(overlay = %peer, %address, "Inbound retrieval missed (substream reset)");
                     metrics::counter!("swarm_client_inbound_missed_total").increment(1);
                 }
 
                 PeerEvent::InboundRelayed => {
-                    debug!(%peer, "Relayed pushsync receipt to pusher");
+                    debug!(overlay = %peer, "Relayed pushsync receipt to pusher");
                     metrics::counter!("swarm_client_inbound_relayed_total").increment(1);
                 }
 
                 PeerEvent::InboundStored => {
-                    debug!(%peer, "Stored inbound pushsync delivery and signed a receipt");
+                    debug!(overlay = %peer, "Stored inbound pushsync delivery and signed a receipt");
                     metrics::counter!("swarm_client_inbound_stored_total").increment(1);
                 }
 
                 PeerEvent::InboundPushFailed { address } => {
-                    debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
+                    debug!(overlay = %peer, %address, "Inbound pushsync failed (substream reset)");
                     metrics::counter!("swarm_client_inbound_push_failed_total").increment(1);
                 }
 
@@ -549,7 +549,7 @@ impl ClientService {
                     // scoring. The origin debit is committed by the dispatch
                     // reservation, not here; a relay leg is accounted by the
                     // forwarder.
-                    debug!(%peer, %address, ?latency, "Receipt received");
+                    debug!(overlay = %peer, %address, ?latency, "Receipt received");
                     self.report(
                         &peer,
                         SwarmScoringEvent::PushSuccess { latency },
@@ -568,7 +568,7 @@ impl ClientService {
                     // download's flood of misses cannot decay the peer set past the
                     // disconnect threshold; the staggered race steers around an
                     // unhelpful candidate within a request instead.
-                    warn!(%peer, %address, %error, ?kind, "Retrieval failed");
+                    warn!(overlay = %peer, %address, %error, ?kind, "Retrieval failed");
                     match kind {
                         FailureKind::InvalidChunk => {
                             metrics::counter!(
@@ -596,7 +596,7 @@ impl ClientService {
                 } => {
                     // Same scoring policy as retrieval: a malformed receipt is
                     // scored, a plain `Protocol` failure is blameless.
-                    warn!(%peer, %address, %error, ?kind, "Push failed");
+                    warn!(overlay = %peer, %address, %error, ?kind, "Push failed");
                     match kind {
                         FailureKind::InvalidChunk => {
                             metrics::counter!(
@@ -619,7 +619,7 @@ impl ClientService {
                 PeerEvent::InboundInvalidData { protocol } => {
                     // Decode rejected a malformed inbound chunk or request before
                     // relay; score the sender adversely.
-                    warn!(%peer, %protocol, "Inbound malformed data rejected");
+                    warn!(overlay = %peer, %protocol, "Inbound malformed data rejected");
                     metrics::counter!(
                         "swarm_client_invalid_chunk_total",
                         "protocol" => protocol,
@@ -638,23 +638,23 @@ impl ClientService {
                     // `route_pseudosettle_events`: it validates against the time
                     // allowance, credits the ledger, and acks the clamped
                     // amount. Acking here too would race it for the wire.
-                    debug!(%peer, %peer_id, %amount, %request_id, "Pseudosettle received");
+                    debug!(overlay = %peer, %peer_id, %amount, %request_id, "Pseudosettle received");
                 }
 
                 PeerEvent::PseudosettleSent { ack } => {
-                    debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
+                    debug!(overlay = %peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
                 }
 
                 #[cfg(feature = "swap")]
                 PeerEvent::SwapChequeReceived { peer_rate, .. } => {
                     // The swap settlement service consumes cheques via the dedicated
                     // channel configured with `route_swap_events`.
-                    debug!(%peer, %peer_id, %peer_rate, "Swap cheque received");
+                    debug!(overlay = %peer, %peer_id, %peer_rate, "Swap cheque received");
                 }
 
                 #[cfg(feature = "swap")]
                 PeerEvent::SwapChequeSent { peer_rate } => {
-                    debug!(%peer, %peer_id, %peer_rate, "Swap cheque sent");
+                    debug!(overlay = %peer, %peer_id, %peer_rate, "Swap cheque sent");
                 }
 
                 // `PeerEvent` carries swap variants when `client-protocol/swap`

@@ -260,7 +260,7 @@ impl ClientBehaviour {
                     && let Some(tx) = &self.pseudosettle_event_tx
                     && tx.send(PseudosettleEvent::Failed { peer }).is_err()
                 {
-                    warn!(%peer, "Pseudosettle event channel closed");
+                    warn!(overlay = %peer, "Pseudosettle event channel closed");
                 }
                 #[cfg(feature = "swap")]
                 if let Some(peer) = overlay
@@ -268,7 +268,7 @@ impl ClientBehaviour {
                     && let Some(tx) = &self.swap_event_tx
                     && tx.send(SwapEvent::Failed { peer }).is_err()
                 {
-                    warn!(%peer, "Swap event channel closed");
+                    warn!(overlay = %peer, "Swap event channel closed");
                 }
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ProtocolError {

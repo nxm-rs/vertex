@@ -864,7 +864,6 @@ impl ConnectionHandler for ClientHandler {
                     ClientOutboundInfo::Pricing => {
                         self.announce_in_flight = false;
                         self.requeue_superseded_announce();
-                        warn!(protocol = "pricing", %error, "Client dial upgrade error");
                         self.push_event(HandlerEvent::Error {
                             overlay: self.overlay(),
                             protocol: "pricing",
@@ -885,13 +884,12 @@ impl ConnectionHandler for ClientHandler {
                             // Sole emission site for the retrieval timeout counter.
                             metrics::counter!("swarm_client_retrieval_timeouts_total").increment(1);
                             debug!(
-                                peer_overlay = ?self.overlay(),
+                                overlay = ?self.overlay(),
                                 %address,
                                 elapsed = ?requested_at.elapsed(),
                                 "Retrieval timed out waiting on a withholding peer"
                             );
                         }
-                        warn!(protocol = "retrieval", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::Peer {
                                 overlay,
@@ -921,13 +919,12 @@ impl ConnectionHandler for ClientHandler {
                             // Sole emission site for the pushsync timeout counter.
                             metrics::counter!("swarm_client_pushsync_timeouts_total").increment(1);
                             debug!(
-                                peer_overlay = ?self.overlay(),
+                                overlay = ?self.overlay(),
                                 %address,
                                 elapsed = ?requested_at.elapsed(),
                                 "Pushsync timed out waiting on a withholding peer"
                             );
                         }
-                        warn!(protocol = "pushsync", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::Peer {
                                 overlay,
@@ -946,7 +943,6 @@ impl ConnectionHandler for ClientHandler {
                         let _ = response.send(Err(outcome));
                     }
                     ClientOutboundInfo::Pseudosettle { .. } => {
-                        warn!(protocol = "pseudosettle", %error, "Client dial upgrade error");
                         self.push_event(HandlerEvent::Error {
                             overlay: self.overlay(),
                             protocol: "pseudosettle",
@@ -955,7 +951,6 @@ impl ConnectionHandler for ClientHandler {
                     }
                     #[cfg(feature = "swap")]
                     ClientOutboundInfo::Swap => {
-                        warn!(protocol = "swap", %error, "Client dial upgrade error");
                         self.push_event(HandlerEvent::Error {
                             overlay: self.overlay(),
                             protocol: "swap",
@@ -970,7 +965,6 @@ impl ConnectionHandler for ClientHandler {
                 // reconstruction at decode and surfaces here; classify so the
                 // offending peer is scored. The chunk is already rejected.
                 let kind = e.error.inbound_failure_kind();
-                warn!(error = %e.error, ?kind, "Client listen upgrade error");
                 match (kind, self.overlay()) {
                     (FailureKind::InvalidChunk, Some(overlay)) => {
                         let protocol = match &e.error {

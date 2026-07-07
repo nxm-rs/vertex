@@ -268,7 +268,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                     dialed += 1;
                 }
                 Err(e) => {
-                    warn!(addr = %addr_str, %e, "Invalid multiaddr, skipping");
+                    warn!(multiaddr = %addr_str, error = %e, "Invalid multiaddr, skipping");
                 }
             }
         }
@@ -426,7 +426,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
 
     fn route_client_event(&self, event: ClientEvent) {
         if let Err(e) = self.client_event_tx.try_send(event) {
-            warn!(%e, "Failed to send client event to service");
+            warn!(error = %e, "Failed to send client event to service");
             metrics::counter!("swarm_client_events_dropped_total").increment(1);
         }
     }

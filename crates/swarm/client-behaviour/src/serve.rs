@@ -125,7 +125,7 @@ async fn respond_and_commit<Op: ServeOp>(
         }
         Err(e) => {
             debug!(
-                peer = %op.peer(),
+                overlay = %op.peer(),
                 address = %op.address(),
                 error = %e,
                 "serve delivery refused by the peer"
@@ -274,7 +274,7 @@ impl ServeOp for PushServe {
         // drop `provide`, releasing without a trace: they are our failures,
         // not the pusher's.
         if let Err(e) = storer.reserve.put(CachedChunk::from(self.chunk.clone())) {
-            debug!(peer = %self.overlay, %address, error = %e, "Reserve put failed; not acknowledging");
+            debug!(overlay = %self.overlay, %address, error = %e, "Reserve put failed; not acknowledging");
             return Local::Refuse;
         }
 
@@ -291,7 +291,7 @@ impl ServeOp for PushServe {
                 // Stored, but cannot prove custody. Reset rather than send an
                 // unsigned ack; the pusher retries (the reserve put is
                 // content-addressed, so a re-delivery is a no-op).
-                debug!(peer = %self.overlay, %address, error = %e, "Receipt sign failed; not acknowledging");
+                debug!(overlay = %self.overlay, %address, error = %e, "Receipt sign failed; not acknowledging");
                 Local::Refuse
             }
         }

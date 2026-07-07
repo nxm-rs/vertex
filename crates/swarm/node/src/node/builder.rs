@@ -254,7 +254,7 @@ where
     let swarm = build_swarm(idle_timeout, transport, behaviour_builder)?;
 
     let local_peer_id = *swarm.local_peer_id();
-    info!(%local_peer_id, "{} peer ID", node_type_name);
+    info!(%local_peer_id, node_type = node_type_name, "Local peer ID");
     info!(overlay = %infra.identity.overlay_address(), "Overlay address");
 
     if infra.topology_handle.connect_bootnodes().await.is_err() {
