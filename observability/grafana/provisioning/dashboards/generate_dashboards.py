@@ -634,7 +634,7 @@ def build_overview():
     panels.append(
         stat(
             "Total Entries",
-            [_tgt(f'sum(vertex_db_entries{I})', "Entries")],
+            [_tgt(f'sum(vertex_redb_entries{I})', "Entries")],
             4, y,
         )
     )
@@ -1967,7 +1967,7 @@ def build_database():
         )
     )
     panels.append(
-        stat("Total Entries", [_tgt(f'sum(vertex_db_entries{I})', "")], 12, y)
+        stat("Total Entries", [_tgt(f'sum(vertex_redb_entries{I})', "")], 12, y)
     )
     panels.append(
         stat(
@@ -2045,7 +2045,7 @@ def build_database():
     panels.append(
         ts(
             "Entries per Table",
-            [_tgt(f'vertex_db_entries{I}', "{{table}}")],
+            [_tgt(f'vertex_redb_entries{I}', "{{table}}")],
             0, y, w=12,
         )
     )

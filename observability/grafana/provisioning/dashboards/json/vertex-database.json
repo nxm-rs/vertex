@@ -330,7 +330,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vertex_db_entries{instance=~\"$instance\"})",
+          "expr": "sum(vertex_redb_entries{instance=~\"$instance\"})",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1066,7 +1066,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_db_entries{instance=~\"$instance\"}",
+          "expr": "vertex_redb_entries{instance=~\"$instance\"}",
           "legendFormat": "{{table}}",
           "refId": "A"
         }

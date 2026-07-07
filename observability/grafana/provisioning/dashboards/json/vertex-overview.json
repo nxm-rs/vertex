@@ -1485,7 +1485,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vertex_db_entries{instance=~\"$instance\"})",
+          "expr": "sum(vertex_redb_entries{instance=~\"$instance\"})",
           "legendFormat": "Entries",
           "refId": "A"
         }
