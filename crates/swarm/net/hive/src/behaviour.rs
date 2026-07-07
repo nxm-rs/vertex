@@ -18,7 +18,6 @@ use libp2p::{
     },
 };
 use strum::IntoStaticStr;
-use tracing::debug;
 use vertex_net_ratelimiter::KeyedRateLimiter;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_headers::ProtocolStreamError;
@@ -172,7 +171,6 @@ where
                     }));
             }
             HiveHandlerEvent::Error(error) => {
-                debug!(%peer_id, %error, "hive error");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HiveEvent::Error {
                         peer_id,

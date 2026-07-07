@@ -21,7 +21,7 @@ use libp2p::{
         },
     },
 };
-use tracing::{debug, warn};
+use tracing::debug;
 use vertex_metrics::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
@@ -316,14 +316,12 @@ where
 
             ConnectionEvent::DialUpgradeError(error) => {
                 self.outbound_pending = false;
-                warn!(peer_id = %self.peer_id, "Outbound handshake failed: {}", error.error);
                 self.state = State::Failed;
                 let error = extract_error(error.error);
                 self.pending_event = Some(HandshakeHandlerEvent::Failed { error });
             }
 
             ConnectionEvent::ListenUpgradeError(error) => {
-                warn!(peer_id = %self.peer_id, "Inbound handshake failed: {}", error.error);
                 // A denied extra exchange is the violating substream's failure,
                 // not this connection's handshake outcome (which may already be
                 // Completed); the behaviour drops the peer on the event.

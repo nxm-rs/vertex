@@ -108,8 +108,8 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
     pub fn start_listening(&mut self) -> Result<()> {
         for addr in &self.listen_addrs {
             match self.swarm.listen_on(addr.clone()) {
-                Ok(_) => info!(%addr, "Listening on address"),
-                Err(e) => warn!(%addr, %e, "Failed to listen on address"),
+                Ok(_) => info!(multiaddr = %addr, "Listening on address"),
+                Err(e) => warn!(multiaddr = %addr, error = %e, "Failed to listen on address"),
             }
         }
         Ok(())

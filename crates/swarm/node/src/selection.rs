@@ -123,7 +123,7 @@ where
 {
     fn trigger_settlement(&self, peer: OverlayAddress) {
         let Ok(executor) = TaskExecutor::try_current() else {
-            debug!(%peer, "no task executor; settlement not triggered");
+            debug!(overlay = %peer, "no task executor; settlement not triggered");
             return;
         };
         // Skip if a settle to this peer is already running; the entry is cleared
@@ -143,7 +143,7 @@ where
         executor.spawn(async move {
             let _guard = guard;
             if let Err(error) = handle.settle().await {
-                debug!(%peer, %error, "best-effort settlement failed");
+                debug!(overlay = %peer, %error, "best-effort settlement failed");
             }
         });
     }

@@ -230,7 +230,7 @@ where
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        debug!(%peer, ?connection_id, %addr, "Creating outbound handshake handler");
+        debug!(%peer, ?connection_id, remote_addr = %addr, "Creating outbound handshake handler");
         self.connection_directions
             .insert(connection_id, ConnectionDirection::Outbound);
         let self_record = self.cached_self_record(addr);
@@ -271,7 +271,6 @@ where
 
         match event {
             HandshakeHandlerEvent::Completed { info } => {
-                debug!(%peer_id, ?connection_id, ?direction, "Handshake completed");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed {
                         peer_id,
@@ -281,7 +280,6 @@ where
                     }));
             }
             HandshakeHandlerEvent::Failed { error } => {
-                debug!(%peer_id, ?connection_id, ?direction, ?error, "Handshake failed");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed {
                         peer_id,

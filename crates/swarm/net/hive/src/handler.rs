@@ -210,7 +210,6 @@ where
             ConnectionEvent::ListenUpgradeError(ListenUpgradeError { error, .. }) => {
                 let hive_error =
                     UpgradeError::record_and_convert(error, "hive", direction::INBOUND);
-                warn!(error = %hive_error, "Hive inbound stream error");
                 self.core.push_event(HiveHandlerEvent::Error(hive_error));
             }
 
@@ -218,7 +217,6 @@ where
                 self.core.set_outbound_pending(false);
                 let hive_error =
                     UpgradeError::record_and_convert(error.error, "hive", direction::OUTBOUND);
-                warn!(error = %hive_error, "Hive outbound error");
                 self.core.push_event(HiveHandlerEvent::Error(hive_error));
             }
 

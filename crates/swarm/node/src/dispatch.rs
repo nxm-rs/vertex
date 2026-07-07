@@ -1221,7 +1221,7 @@ fn accept_origin_receipt(
     let verdict = receipt.verify_depth(local_depth, neighbourhood_credible);
     if let DepthVerdict::Shallow(err) = &verdict {
         warn!(
-            %peer,
+            overlay = %peer,
             address = %receipt.address,
             error = <&'static str>::from(err),
             "rejected shallow custody receipt; retrying another route"
