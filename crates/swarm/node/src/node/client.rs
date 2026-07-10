@@ -109,7 +109,11 @@ where
         "Client node",
         transport,
         move |pk, topology| {
-            let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+            let nat = NatBehaviour::from_config(
+                network_config,
+                pk.to_peer_id(),
+                vertex_swarm_primitives::SwarmNodeType::Client,
+            );
             ClientNodeBehaviour::from_parts(
                 pk,
                 topology,
