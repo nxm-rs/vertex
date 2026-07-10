@@ -304,14 +304,14 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto",
 opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"] }
 
 ## p2p
-# Pinned to the nxm-rs rust-libp2p fork, branched from upstream rev
-# 3e72d4c071d5ec8815d2f6f7ee3602600ff51798 (master, for libp2p-dns 0.45.0 against
-# hickory 0.26.1, RUSTSEC-2026-0119 / RUSTSEC-2026-0118). The fork carries a single
-# fix on top: `libp2p-websocket-websys` no longer blocks `poll_flush` on the browser
-# WebSocket `bufferedAmount` draining to zero, which stalled the wasm client mid
-# handshake and tore the connection down with `BrokenPipe`. Revisit when the fix is
-# upstreamed and libp2p 0.57 is released.
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb", features = [
+# Pinned to the nxm-rs rust-libp2p fork `prod` integration branch (rev c8b360fa8,
+# based on upstream b44e1286 / libp2p 0.57, keeping libp2p-dns 0.45.0 against hickory
+# 0.26.1 for RUSTSEC-2026-0119 / RUSTSEC-2026-0118). Carries the websocket-websys
+# browser `poll_flush` and inbound-overflow-wake fixes plus the libp2p-timer pausable
+# sweep that the `start_paused` cluster harness relies on. The fork's
+# webtransport/quic/quicreuse/webrtc crates (and their quinn/wtransport `[patch]`
+# pins) are not compiled by the feature set below, so vertex needs no patch pins.
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1", features = [
     "tokio",
     "noise",
     "tcp",
@@ -328,13 +328,13 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
-libp2p-swarm = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
-libp2p-swarm-test = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
+libp2p-swarm = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1" }
+libp2p-swarm-test = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1" }
 # Browser websocket transport for the wasm client. Dials the bee AutoTLS
 # `/tls/sni/<host>/ws` form; the browser performs TLS and SNI natively. Pinned to
 # the nxm-rs fork for the `poll_flush` browser WebSocket flush fix (see the `libp2p`
 # entry above).
-libp2p-websocket-websys = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb" }
+libp2p-websocket-websys = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1" }
 quickcheck = "1.0.3"
 pb-rs = "0.10"
 walkdir = "2.5.0"
