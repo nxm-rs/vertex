@@ -22,7 +22,7 @@ use vertex_swarm_api::{
     SwarmRoutingConfig,
 };
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_primitives::Bin;
+use vertex_swarm_primitives::{Bin, SwarmNodeType};
 use vertex_swarm_puller::{PullerHandle, PullsyncControl};
 use vertex_swarm_storer_behaviour::{
     PullsyncBehaviour, PullsyncEvent, StorerBehaviour, StorerBehaviourEvent,
@@ -106,7 +106,8 @@ pub(crate) struct StorerNodeBehaviour<I: SwarmIdentity + Clone> {
     /// behaviour.
     pub(crate) ip_limits: IpConnectionLimits,
     pub(crate) identify: identify::Behaviour,
-    /// NAT traversal and LAN discovery, native only.
+    /// NAT traversal, the circuit relay v2 server, and LAN discovery, native
+    /// only.
     pub(crate) nat: NatBehaviour,
     /// Client protocols plus pullsync, served from the reserve. Before topology:
     /// its client tier reads the active-peers view at connection close while the
@@ -171,7 +172,8 @@ where
         "Storer node",
         transport,
         move |pk, topology| {
-            let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+            let nat =
+                NatBehaviour::from_config(network_config, pk.to_peer_id(), SwarmNodeType::Storer);
             StorerNodeBehaviour::from_parts(
                 pk,
                 topology,
