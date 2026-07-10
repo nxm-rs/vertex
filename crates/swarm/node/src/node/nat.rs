@@ -1,24 +1,28 @@
 //! NAT traversal and LAN discovery for native node types.
 //!
-//! [`NatBehaviour`] composes AutoNAT v2 (client + server), UPnP, and mDNS into
-//! a single sub-behaviour so the node composites carry one platform-neutral
-//! field. The browser client dials over websockets and never listens, so it
-//! has no NAT or LAN-discovery surface; the wasm sibling module (`nat_wasm.rs`)
-//! exposes the same item names and signatures over a no-op behaviour.
+//! [`NatBehaviour`] composes AutoNAT v2 (client + server), UPnP, a circuit
+//! relay v2 server, and mDNS into a single sub-behaviour so the node
+//! composites carry one platform-neutral field. The browser client dials over
+//! websockets and never listens, so it has no NAT or LAN-discovery surface;
+//! the wasm sibling module (`nat_wasm.rs`) exposes the same item names and
+//! signatures over a no-op behaviour.
 
 use libp2p::autonat::v2 as autonat;
 use libp2p::mdns;
 use libp2p::multiaddr::Protocol;
+use libp2p::relay;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
+use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand};
 
-/// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as one
-/// sub-behaviour so the node composites carry a single platform-neutral field.
+/// NAT traversal (AutoNAT v2, UPnP), the circuit relay v2 server, and LAN
+/// discovery (mDNS), composed as one sub-behaviour so the node composites
+/// carry a single platform-neutral field.
 ///
 /// AutoNAT v2 (client + server) and UPnP run in the same swarm as identify, so
 /// the libp2p swarm propagates verified external addresses between them
@@ -29,6 +33,7 @@ use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand};
 pub(crate) struct NatBehaviour {
     autonat_client: Toggle<autonat::client::Behaviour>,
     autonat_server: Toggle<autonat::server::Behaviour>,
+    relay_server: Toggle<relay::Behaviour>,
     upnp: Toggle<upnp::tokio::Behaviour>,
     mdns: Toggle<mdns::tokio::Behaviour>,
 }
@@ -37,13 +42,27 @@ impl NatBehaviour {
     /// Build the NAT behaviours from a network configuration.
     ///
     /// AutoNAT v2 and mDNS are enabled by default for every node type; UPnP is
-    /// opt-in. mDNS needs the local [`PeerId`], so the behaviour is built where
-    /// the swarm's public key is available.
-    pub(crate) fn from_config(config: &impl SwarmNetworkConfig, local_peer_id: PeerId) -> Self {
+    /// opt-in. The circuit relay v2 server is off by default and enabled for
+    /// the bootnode and storer node types, which listen on publicly reachable
+    /// multiaddrs; reservations and circuits are bounded by the libp2p relay
+    /// defaults (reservation and circuit caps, per-peer and per-IP rate
+    /// limits, circuit duration and byte limits). mDNS needs the local
+    /// [`PeerId`], so the behaviour is built where the swarm's public key is
+    /// available.
+    pub(crate) fn from_config(
+        config: &impl SwarmNetworkConfig,
+        local_peer_id: PeerId,
+        node_type: SwarmNodeType,
+    ) -> Self {
         let autonat = config.autonat_enabled();
+        let relay_server = matches!(node_type, SwarmNodeType::Bootnode | SwarmNodeType::Storer);
         Self {
             autonat_client: Toggle::from(autonat.then(autonat::client::Behaviour::default)),
             autonat_server: Toggle::from(autonat.then(autonat::server::Behaviour::default)),
+            relay_server: Toggle::from(
+                relay_server
+                    .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
+            ),
             upnp: Toggle::from(config.upnp_enabled().then(upnp::tokio::Behaviour::default)),
             mdns: build_mdns_toggle(config.mdns_enabled(), local_peer_id),
         }
@@ -54,6 +73,7 @@ impl NatBehaviour {
 pub(crate) enum NatEvent {
     AutonatClient(autonat::client::Event),
     AutonatServer(autonat::server::Event),
+    Relay(relay::Event),
     Upnp(upnp::Event),
     Mdns(mdns::Event),
 }
@@ -67,6 +87,12 @@ impl From<autonat::client::Event> for NatEvent {
 impl From<autonat::server::Event> for NatEvent {
     fn from(event: autonat::server::Event) -> Self {
         NatEvent::AutonatServer(event)
+    }
+}
+
+impl From<relay::Event> for NatEvent {
+    fn from(event: relay::Event) -> Self {
+        NatEvent::Relay(event)
     }
 }
 
@@ -91,6 +117,7 @@ pub(crate) fn handle_nat_event<I: SwarmIdentity + Clone>(
     match event {
         NatEvent::AutonatClient(event) => handle_autonat_client_event(event),
         NatEvent::AutonatServer(event) => handle_autonat_server_event(topology, event),
+        NatEvent::Relay(event) => handle_relay_event(event),
         NatEvent::Upnp(event) => handle_upnp_event(event),
         NatEvent::Mdns(event) => handle_mdns_event(local_peer_id, topology, event),
     }
@@ -200,6 +227,60 @@ fn handle_autonat_client_event(event: autonat::client::Event) {
     }
 }
 
+/// Handle a circuit relay v2 server event.
+///
+/// The relay behaviour enforces its own reservation and circuit bounds; the
+/// lifecycle is surfaced here as debug logs and counters only. Deprecated
+/// failure variants are logged inside libp2p and matched by the wildcard arm.
+fn handle_relay_event(event: relay::Event) {
+    match event {
+        relay::Event::ReservationReqAccepted {
+            src_peer_id,
+            renewed,
+        } => {
+            metrics::counter!("swarm.relay.reservations_accepted").increment(1);
+            debug!(%src_peer_id, renewed, "Relay reservation accepted");
+        }
+        relay::Event::ReservationReqDenied {
+            src_peer_id,
+            status,
+        } => {
+            metrics::counter!("swarm.relay.reservations_denied").increment(1);
+            debug!(%src_peer_id, ?status, "Relay reservation denied");
+        }
+        relay::Event::ReservationTimedOut { src_peer_id } => {
+            debug!(%src_peer_id, "Relay reservation timed out");
+        }
+        relay::Event::ReservationClosed { src_peer_id } => {
+            debug!(%src_peer_id, "Relay reservation closed");
+        }
+        relay::Event::CircuitReqAccepted {
+            src_peer_id,
+            dst_peer_id,
+        } => {
+            metrics::counter!("swarm.relay.circuits_accepted").increment(1);
+            debug!(%src_peer_id, %dst_peer_id, "Relay circuit established");
+        }
+        relay::Event::CircuitReqDenied {
+            src_peer_id,
+            dst_peer_id,
+            status,
+        } => {
+            metrics::counter!("swarm.relay.circuits_denied").increment(1);
+            debug!(%src_peer_id, %dst_peer_id, ?status, "Relay circuit denied");
+        }
+        relay::Event::CircuitClosed {
+            src_peer_id,
+            dst_peer_id,
+            error,
+        } => {
+            metrics::counter!("swarm.relay.circuits_closed").increment(1);
+            debug!(%src_peer_id, %dst_peer_id, ?error, "Relay circuit closed");
+        }
+        _ => {}
+    }
+}
+
 /// Handle a UPnP event. Port-map confirmations reach the topology behaviour as
 /// `FromSwarm::ExternalAddrConfirmed`; here we only surface operator-facing
 /// gateway diagnostics.
@@ -219,12 +300,59 @@ fn handle_upnp_event(event: upnp::Event) {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::time::Duration;
+
     use libp2p::identity::Keypair;
 
     use super::*;
 
     fn random_peer_id() -> PeerId {
         Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    /// Minimal network config for toggle assembly. mDNS is disabled so the
+    /// test never binds a multicast socket.
+    #[derive(Default)]
+    struct TestConfig {
+        addrs: Vec<Multiaddr>,
+    }
+
+    impl SwarmNetworkConfig for TestConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &self.addrs
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &self.addrs
+        }
+        fn discovery_enabled(&self) -> bool {
+            true
+        }
+        fn max_peers(&self) -> usize {
+            8
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+        fn mdns_enabled(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn relay_server_follows_node_type() {
+        let config = TestConfig::default();
+        for (node_type, enabled) in [
+            (SwarmNodeType::Bootnode, true),
+            (SwarmNodeType::Storer, true),
+            (SwarmNodeType::Client, false),
+        ] {
+            let nat = NatBehaviour::from_config(&config, random_peer_id(), node_type);
+            assert_eq!(
+                nat.relay_server.is_enabled(),
+                enabled,
+                "relay server toggle for {node_type:?}"
+            );
+        }
     }
 
     #[test]

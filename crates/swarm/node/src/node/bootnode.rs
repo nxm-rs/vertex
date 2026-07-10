@@ -53,8 +53,8 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// behaviour.
     pub(crate) ip_limits: IpConnectionLimits,
     pub(crate) identify: identify::Behaviour,
-    /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
-    /// one sub-behaviour.
+    /// NAT traversal (AutoNAT v2, UPnP), the circuit relay v2 server, and LAN
+    /// discovery (mDNS), composed as one sub-behaviour.
     pub(crate) nat: NatBehaviour,
     /// Before topology: reads the active-peers view at connection close while the
     /// registry entry is live.
@@ -354,7 +354,11 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             "Bootnode",
             self.transport,
             move |pk, topology| {
-                let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+                let nat = NatBehaviour::from_config(
+                    network_config,
+                    pk.to_peer_id(),
+                    SwarmNodeType::Bootnode,
+                );
                 BootnodeBehaviour::from_parts(
                     pk,
                     topology,
