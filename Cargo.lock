@@ -4250,7 +4250,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dcutr"
 version = "0.15.0"
-source = "git+https://github.com/nxm-rs/rust-libp2p?rev=fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb#fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb"
+source = "git+https://github.com/nxm-rs/rust-libp2p?rev=c8b360fa8e247a2388c644d314fd6dd3fb544ed1#c8b360fa8e247a2388c644d314fd6dd3fb544ed1"
 dependencies = [
  "asynchronous-codec",
  "either",
@@ -4433,9 +4433,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "libp2p-quicreuse"
+version = "0.1.0"
+source = "git+https://github.com/nxm-rs/rust-libp2p?rev=c8b360fa8e247a2388c644d314fd6dd3fb544ed1#c8b360fa8e247a2388c644d314fd6dd3fb544ed1"
+dependencies = [
+ "futures",
+ "quinn",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "libp2p-relay"
 version = "0.22.0"
-source = "git+https://github.com/nxm-rs/rust-libp2p?rev=fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb#fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb"
+source = "git+https://github.com/nxm-rs/rust-libp2p?rev=c8b360fa8e247a2388c644d314fd6dd3fb544ed1#c8b360fa8e247a2388c644d314fd6dd3fb544ed1"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -4453,18 +4465,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "web-time",
-]
-
-[[package]]
-name = "libp2p-quicreuse"
-version = "0.1.0"
-source = "git+https://github.com/nxm-rs/rust-libp2p?rev=c8b360fa8e247a2388c644d314fd6dd3fb544ed1#c8b360fa8e247a2388c644d314fd6dd3fb544ed1"
-dependencies = [
- "futures",
- "quinn",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]
