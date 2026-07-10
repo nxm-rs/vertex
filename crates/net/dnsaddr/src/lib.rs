@@ -12,6 +12,12 @@ use tracing::{debug, warn};
 /// Maximum recursive dnsaddr depth (guards against CNAME-style loops).
 const MAX_RECURSION_DEPTH: usize = 10;
 
+/// Ceiling on `dnsaddr=` TXT records processed per batch resolution: the
+/// breadth bound pairing the depth bound above, so a hostile or mis-authored
+/// zone cannot fan out unboundedly. Also caps the resolved leaf count, since
+/// every leaf comes from one record.
+const MAX_DNSADDR_RECORDS: usize = 256;
+
 /// Check whether a multiaddr contains a `/dnsaddr/` component.
 #[must_use]
 pub fn is_dnsaddr(addr: &Multiaddr) -> bool {
@@ -32,6 +38,22 @@ pub struct Resolution {
     /// Time until the earliest consulted DNS record expires, for scheduling
     /// re-resolution. `None` when no lookup succeeded.
     pub min_ttl: Option<Duration>,
+    /// Leaves dropped for lacking a `/p2p/` peer identity, which the dial
+    /// path requires.
+    pub invalid_leaves: usize,
+    /// Whether resolution stopped early at the record-breadth cap.
+    pub truncated: bool,
+}
+
+/// Mutable state threaded through one batch resolution: dedup, TTL floor,
+/// and the breadth budget shared across every entry in the batch.
+#[derive(Default)]
+struct ResolveState {
+    seen: HashSet<String>,
+    min_ttl: Option<Duration>,
+    records: usize,
+    invalid_leaves: usize,
+    truncated: bool,
 }
 
 /// Recursive `/dnsaddr/` resolver over one shared system resolver.
@@ -54,45 +76,44 @@ impl DnsaddrResolver {
 
     /// Resolve a batch of multiaddrs, expanding every `/dnsaddr/` entry.
     ///
-    /// - Non-dnsaddr inputs pass through unchanged.
+    /// - Non-dnsaddr inputs pass through unchanged and unvalidated.
     /// - A shared seen-set deduplicates across the whole batch.
+    /// - Leaves lacking a `/p2p/` peer identity are dropped and counted.
     /// - On resolution failure the original address is kept as fallback.
     pub async fn resolve_all(&self, addrs: impl IntoIterator<Item = &Multiaddr>) -> Resolution {
-        let mut resolution = Resolution {
-            addrs: Vec::new(),
-            min_ttl: None,
-        };
-        let mut seen = HashSet::new();
+        let mut resolved = Vec::new();
+        let mut state = ResolveState::default();
 
         for addr in addrs {
             if !is_dnsaddr(addr) {
-                resolution.addrs.push(addr.clone());
+                resolved.push(addr.clone());
                 continue;
             }
 
-            match self
-                .resolve_recursive(addr, &mut seen, &mut resolution.min_ttl, 0)
-                .await
-            {
+            match self.resolve_recursive(addr, &mut state, 0).await {
                 Ok(addrs) => {
                     debug!(addr = %addr, resolved_count = addrs.len(), "Resolved dnsaddr");
-                    resolution.addrs.extend(addrs);
+                    resolved.extend(addrs);
                 }
                 Err(e) => {
                     warn!(addr = %addr, error = %e, "Failed to resolve dnsaddr, keeping original");
-                    resolution.addrs.push(addr.clone());
+                    resolved.push(addr.clone());
                 }
             }
         }
 
-        resolution
+        Resolution {
+            addrs: resolved,
+            min_ttl: state.min_ttl,
+            invalid_leaves: state.invalid_leaves,
+            truncated: state.truncated,
+        }
     }
 
     fn resolve_recursive<'a>(
         &'a self,
         addr: &'a Multiaddr,
-        seen: &'a mut HashSet<String>,
-        min_ttl: &'a mut Option<Duration>,
+        state: &'a mut ResolveState,
         depth: usize,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, ResolveError>> + Send + 'a>,
@@ -102,17 +123,28 @@ impl DnsaddrResolver {
                 return Err(ResolveError::MaxRecursionDepth);
             }
 
-            let domain = match extract_domain(addr) {
-                Some(d) => d,
-                None => return Ok(vec![addr.clone()]),
+            let Some(domain) = extract_domain(addr) else {
+                // A leaf out of a TXT record dials nowhere without a peer
+                // identity: the dial path needs the /p2p/ component.
+                if addr.iter().any(|p| matches!(p, Protocol::P2p(_))) {
+                    return Ok(vec![addr.clone()]);
+                }
+                debug!(addr = %addr, "Dropping dnsaddr leaf without a /p2p/ component");
+                state.invalid_leaves += 1;
+                return Ok(vec![]);
             };
 
+            if state.records >= MAX_DNSADDR_RECORDS {
+                state.truncated = true;
+                return Ok(vec![]);
+            }
+
             let txt_name = format!("_dnsaddr.{}", domain);
-            if seen.contains(&txt_name) {
+            if state.seen.contains(&txt_name) {
                 debug!(domain = %domain, "Skipping already-seen dnsaddr domain");
                 return Ok(vec![]);
             }
-            seen.insert(txt_name.clone());
+            state.seen.insert(txt_name.clone());
 
             debug!(name = %txt_name, "Querying DNS TXT records");
 
@@ -128,7 +160,7 @@ impl DnsaddrResolver {
             let ttl = txt_records
                 .valid_until()
                 .saturating_duration_since(Instant::now());
-            *min_ttl = Some(min_ttl.map_or(ttl, |current| current.min(ttl)));
+            state.min_ttl = Some(state.min_ttl.map_or(ttl, |current| current.min(ttl)));
 
             let mut results = Vec::new();
 
@@ -140,12 +172,23 @@ impl DnsaddrResolver {
                     let txt_str = String::from_utf8_lossy(bytes);
 
                     if let Some(value) = txt_str.strip_prefix("dnsaddr=") {
+                        if state.records >= MAX_DNSADDR_RECORDS {
+                            warn!(
+                                domain = %domain,
+                                cap = MAX_DNSADDR_RECORDS,
+                                "Stopping dnsaddr resolution at the record cap"
+                            );
+                            state.truncated = true;
+                            return Ok(results);
+                        }
+                        state.records += 1;
+
                         debug!(record = %value, "Found dnsaddr TXT record");
 
                         match value.parse::<Multiaddr>() {
                             Ok(resolved_addr) => {
                                 let nested = self
-                                    .resolve_recursive(&resolved_addr, seen, min_ttl, depth + 1)
+                                    .resolve_recursive(&resolved_addr, state, depth + 1)
                                     .await?;
                                 results.extend(nested);
                             }
@@ -228,18 +271,58 @@ mod tests {
         let resolution = resolver.resolve_all(std::slice::from_ref(&addr)).await;
         assert_eq!(resolution.addrs, vec![addr]);
         assert_eq!(resolution.min_ttl, None, "no lookup performed, no TTL");
+        assert_eq!(
+            resolution.invalid_leaves, 0,
+            "pass-through inputs are not validated"
+        );
+        assert!(!resolution.truncated);
     }
 
     #[tokio::test]
-    async fn resolve_recursive_returns_non_dnsaddr_unchanged() {
+    async fn resolve_recursive_returns_leaf_with_peer_id() {
         let resolver = DnsaddrResolver::from_system_conf().expect("system DNS configuration");
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
-        let mut seen = HashSet::new();
-        let mut min_ttl = None;
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/1634/p2p/{}", libp2p::PeerId::random())
+            .parse()
+            .unwrap();
+        let mut state = ResolveState::default();
         let resolved = resolver
-            .resolve_recursive(&addr, &mut seen, &mut min_ttl, 0)
+            .resolve_recursive(&addr, &mut state, 0)
             .await
             .unwrap();
         assert_eq!(resolved, vec![addr]);
+        assert_eq!(state.invalid_leaves, 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_recursive_drops_leaf_without_peer_id() {
+        let resolver = DnsaddrResolver::from_system_conf().expect("system DNS configuration");
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
+        let mut state = ResolveState::default();
+        let resolved = resolver
+            .resolve_recursive(&addr, &mut state, 0)
+            .await
+            .unwrap();
+        assert!(resolved.is_empty(), "a leaf without /p2p/ is dropped");
+        assert_eq!(state.invalid_leaves, 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_recursive_stops_at_record_cap() {
+        let resolver = DnsaddrResolver::from_system_conf().expect("system DNS configuration");
+        let addr: Multiaddr = "/dnsaddr/mainnet.ethswarm.org".parse().unwrap();
+        let mut state = ResolveState {
+            records: MAX_DNSADDR_RECORDS,
+            ..ResolveState::default()
+        };
+        let resolved = resolver
+            .resolve_recursive(&addr, &mut state, 0)
+            .await
+            .unwrap();
+        assert!(resolved.is_empty(), "an exhausted budget resolves nothing");
+        assert!(state.truncated);
+        assert!(
+            state.seen.is_empty(),
+            "the cap is checked before any lookup"
+        );
     }
 }
