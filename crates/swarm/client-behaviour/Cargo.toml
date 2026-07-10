@@ -60,7 +60,7 @@ tracing.workspace = true
 libp2p.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5f68c36e2a53bb10d8a3b3edeb", default-features = false, features = [
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1", default-features = false, features = [
     "noise",
     "yamux",
     "macros",
