@@ -107,10 +107,10 @@ The swarm broadcasts every `ExternalAddrConfirmed` to all behaviours, so the top
 
 | Behaviour | Default | Flag |
 |-----------|---------|------|
-| AutoNAT v2 (client + server) | enabled for all node types | `--network.autonat` |
+| AutoNAT v2 (client + server) | enabled; bootnodes run the server role only | `--network.autonat` |
 | UPnP port mapping | disabled (opt-in) | `--network.upnp` |
 
-AutoNAT v2 runs both roles on every node type, including bootnodes, so the network always has dial-back verifiers. UPnP is opt-in because it actively probes the LAN gateway, which only helps home and NAT'd nodes and is noise on directly-routable hosts. Each behaviour is wrapped in a libp2p `Toggle`, so disabling one leaves an inert behaviour rather than changing the composed type.
+AutoNAT v2 runs both roles on clients and storers, so the network always has dial-back verifiers. A bootnode listens on static, public addresses, so it keeps only the server role: self-probing its own addresses is redundant, and mDNS multicast discovery is likewise disabled on bootnodes because a datacentre host has no LAN peers to discover. UPnP is opt-in because it actively probes the LAN gateway, which only helps home and NAT'd nodes and is noise on directly-routable hosts. Each behaviour is wrapped in a libp2p `Toggle`, so disabling one leaves an inert behaviour rather than changing the composed type.
 
 ### Interop
 

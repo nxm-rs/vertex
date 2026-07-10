@@ -171,7 +171,11 @@ where
         "Storer node",
         transport,
         move |pk, topology| {
-            let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+            let nat = NatBehaviour::from_config(
+                network_config,
+                pk.to_peer_id(),
+                vertex_swarm_api::SwarmNodeType::Storer,
+            );
             StorerNodeBehaviour::from_parts(
                 pk,
                 topology,
