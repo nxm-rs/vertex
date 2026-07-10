@@ -357,4 +357,16 @@ mod tests {
         };
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
     }
+
+    // Pin the native platform seam so a regression back to a TCP-only
+    // capability (which would silently drop QUIC dials) fails here rather
+    // than only surfacing on the live network.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_platform_dials_tcp_and_quic() {
+        let cap = TransportCapability::platform();
+        assert_eq!(cap, TransportCapability::TcpQuic);
+        assert!(cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
+        assert!(cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic-v1")));
+    }
 }
