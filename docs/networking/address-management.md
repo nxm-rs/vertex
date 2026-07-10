@@ -51,7 +51,7 @@ Manages address selection for the Swarm handshake protocol. Located in `vertex-s
 
 ### Address Sources and Trust Tiers
 
-Advertised addresses are ordered by the `AddressTrust` tier of their source, highest first. Within a tier the order is IPv6 before IPv4, then byte order, so an unchanged node advertises a stable list (and re-signs an unchanged record) across restarts.
+Advertised addresses are ordered by the `AddressTrust` tier of their source, highest first. Within a tier the order is IPv6 before IPv4, then TCP before QUIC, then byte order, so an unchanged node advertises a stable list (and re-signs an unchanged record) across restarts.
 
 | Trust tier | Source | Description |
 |------------|--------|-------------|
@@ -72,6 +72,17 @@ When selecting addresses for a peer during handshake:
 | Public | Public listen + NAT addresses |
 
 All returned addresses include `/p2p/{local_peer_id}`.
+
+### Transport Leaves (TCP and QUIC)
+
+Address tracking and advertisement are transport-agnostic: a QUIC listener's `/udp/<port>/quic-v1` leaves flow through the same `NewListenAddr` -> `LocalCapabilities` -> `addresses_for_peer` path as TCP and are signed into the record and gossiped next to their TCP siblings. The same holds for operator-configured static addresses: `--network.nat-addr` advertises whatever transports are listed, so a NAT'd node that forwards UDP advertises QUIC by listing the `/udp/<port>/quic-v1` multiaddr explicitly.
+
+Two rules keep QUIC additive for peers that dial only TCP:
+
+- Within a trust tier TCP sorts before QUIC (`transport_order` in `vertex-net-local`), so the pre-encoding bound sheds a family's QUIC leaves before any of its TCP leaves and a routable TCP multiaddr survives bounding.
+- QUIC leaves are not filtered per recipient. Which transports a peer dials is unknown when the peer-independent record is signed, and a peer without a QUIC dialer drops the leaf at its own dial-eligibility filter, so the extra entries cost only record bytes (bounded as above, well inside the 20-multiaddr cap for a dual-stack node).
+
+QUIC leaves in a dnsaddr tree follow the same logic: the recursive resolver (`vertex-net-dnsaddr`) passes them through unchanged, the native dial filter (`TransportCapability::TcpQuic`) admits them, and the browser resolver keeps only secure-websocket leaves.
 
 ### Self-Reachability Detection
 

@@ -2374,6 +2374,47 @@ mod tests {
         }
     }
 
+    mod listen_advertisement {
+        use super::*;
+
+        use libp2p::core::transport::ListenerId;
+        use libp2p::swarm::behaviour::NewListenAddr;
+
+        /// A QUIC listener's leaves flow NewListenAddr -> LocalCapabilities ->
+        /// addresses_for_peer next to their TCP siblings, TCP leading, so the
+        /// handshake record and hive gossip carry the QUIC leaf.
+        #[tokio::test]
+        async fn quic_listen_addr_flows_into_peer_advertisement() {
+            let mut behaviour = test_behaviour_listening();
+
+            for addr in [
+                "/ip4/203.0.113.5/udp/1634/quic-v1",
+                "/ip4/203.0.113.5/tcp/1634",
+            ] {
+                let addr: Multiaddr = addr.parse().expect("valid listen multiaddr");
+                behaviour.on_swarm_event(FromSwarm::NewListenAddr(NewListenAddr {
+                    listener_id: ListenerId::next(),
+                    addr: &addr,
+                }));
+            }
+
+            let peer: Multiaddr = "/ip4/8.8.8.8/tcp/5000"
+                .parse()
+                .expect("valid peer multiaddr");
+            let addrs = behaviour.nat_discovery.addresses_for_peer(&peer);
+
+            let tcp = addrs
+                .iter()
+                .position(|a| a.to_string().contains("/tcp/1634"))
+                .expect("TCP leaf advertised");
+            let quic = addrs
+                .iter()
+                .position(|a| a.to_string().contains("/quic-v1"))
+                .expect("QUIC leaf advertised");
+            assert!(tcp < quic, "TCP leads QUIC within the tier");
+        }
+    }
+
     mod bootnode_redial {
         use super::*;
 

@@ -16,4 +16,4 @@ pub use scope::{
     family_order, is_dialable,
 };
 pub use system::{add_subnet, remove_subnet, same_subnet};
-pub use transport::{DialCapability, TransportCapability, TransportRequirement};
+pub use transport::{DialCapability, TransportCapability, TransportRequirement, transport_order};
