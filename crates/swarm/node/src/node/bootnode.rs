@@ -30,7 +30,7 @@ use vertex_tasks::GracefulShutdown;
 use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
 use super::ip_limits::IpConnectionLimits;
-use super::nat::{NatBehaviour, NatEvent};
+use super::nat::{NatBehaviour, NatEvent, RelayClientBehaviour, RelayClientEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent, StubForwarder,
 };
@@ -56,6 +56,10 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal (AutoNAT v2, UPnP), the circuit relay v2 server, and LAN
     /// discovery (mDNS), composed as one sub-behaviour.
     pub(crate) nat: NatBehaviour,
+    /// Relay-client handle paired with the circuit transport; held only so the
+    /// shared swarm assembly stays uniform. A bootnode is publicly reachable
+    /// and never reserves or dials through a relay.
+    pub(crate) relay_client: RelayClientBehaviour,
     /// Before topology: reads the active-peers view at connection close while the
     /// registry entry is live.
     pub(crate) client: ClientBehaviour,
@@ -68,6 +72,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
+        relay_client: RelayClientBehaviour,
         limits: AdmissionLimits,
         agent_version: Option<&str>,
     ) -> Self {
@@ -86,6 +91,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 observed_addresses,
             ),
             nat,
+            relay_client,
             // A bootnode advertises pricing only and never serves retrieval or
             // pushsync, so its cache is never consulted; a zero-budget cache and
             // the stub forwarder keep the behaviour inert.
@@ -115,6 +121,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
 pub enum BootnodeEvent {
     Identify(Box<identify::Event>),
     Nat(NatEvent),
+    RelayClient(RelayClientEvent),
     Topology(()),
     Client(ClientEvent),
 }
@@ -135,6 +142,12 @@ impl From<identify::Event> for BootnodeEvent {
 impl From<NatEvent> for BootnodeEvent {
     fn from(event: NatEvent) -> Self {
         BootnodeEvent::Nat(event)
+    }
+}
+
+impl From<RelayClientEvent> for BootnodeEvent {
+    fn from(event: RelayClientEvent) -> Self {
+        BootnodeEvent::RelayClient(event)
     }
 }
 
@@ -257,6 +270,9 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                     event,
                 );
             }
+            BootnodeEvent::RelayClient(event) => {
+                super::nat::handle_relay_client_event(event);
+            }
             BootnodeEvent::Topology(_) => {}
             BootnodeEvent::Client(event) => {
                 // Bootnodes only accept pricing-receive; observability only.
@@ -353,7 +369,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             network_config,
             "Bootnode",
             self.transport,
-            move |pk, topology| {
+            move |pk, topology, relay_client| {
                 let nat = NatBehaviour::from_config(
                     network_config,
                     pk.to_peer_id(),
@@ -363,6 +379,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
                     pk,
                     topology,
                     nat,
+                    relay_client,
                     limits,
                     network_config.agent_version(),
                 )

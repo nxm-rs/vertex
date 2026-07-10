@@ -2,10 +2,13 @@
 //!
 //! [`NatBehaviour`] composes AutoNAT v2 (client + server), UPnP, a circuit
 //! relay v2 server, and mDNS into a single sub-behaviour so the node
-//! composites carry one platform-neutral field. The browser client dials over
+//! composites carry one platform-neutral field. The circuit relay v2 client
+//! ([`RelayClientBehaviour`]) is a sibling composite field rather than a
+//! `NatBehaviour` member because the swarm transport assembly constructs it
+//! together with the relay transport. The browser client dials over
 //! websockets and never listens, so it has no NAT or LAN-discovery surface;
 //! the wasm sibling module (`nat_wasm.rs`) exposes the same item names and
-//! signatures over a no-op behaviour.
+//! signatures over no-op behaviours.
 
 use libp2p::autonat::v2 as autonat;
 use libp2p::mdns;
@@ -19,6 +22,14 @@ use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand};
+
+/// Circuit relay v2 client behaviour, paired with the relay transport the
+/// swarm assembly injects. The pair shares state over a channel, so the
+/// handle must be composed into the node behaviour or relayed dials stall.
+pub(crate) type RelayClientBehaviour = relay::client::Behaviour;
+
+/// Events from the relay-client behaviour.
+pub(crate) type RelayClientEvent = relay::client::Event;
 
 /// NAT traversal (AutoNAT v2, UPnP), the circuit relay v2 server, and LAN
 /// discovery (mDNS), composed as one sub-behaviour so the node composites
@@ -278,6 +289,29 @@ fn handle_relay_event(event: relay::Event) {
             debug!(%src_peer_id, %dst_peer_id, ?error, "Relay circuit closed");
         }
         _ => {}
+    }
+}
+
+/// Handle a circuit relay v2 client event: reservation and relayed-circuit
+/// lifecycle, surfaced as counters and debug logs only.
+pub(crate) fn handle_relay_client_event(event: RelayClientEvent) {
+    match event {
+        relay::client::Event::ReservationReqAccepted {
+            relay_peer_id,
+            renewal,
+            ..
+        } => {
+            metrics::counter!("swarm.relay_client.reservations_accepted").increment(1);
+            debug!(%relay_peer_id, renewal, "Relay reservation accepted");
+        }
+        relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+            metrics::counter!("swarm.relay_client.outbound_circuits").increment(1);
+            debug!(%relay_peer_id, "Outbound relay circuit established");
+        }
+        relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+            metrics::counter!("swarm.relay_client.inbound_circuits").increment(1);
+            debug!(%src_peer_id, "Inbound relay circuit established");
+        }
     }
 }
 

@@ -37,7 +37,7 @@ use vertex_tasks::TaskExecutor;
 use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
 use super::ip_limits::IpConnectionLimits;
-use super::nat::{NatBehaviour, NatEvent};
+use super::nat::{NatBehaviour, NatEvent, RelayClientBehaviour, RelayClientEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
     PseudosettleEvent, StubForwarder,
@@ -109,6 +109,9 @@ pub(crate) struct StorerNodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal, the circuit relay v2 server, and LAN discovery, native
     /// only.
     pub(crate) nat: NatBehaviour,
+    /// Relay-client reservations and relayed circuits, paired with the circuit
+    /// transport assembled into the swarm.
+    pub(crate) relay_client: RelayClientBehaviour,
     /// Client protocols plus pullsync, served from the reserve. Before topology:
     /// its client tier reads the active-peers view at connection close while the
     /// registry entry is live.
@@ -117,10 +120,12 @@ pub(crate) struct StorerNodeBehaviour<I: SwarmIdentity + Clone> {
 }
 
 impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
+        relay_client: RelayClientBehaviour,
         limits: AdmissionLimits,
         store: Arc<dyn SwarmLocalStore>,
         pullsync_storage: Arc<dyn PullStorage>,
@@ -143,6 +148,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBehaviour<I> {
                 observed_addresses,
             ),
             nat,
+            relay_client,
             storer: StorerBehaviour {
                 client,
                 pullsync: PullsyncBehaviour::new(pullsync_storage),
@@ -171,13 +177,14 @@ where
         network_config,
         "Storer node",
         transport,
-        move |pk, topology| {
+        move |pk, topology, relay_client| {
             let nat =
                 NatBehaviour::from_config(network_config, pk.to_peer_id(), SwarmNodeType::Storer);
             StorerNodeBehaviour::from_parts(
                 pk,
                 topology,
                 nat,
+                relay_client,
                 limits,
                 store,
                 pullsync_storage,
@@ -193,6 +200,7 @@ where
 pub enum StorerNodeEvent {
     Identify(Box<identify::Event>),
     Nat(NatEvent),
+    RelayClient(RelayClientEvent),
     Topology(()),
     Client(ClientEvent),
     Pullsync(PullsyncEvent),
@@ -214,6 +222,12 @@ impl From<identify::Event> for StorerNodeEvent {
 impl From<NatEvent> for StorerNodeEvent {
     fn from(event: NatEvent) -> Self {
         StorerNodeEvent::Nat(event)
+    }
+}
+
+impl From<RelayClientEvent> for StorerNodeEvent {
+    fn from(event: RelayClientEvent) -> Self {
+        StorerNodeEvent::RelayClient(event)
     }
 }
 
@@ -470,6 +484,9 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                     &mut self.base.swarm.behaviour_mut().topology,
                     event,
                 );
+            }
+            StorerNodeEvent::RelayClient(event) => {
+                super::nat::handle_relay_client_event(event);
             }
             StorerNodeEvent::Topology(_) => {}
             StorerNodeEvent::Client(event) => {

@@ -14,6 +14,37 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_topology::TopologyBehaviour;
 
+/// No-op relay-client stand-in for the browser client. The browser swarm
+/// assembly injects no relay transport yet (the relayed path arrives with the
+/// WebTransport stack), so the composite carries an inert field on wasm.
+#[derive(NetworkBehaviour)]
+#[behaviour(to_swarm = "RelayClientEvent")]
+pub(crate) struct RelayClientBehaviour {
+    inner: libp2p::swarm::dummy::Behaviour,
+}
+
+impl RelayClientBehaviour {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: libp2p::swarm::dummy::Behaviour,
+        }
+    }
+}
+
+/// Uninhabited: the wasm relay-client stand-in never emits events.
+pub(crate) enum RelayClientEvent {}
+
+impl From<Infallible> for RelayClientEvent {
+    fn from(event: Infallible) -> Self {
+        match event {}
+    }
+}
+
+/// Dispatch a relay-client event; statically unreachable in the browser.
+pub(crate) fn handle_relay_client_event(event: RelayClientEvent) {
+    match event {}
+}
+
 /// No-op NAT sub-behaviour for the browser client.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "NatEvent")]
