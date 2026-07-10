@@ -43,7 +43,7 @@ Peer state is Arc-per-peer via a registry. Obtain `Arc<PeerEntry>` once; afterwa
 
 ### 6. Dialer discipline
 
-`vertex-net-dialer` owns candidate selection, tracking, and exponential backoff with jitter (`crates/net/dialer/src/{backoff,tracker,prepare}.rs`). Bootstrap is a three-phase flow: parallel bootnode dials, hive discovery, Kademlia bin filling. mDNS is not used in production; `dnsaddr` is for bootnode and operator discovery only and is resolved recursively (`vertex-net-dnsaddr` follows all TXT records, unlike libp2p's DNS transport). DHT-style discovery is performed via the hive protocol, not Kademlia content routing. See `docs/networking/peer-dialing-strategy.md`.
+`vertex-net-dialer` owns candidate selection, tracking, and exponential backoff with jitter (`crates/net/dialer/src/{backoff,tracker,prepare}.rs`). Bootstrap is a three-phase flow: parallel bootnode dials, hive discovery, Kademlia bin filling. mDNS is not used in production; `dnsaddr` is for bootnode and operator discovery only and is resolved recursively (`vertex-net-dnsaddr` follows all TXT records, unlike libp2p's DNS transport) over one shared TTL-caching resolver, with periodic TTL-aware re-resolution scheduled by the topology behaviour. DHT-style discovery is performed via the hive protocol, not Kademlia content routing. See `docs/networking/peer-dialing-strategy.md`.
 
 ### 7. Address management
 

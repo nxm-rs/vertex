@@ -264,6 +264,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             dial_rate: RateLimiter::new(dial_quota),
             dial_rate_timer: None,
             pending_bootnode_resolution: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            dnsaddr_resolver: None,
+            dnsaddr_refresh_timer: None,
+            resolved_bootnode_addrs: HashSet::new(),
             isolation_probe: None,
             evaluator_handle,
             dial_tracker: DialTracker::new(DialTrackerConfig {

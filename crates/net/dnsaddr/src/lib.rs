@@ -1,9 +1,10 @@
 //! Recursive `/dnsaddr/` multiaddr resolution (resolves ALL TXT records, unlike libp2p's DNS transport).
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
-use hickory_resolver::Resolver;
 use hickory_resolver::proto::rr::RData;
+use hickory_resolver::{Resolver, TokioResolver};
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use tracing::{debug, warn};
@@ -17,34 +18,152 @@ pub fn is_dnsaddr(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::Dnsaddr(_)))
 }
 
-/// Resolve a batch of multiaddrs, expanding every `/dnsaddr/` entry.
+/// Failure to construct the resolver from the system DNS configuration.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to build system DNS resolver: {0}")]
+pub struct ResolverError(#[from] hickory_resolver::net::NetError);
+
+/// Outcome of a batch resolution.
+#[derive(Debug, Clone)]
+pub struct Resolution {
+    /// Expanded multiaddrs; an entry that failed to resolve falls back to its
+    /// original form.
+    pub addrs: Vec<Multiaddr>,
+    /// Time until the earliest consulted DNS record expires, for scheduling
+    /// re-resolution. `None` when no lookup succeeded.
+    pub min_ttl: Option<Duration>,
+}
+
+/// Recursive `/dnsaddr/` resolver over one shared system resolver.
 ///
-/// - Non-dnsaddr inputs pass through unchanged.
-/// - A shared seen-set deduplicates across the whole batch.
-/// - On resolution failure the original address is kept as fallback.
-pub async fn resolve_all(addrs: impl IntoIterator<Item = &Multiaddr>) -> Vec<Multiaddr> {
-    let mut resolved = Vec::new();
-    let mut seen = HashSet::new();
+/// Build once and share (clones are cheap handles to the same resolver):
+/// lookups are cached per record TTL across calls, so repeated resolution
+/// honours DNS caching instead of re-querying every time.
+#[derive(Clone)]
+pub struct DnsaddrResolver {
+    resolver: TokioResolver,
+}
 
-    for addr in addrs {
-        if !is_dnsaddr(addr) {
-            resolved.push(addr.clone());
-            continue;
-        }
-
-        match resolve_one(addr, &mut seen).await {
-            Ok(addrs) => {
-                debug!(addr = %addr, resolved_count = addrs.len(), "Resolved dnsaddr");
-                resolved.extend(addrs);
-            }
-            Err(e) => {
-                warn!(addr = %addr, error = %e, "Failed to resolve dnsaddr, keeping original");
-                resolved.push(addr.clone());
-            }
-        }
+impl DnsaddrResolver {
+    /// Build from the system DNS configuration.
+    pub fn from_system_conf() -> Result<Self, ResolverError> {
+        Ok(Self {
+            resolver: Resolver::builder_tokio()?.build()?,
+        })
     }
 
-    resolved
+    /// Resolve a batch of multiaddrs, expanding every `/dnsaddr/` entry.
+    ///
+    /// - Non-dnsaddr inputs pass through unchanged.
+    /// - A shared seen-set deduplicates across the whole batch.
+    /// - On resolution failure the original address is kept as fallback.
+    pub async fn resolve_all(&self, addrs: impl IntoIterator<Item = &Multiaddr>) -> Resolution {
+        let mut resolution = Resolution {
+            addrs: Vec::new(),
+            min_ttl: None,
+        };
+        let mut seen = HashSet::new();
+
+        for addr in addrs {
+            if !is_dnsaddr(addr) {
+                resolution.addrs.push(addr.clone());
+                continue;
+            }
+
+            match self
+                .resolve_recursive(addr, &mut seen, &mut resolution.min_ttl, 0)
+                .await
+            {
+                Ok(addrs) => {
+                    debug!(addr = %addr, resolved_count = addrs.len(), "Resolved dnsaddr");
+                    resolution.addrs.extend(addrs);
+                }
+                Err(e) => {
+                    warn!(addr = %addr, error = %e, "Failed to resolve dnsaddr, keeping original");
+                    resolution.addrs.push(addr.clone());
+                }
+            }
+        }
+
+        resolution
+    }
+
+    fn resolve_recursive<'a>(
+        &'a self,
+        addr: &'a Multiaddr,
+        seen: &'a mut HashSet<String>,
+        min_ttl: &'a mut Option<Duration>,
+        depth: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, ResolveError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if depth > MAX_RECURSION_DEPTH {
+                return Err(ResolveError::MaxRecursionDepth);
+            }
+
+            let domain = match extract_domain(addr) {
+                Some(d) => d,
+                None => return Ok(vec![addr.clone()]),
+            };
+
+            let txt_name = format!("_dnsaddr.{}", domain);
+            if seen.contains(&txt_name) {
+                debug!(domain = %domain, "Skipping already-seen dnsaddr domain");
+                return Ok(vec![]);
+            }
+            seen.insert(txt_name.clone());
+
+            debug!(name = %txt_name, "Querying DNS TXT records");
+
+            let txt_records = self
+                .resolver
+                .txt_lookup(&txt_name)
+                .await
+                .map_err(|e| ResolveError::DnsLookup(format!("lookup {txt_name}: {e}")))?;
+
+            // The lookup's validity horizon is the remaining TTL, so a cached
+            // response schedules the next re-resolution at the record's true
+            // expiry rather than a full TTL from now.
+            let ttl = txt_records
+                .valid_until()
+                .saturating_duration_since(Instant::now());
+            *min_ttl = Some(min_ttl.map_or(ttl, |current| current.min(ttl)));
+
+            let mut results = Vec::new();
+
+            for record in txt_records.answers() {
+                let RData::TXT(txt) = &record.data else {
+                    continue;
+                };
+                for bytes in txt.txt_data.iter() {
+                    let txt_str = String::from_utf8_lossy(bytes);
+
+                    if let Some(value) = txt_str.strip_prefix("dnsaddr=") {
+                        debug!(record = %value, "Found dnsaddr TXT record");
+
+                        match value.parse::<Multiaddr>() {
+                            Ok(resolved_addr) => {
+                                let nested = self
+                                    .resolve_recursive(&resolved_addr, seen, min_ttl, depth + 1)
+                                    .await?;
+                                results.extend(nested);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    value = %value,
+                                    error = %e,
+                                    "Failed to parse multiaddr from TXT record"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(results)
+        })
+    }
 }
 
 /// Internal dnsaddr resolution errors.
@@ -57,89 +176,11 @@ enum ResolveError {
     MaxRecursionDepth,
 }
 
-/// Resolve a single dnsaddr, reusing a shared `seen` set.
-async fn resolve_one(
-    addr: &Multiaddr,
-    seen: &mut HashSet<String>,
-) -> Result<Vec<Multiaddr>, ResolveError> {
-    resolve_recursive(addr, seen, 0).await
-}
-
 /// Extract domain from the first `/dnsaddr/{domain}` component.
 fn extract_domain(addr: &Multiaddr) -> Option<String> {
     addr.iter().find_map(|p| match p {
         Protocol::Dnsaddr(domain) => Some(domain.to_string()),
         _ => None,
-    })
-}
-
-fn resolve_recursive<'a>(
-    addr: &'a Multiaddr,
-    seen: &'a mut HashSet<String>,
-    depth: usize,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, ResolveError>> + Send + 'a>,
-> {
-    Box::pin(async move {
-        if depth > MAX_RECURSION_DEPTH {
-            return Err(ResolveError::MaxRecursionDepth);
-        }
-
-        let domain = match extract_domain(addr) {
-            Some(d) => d,
-            None => return Ok(vec![addr.clone()]),
-        };
-
-        let cache_key = format!("_dnsaddr.{}", domain);
-        if seen.contains(&cache_key) {
-            debug!(domain = %domain, "Skipping already-seen dnsaddr domain");
-            return Ok(vec![]);
-        }
-        seen.insert(cache_key.clone());
-
-        let resolver = Resolver::builder_tokio()
-            .map_err(|e| ResolveError::DnsLookup(format!("failed to create resolver: {e}")))?
-            .build()
-            .map_err(|e| ResolveError::DnsLookup(format!("failed to build resolver: {e}")))?;
-
-        let txt_name = format!("_dnsaddr.{}", domain);
-        debug!(name = %txt_name, "Querying DNS TXT records");
-
-        let txt_records = resolver
-            .txt_lookup(&txt_name)
-            .await
-            .map_err(|e| ResolveError::DnsLookup(format!("lookup {txt_name}: {e}")))?;
-
-        let mut results = Vec::new();
-
-        for record in txt_records.answers() {
-            let RData::TXT(txt) = &record.data else {
-                continue;
-            };
-            for bytes in txt.txt_data.iter() {
-                let txt_str = String::from_utf8_lossy(bytes);
-
-                if let Some(value) = txt_str.strip_prefix("dnsaddr=") {
-                    debug!(record = %value, "Found dnsaddr TXT record");
-
-                    match value.parse::<Multiaddr>() {
-                        Ok(resolved_addr) => {
-                            let nested = resolve_recursive(&resolved_addr, seen, depth + 1).await?;
-                            results.extend(nested);
-                        }
-                        Err(e) => {
-                            warn!(
-                                value = %value,
-                                error = %e,
-                                "Failed to parse multiaddr from TXT record"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(results)
     })
 }
 
@@ -182,16 +223,23 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_all_passes_non_dnsaddr_through() {
+        let resolver = DnsaddrResolver::from_system_conf().expect("system DNS configuration");
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
-        let resolved = resolve_all(std::slice::from_ref(&addr)).await;
-        assert_eq!(resolved, vec![addr]);
+        let resolution = resolver.resolve_all(std::slice::from_ref(&addr)).await;
+        assert_eq!(resolution.addrs, vec![addr]);
+        assert_eq!(resolution.min_ttl, None, "no lookup performed, no TTL");
     }
 
     #[tokio::test]
-    async fn resolve_one_returns_non_dnsaddr_unchanged() {
+    async fn resolve_recursive_returns_non_dnsaddr_unchanged() {
+        let resolver = DnsaddrResolver::from_system_conf().expect("system DNS configuration");
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
         let mut seen = HashSet::new();
-        let resolved = resolve_one(&addr, &mut seen).await.unwrap();
+        let mut min_ttl = None;
+        let resolved = resolver
+            .resolve_recursive(&addr, &mut seen, &mut min_ttl, 0)
+            .await
+            .unwrap();
         assert_eq!(resolved, vec![addr]);
     }
 }
