@@ -1,16 +1,21 @@
 //! P2P network CLI arguments and validated configuration.
 
+#[cfg(feature = "cli")]
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 #[cfg(feature = "cli")]
 use clap::Args;
 #[cfg(feature = "cli")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "cli")]
-use vertex_swarm_api::{ConfigAddressKind, ConfigError};
 use vertex_swarm_api::{
-    ConnectionProfile, DEFAULT_MAX_INBOUND_PER_IP, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig,
-    SwarmRoutingConfig,
+    AutonatServerQuota, ConnectionProfile, DEFAULT_MAX_INBOUND_PER_IP, Multiaddr,
+    SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+};
+#[cfg(feature = "cli")]
+use vertex_swarm_api::{
+    ConfigAddressKind, ConfigError, DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE,
+    DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS,
 };
 use vertex_swarm_topology::KademliaConfig;
 #[cfg(feature = "cli")]
@@ -57,6 +62,18 @@ fn default_autonat() -> bool {
 #[cfg(feature = "cli")]
 fn default_mdns() -> bool {
     true
+}
+
+/// Default for the AutoNAT v2 server dial-back rate cap.
+#[cfg(feature = "cli")]
+fn default_autonat_dial_backs_per_minute() -> NonZeroU32 {
+    DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE
+}
+
+/// Default for the AutoNAT v2 server in-flight dial-back cap.
+#[cfg(feature = "cli")]
+fn default_autonat_max_in_flight_dial_backs() -> NonZeroU32 {
+    DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS
 }
 
 /// P2P network CLI arguments.
@@ -126,6 +143,23 @@ pub struct NetworkArgs {
     )]
     #[serde(default = "default_autonat")]
     pub autonat: bool,
+
+    /// Dial-backs per minute the AutoNAT v2 server performs on behalf of
+    /// peers. Bounds the outbound dials the server role can be asked to make.
+    #[arg(
+        long = "network.autonat-dial-backs-per-minute",
+        default_value_t = DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE
+    )]
+    #[serde(default = "default_autonat_dial_backs_per_minute")]
+    pub autonat_dial_backs_per_minute: NonZeroU32,
+
+    /// Dial-backs the AutoNAT v2 server keeps in flight at once.
+    #[arg(
+        long = "network.autonat-max-in-flight-dial-backs",
+        default_value_t = DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS
+    )]
+    #[serde(default = "default_autonat_max_in_flight_dial_backs")]
+    pub autonat_max_in_flight_dial_backs: NonZeroU32,
 
     /// Enable UPnP automatic port mapping on the LAN gateway (disabled by default).
     ///
@@ -208,6 +242,8 @@ impl Default for NetworkArgs {
             nat_addrs_raw: Vec::new(),
             nat_auto: true,
             autonat: true,
+            autonat_dial_backs_per_minute: DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE,
+            autonat_max_in_flight_dial_backs: DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS,
             upnp: false,
             mdns: true,
             connection_profile: None,
@@ -265,6 +301,7 @@ pub struct NetworkConfig<R = KademliaConfig> {
     nat_addrs: Vec<Multiaddr>,
     nat_auto: bool,
     autonat: bool,
+    autonat_server_quota: AutonatServerQuota,
     upnp: bool,
     mdns: bool,
     discovery_enabled: bool,
@@ -324,6 +361,7 @@ impl<R> NetworkConfig<R> {
             nat_addrs: self.nat_addrs,
             nat_auto: self.nat_auto,
             autonat: self.autonat,
+            autonat_server_quota: self.autonat_server_quota,
             upnp: self.upnp,
             mdns: self.mdns,
             discovery_enabled: self.discovery_enabled,
@@ -357,6 +395,7 @@ impl NetworkConfig<KademliaConfig> {
             nat_addrs: Vec::new(),
             nat_auto: false,
             autonat: false,
+            autonat_server_quota: AutonatServerQuota::default(),
             upnp: false,
             mdns: false,
             discovery_enabled: true,
@@ -386,6 +425,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             nat_addrs: Vec::new(),
             nat_auto: true,
             autonat: true,
+            autonat_server_quota: AutonatServerQuota::default(),
             upnp: false,
             mdns: true,
             discovery_enabled: true,
@@ -467,6 +507,10 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             nat_addrs,
             nat_auto: args.nat_auto,
             autonat: args.autonat,
+            autonat_server_quota: AutonatServerQuota {
+                dial_backs_per_minute: args.autonat_dial_backs_per_minute,
+                max_in_flight: args.autonat_max_in_flight_dial_backs,
+            },
             upnp: args.upnp,
             mdns: args.mdns,
             discovery_enabled: !args.disable_discovery,
@@ -527,6 +571,10 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
         self.autonat
     }
 
+    fn autonat_server_quota(&self) -> AutonatServerQuota {
+        self.autonat_server_quota
+    }
+
     fn upnp_enabled(&self) -> bool {
         self.upnp
     }
@@ -583,6 +631,7 @@ mod dial_only_tests {
         assert!(config.trust_local_peers());
         assert_eq!(config.connection_profile(), None);
         assert_eq!(config.agent_version(), None);
+        assert_eq!(config.autonat_server_quota(), AutonatServerQuota::default());
         assert_eq!(config.max_peers(), DEFAULT_MAX_PEERS);
         assert_eq!(
             config.idle_timeout(),
@@ -657,6 +706,46 @@ mod tests {
             NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
         assert!(config.autonat_enabled());
         assert!(!config.upnp_enabled());
+    }
+
+    #[test]
+    fn autonat_server_quota_defaults() {
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert_eq!(config.autonat_server_quota(), AutonatServerQuota::default());
+    }
+
+    #[test]
+    fn autonat_server_quota_flags_parse_and_propagate() {
+        use clap::Parser;
+
+        let parsed = TestCli::try_parse_from([
+            "test",
+            "--network.autonat-dial-backs-per-minute=5",
+            "--network.autonat-max-in-flight-dial-backs=2",
+        ])
+        .expect("quota flags should parse");
+        let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+
+        let quota = config.autonat_server_quota();
+        assert_eq!(quota.dial_backs_per_minute.get(), 5);
+        assert_eq!(quota.max_in_flight.get(), 2);
+    }
+
+    /// A zero budget would deadlock every dial-back request, so the non-zero
+    /// requirement is enforced at parse time; `--network.autonat=false`
+    /// disables the server instead.
+    #[test]
+    fn autonat_server_quota_rejects_zero() {
+        use clap::Parser;
+
+        assert!(
+            TestCli::try_parse_from(["test", "--network.autonat-dial-backs-per-minute=0"]).is_err()
+        );
+        assert!(
+            TestCli::try_parse_from(["test", "--network.autonat-max-in-flight-dial-backs=0"])
+                .is_err()
+        );
     }
 
     #[test]

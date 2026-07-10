@@ -9302,6 +9302,7 @@ dependencies = [
  "vertex-metrics",
  "vertex-net-local",
  "vertex-net-peer-store",
+ "vertex-net-ratelimiter",
  "vertex-node-api",
  "vertex-storage-indexeddb",
  "vertex-swarm-accounting",

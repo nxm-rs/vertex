@@ -115,6 +115,8 @@ vertex-swarm-redistribution = { workspace = true, optional = true }
 # default native client build.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libp2p.workspace = true
+# Bounds the AutoNAT v2 server's dial-backs; native-only like the NAT module.
+vertex-net-ratelimiter.workspace = true
 vertex-swarm-storer-behaviour = { workspace = true, optional = true }
 vertex-swarm-puller = { workspace = true, optional = true }
 
