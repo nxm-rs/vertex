@@ -113,6 +113,22 @@ impl LocalAddressManager {
         nat_addrs: Vec<Multiaddr>,
         reachability: ReachabilityTracker,
     ) -> Self {
+        // A configured `/p2p-circuit` proves relay reachability, not public
+        // reachability, so it must not reach any direct-address consumer:
+        // is_reachable, the external-address emission that feeds identify, the
+        // signed handshake record, or hive gossip. Drop it at intake so every
+        // nat_addrs reader stays circuit-free; a relay reservation is a runtime
+        // signal (on_external_addr_confirmed), not static operator config.
+        let nat_addrs = nat_addrs
+            .into_iter()
+            .filter(|addr| {
+                if is_relayed(addr) {
+                    warn!(%addr, "Ignoring configured relayed circuit NAT address");
+                    return false;
+                }
+                true
+            })
+            .collect();
         Self {
             local,
             nat_addrs,
@@ -959,6 +975,20 @@ mod tests {
         let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
         assert!(!has_circuit(&addrs));
         assert!(addrs.iter().any(|a| a.to_string().contains("203.0.113.50")));
+    }
+
+    #[test]
+    fn test_lone_configured_circuit_nat_addr_is_not_reachability() {
+        // A relay reservation is not public reachability, so a node whose only
+        // configured address is a circuit must not report itself reachable,
+        // advertise it, or expose it as an external address (the identify
+        // channel). The circuit is dropped at intake, so nat_addrs is empty.
+        let manager = create_manager(vec![circuit_addr(PeerId::random())]);
+
+        assert!(!manager.is_reachable());
+        assert!(!manager.has_confirmed_reachability());
+        assert!(manager.nat_addrs().is_empty());
+        assert!(!has_circuit(&manager.all_addresses()));
     }
 
     #[test]
