@@ -1,7 +1,7 @@
 //! NAT traversal and LAN discovery for native node types.
 //!
 //! [`NatBehaviour`] composes AutoNAT v2 (client + server), UPnP, a circuit
-//! relay v2 server, and mDNS into a single sub-behaviour so the node
+//! relay v2 server, DCUtR, and mDNS into a single sub-behaviour so the node
 //! composites carry one platform-neutral field. The circuit relay v2 client
 //! ([`RelayClientBehaviour`]) is a sibling composite field rather than a
 //! `NatBehaviour` member because the swarm transport assembly constructs it
@@ -11,6 +11,7 @@
 //! signatures over no-op behaviours.
 
 use libp2p::autonat::v2 as autonat;
+use libp2p::dcutr;
 use libp2p::mdns;
 use libp2p::multiaddr::Protocol;
 use libp2p::relay;
@@ -31,8 +32,8 @@ pub(crate) type RelayClientBehaviour = relay::client::Behaviour;
 /// Events from the relay-client behaviour.
 pub(crate) type RelayClientEvent = relay::client::Event;
 
-/// NAT traversal (AutoNAT v2, UPnP), the circuit relay v2 server, and LAN
-/// discovery (mDNS), composed as one sub-behaviour so the node composites
+/// NAT traversal (AutoNAT v2, UPnP, DCUtR), the circuit relay v2 server, and
+/// LAN discovery (mDNS), composed as one sub-behaviour so the node composites
 /// carry a single platform-neutral field.
 ///
 /// AutoNAT v2 (client + server) and UPnP run in the same swarm as identify, so
@@ -45,6 +46,7 @@ pub(crate) struct NatBehaviour {
     autonat_client: Toggle<autonat::client::Behaviour>,
     autonat_server: Toggle<autonat::server::Behaviour>,
     relay_server: Toggle<relay::Behaviour>,
+    dcutr: Toggle<dcutr::Behaviour>,
     upnp: Toggle<upnp::tokio::Behaviour>,
     mdns: Toggle<mdns::tokio::Behaviour>,
 }
@@ -57,9 +59,13 @@ impl NatBehaviour {
     /// the bootnode and storer node types, which listen on publicly reachable
     /// multiaddrs; reservations and circuits are bounded by the libp2p relay
     /// defaults (reservation and circuit caps, per-peer and per-IP rate
-    /// limits, circuit duration and byte limits). mDNS needs the local
-    /// [`PeerId`], so the behaviour is built where the swarm's public key is
-    /// available.
+    /// limits, circuit duration and byte limits). DCUtR runs on the client and
+    /// storer node types, which may sit behind a NAT: once a peer holds a
+    /// relayed connection through the relay-client transport, it coordinates
+    /// the simultaneous-open hole punch that upgrades the circuit to a direct
+    /// connection. A bootnode is publicly reachable and never holds a relayed
+    /// connection, so it carries no DCUtR. mDNS needs the local [`PeerId`], so
+    /// the behaviour is built where the swarm's public key is available.
     pub(crate) fn from_config(
         config: &impl SwarmNetworkConfig,
         local_peer_id: PeerId,
@@ -67,6 +73,7 @@ impl NatBehaviour {
     ) -> Self {
         let autonat = config.autonat_enabled();
         let relay_server = matches!(node_type, SwarmNodeType::Bootnode | SwarmNodeType::Storer);
+        let dcutr = matches!(node_type, SwarmNodeType::Client | SwarmNodeType::Storer);
         Self {
             autonat_client: Toggle::from(autonat.then(autonat::client::Behaviour::default)),
             autonat_server: Toggle::from(autonat.then(autonat::server::Behaviour::default)),
@@ -74,6 +81,7 @@ impl NatBehaviour {
                 relay_server
                     .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
             ),
+            dcutr: Toggle::from(dcutr.then(|| dcutr::Behaviour::new(local_peer_id))),
             upnp: Toggle::from(config.upnp_enabled().then(upnp::tokio::Behaviour::default)),
             mdns: build_mdns_toggle(config.mdns_enabled(), local_peer_id),
         }
@@ -85,6 +93,7 @@ pub(crate) enum NatEvent {
     AutonatClient(autonat::client::Event),
     AutonatServer(autonat::server::Event),
     Relay(relay::Event),
+    Dcutr(dcutr::Event),
     Upnp(upnp::Event),
     Mdns(mdns::Event),
 }
@@ -104,6 +113,12 @@ impl From<autonat::server::Event> for NatEvent {
 impl From<relay::Event> for NatEvent {
     fn from(event: relay::Event) -> Self {
         NatEvent::Relay(event)
+    }
+}
+
+impl From<dcutr::Event> for NatEvent {
+    fn from(event: dcutr::Event) -> Self {
+        NatEvent::Dcutr(event)
     }
 }
 
@@ -129,6 +144,7 @@ pub(crate) fn handle_nat_event<I: SwarmIdentity + Clone>(
         NatEvent::AutonatClient(event) => handle_autonat_client_event(event),
         NatEvent::AutonatServer(event) => handle_autonat_server_event(topology, event),
         NatEvent::Relay(event) => handle_relay_event(event),
+        NatEvent::Dcutr(event) => handle_dcutr_event(event),
         NatEvent::Upnp(event) => handle_upnp_event(event),
         NatEvent::Mdns(event) => handle_mdns_event(local_peer_id, topology, event),
     }
@@ -292,6 +308,31 @@ fn handle_relay_event(event: relay::Event) {
     }
 }
 
+/// Handle a DCUtR event: the outcome of a hole punch attempted after a peer
+/// connected over a relayed circuit, surfaced as counters and debug logs only.
+/// On success the direct connection replaces the circuit for new substreams;
+/// on failure the relayed connection stays up, so no peer state changes here.
+fn handle_dcutr_event(event: dcutr::Event) {
+    match event.result {
+        Ok(connection_id) => {
+            metrics::counter!("swarm.dcutr.holepunch_success").increment(1);
+            debug!(
+                remote_peer_id = %event.remote_peer_id,
+                %connection_id,
+                "Hole punch succeeded, direct connection established"
+            );
+        }
+        Err(error) => {
+            metrics::counter!("swarm.dcutr.holepunch_failure").increment(1);
+            debug!(
+                remote_peer_id = %event.remote_peer_id,
+                %error,
+                "Hole punch failed, keeping the relayed connection"
+            );
+        }
+    }
+}
+
 /// Handle a circuit relay v2 client event: reservation and relayed-circuit
 /// lifecycle, surfaced as counters and debug logs only.
 pub(crate) fn handle_relay_client_event(event: RelayClientEvent) {
@@ -385,6 +426,23 @@ mod tests {
                 nat.relay_server.is_enabled(),
                 enabled,
                 "relay server toggle for {node_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dcutr_follows_node_type() {
+        let config = TestConfig::default();
+        for (node_type, enabled) in [
+            (SwarmNodeType::Bootnode, false),
+            (SwarmNodeType::Storer, true),
+            (SwarmNodeType::Client, true),
+        ] {
+            let nat = NatBehaviour::from_config(&config, random_peer_id(), node_type);
+            assert_eq!(
+                nat.dcutr.is_enabled(),
+                enabled,
+                "dcutr toggle for {node_type:?}"
             );
         }
     }
