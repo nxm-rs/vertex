@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use strum::IntoEnumIterator;
 use tracing::{debug, info, warn};
 use vertex_net_local::{
-    AddressScope, IpCapability, LocalCapabilities, advertise_filter, classify_multiaddr,
-    family_order, transport_order,
+    AddressScope, IpCapability, LocalCapabilities, TransportRequirement, advertise_filter,
+    classify_multiaddr, family_order, transport_order,
 };
 use vertex_swarm_net_handshake::AddressProvider;
 
@@ -22,6 +22,23 @@ fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
     addr.iter()
         .filter(|p| !matches!(p, Protocol::P2p(_)))
         .collect()
+}
+
+/// Drop a trailing `/p2p/..` component only. Unlike [`strip_peer_id`] this
+/// preserves an inner relay identity, so a circuit address keeps the relay it
+/// routes through.
+fn strip_trailing_peer_id(addr: &Multiaddr) -> Multiaddr {
+    let mut addr = addr.clone();
+    if matches!(addr.iter().last(), Some(Protocol::P2p(_))) {
+        addr.pop();
+    }
+    addr
+}
+
+/// A `/p2p-circuit` address is reachable only through a relay client, so it
+/// must never ride the handshake record or hive gossip.
+fn is_relayed(addr: &Multiaddr) -> bool {
+    TransportRequirement::of(addr) == TransportRequirement::Relay
 }
 
 /// Total order within a trust tier: IPv6 before IPv4, TCP before QUIC within
@@ -70,6 +87,11 @@ pub struct LocalAddressManager {
     /// so a node whose only public path was a mapping that expired stops
     /// reporting itself reachable.
     confirmed_external_addrs: Mutex<HashSet<Multiaddr>>,
+    /// Confirmed relayed circuit addresses (relay reservations). Kept apart
+    /// from the direct external set: a circuit proves relay reachability, not
+    /// public reachability, and is served only through
+    /// [`Self::relayed_addresses`], never the handshake record.
+    relayed_addrs: Mutex<HashSet<Multiaddr>>,
     /// Per-peer reachability bridge. AutoNAT v2 dial-back confirmations
     /// forwarded via [`LocalAddressManager::on_autonat_peer_confirmed`] flow
     /// into this tracker so the kademlia routing layer can score peers by
@@ -97,6 +119,7 @@ impl LocalAddressManager {
             local_peer_id: OnceLock::new(),
             observed_reachable: AtomicBool::new(false),
             confirmed_external_addrs: Mutex::new(HashSet::new()),
+            relayed_addrs: Mutex::new(HashSet::new()),
             reachability,
         }
     }
@@ -187,6 +210,12 @@ impl LocalAddressManager {
 
     /// Record an observed address; sets the reachability flag if the observed address is public-scope.
     pub fn on_observed_addr(&self, addr: &Multiaddr) {
+        // An observation through a circuit carries the relay's IP, not ours,
+        // so it says nothing about our public reachability.
+        if is_relayed(addr) {
+            return;
+        }
+
         // Strip /p2p/ suffix if present for classification
         let addr_for_classify = strip_peer_id(addr);
 
@@ -205,6 +234,19 @@ impl LocalAddressManager {
     /// public address is tracked (reversibly) and enables dials to other public
     /// peers.
     pub fn on_external_addr_confirmed(&self, addr: &Multiaddr) {
+        // A relayed circuit address (relay reservation) is tracked apart: it
+        // is not public reachability and never enters the advertised set.
+        if is_relayed(addr) {
+            if self
+                .relayed_addrs
+                .lock()
+                .insert(strip_trailing_peer_id(addr))
+            {
+                debug!(%addr, "Confirmed relayed circuit address");
+            }
+            return;
+        }
+
         let addr_for_classify = strip_peer_id(addr);
 
         if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
@@ -224,6 +266,17 @@ impl LocalAddressManager {
     /// signal clears; the node may still be public via static NAT addresses,
     /// public listen addresses, or the weak observed signal.
     pub fn on_external_addr_expired(&self, addr: &Multiaddr) {
+        if is_relayed(addr) {
+            if self
+                .relayed_addrs
+                .lock()
+                .remove(&strip_trailing_peer_id(addr))
+            {
+                debug!(%addr, "Relayed circuit address expired");
+            }
+            return;
+        }
+
         let addr_for_classify = strip_peer_id(addr);
         if self
             .confirmed_external_addrs
@@ -255,6 +308,11 @@ impl LocalAddressManager {
     /// order also decides which addresses survive the handshake's pre-encoding
     /// bound, so the operator-configured tier is never truncated in favour of
     /// an assumed one and a family's TCP leaf outlives its QUIC siblings.
+    ///
+    /// Relayed `/p2p-circuit` addresses never enter this set: it feeds the
+    /// signed handshake record and hive gossip, whose consumers dial direct
+    /// suites only. Relay-capable consumers read
+    /// [`Self::relayed_addresses`] instead.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
@@ -270,6 +328,7 @@ impl LocalAddressManager {
                 addrs.sort_by(tier_order);
                 addrs
             })
+            .filter(|addr| !is_relayed(addr))
             .filter(|addr| seen.insert(addr.clone()))
             .collect();
 
@@ -303,6 +362,17 @@ impl LocalAddressManager {
                 self.local.addresses_for_scope(peer_scope, Some(peer_addr))
             }
         }
+    }
+
+    /// Confirmed relayed circuit addresses, `/p2p/{local_peer_id}` appended,
+    /// for consumers that dial through a relay client.
+    ///
+    /// Kept out of [`Self::addresses_for_peer`] and therefore out of the
+    /// signed handshake record and hive gossip.
+    pub fn relayed_addresses(&self) -> Vec<Multiaddr> {
+        let mut addrs: Vec<Multiaddr> = self.relayed_addrs.lock().iter().cloned().collect();
+        addrs.sort_by(tier_order);
+        self.with_peer_id(addrs)
     }
 
     /// Append /p2p/{local_peer_id} to addresses if local PeerId is set.
@@ -807,6 +877,99 @@ mod tests {
 
         assert!(manager.is_reachable());
         assert!(manager.has_confirmed_reachability());
+    }
+
+    fn circuit_addr(relay: PeerId) -> Multiaddr {
+        parse_addr(&format!(
+            "/ip4/203.0.113.9/tcp/1634/p2p/{relay}/p2p-circuit"
+        ))
+    }
+
+    fn has_circuit(addrs: &[Multiaddr]) -> bool {
+        addrs
+            .iter()
+            .any(|a| a.iter().any(|p| matches!(p, Protocol::P2pCircuit)))
+    }
+
+    #[test]
+    fn test_relayed_confirmed_addr_never_advertised() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let relayed = circuit_addr(PeerId::random());
+        manager.on_external_addr_confirmed(&relayed);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
+        assert!(!has_circuit(&addrs));
+        // The relayed set holds it for relay-capable consumers.
+        assert_eq!(manager.relayed_addresses(), vec![relayed]);
+    }
+
+    #[test]
+    fn test_relayed_confirmed_addr_is_not_public_reachability() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        manager.on_external_addr_confirmed(&circuit_addr(PeerId::random()));
+
+        assert!(!manager.has_confirmed_reachability());
+        assert!(!manager.is_reachable());
+    }
+
+    #[test]
+    fn test_relayed_addr_expiry_removes_it() {
+        let manager = create_manager(vec![]);
+        let relayed = circuit_addr(PeerId::random());
+
+        manager.on_external_addr_confirmed(&relayed);
+        assert_eq!(manager.relayed_addresses().len(), 1);
+
+        manager.on_external_addr_expired(&relayed);
+        assert!(manager.relayed_addresses().is_empty());
+    }
+
+    #[test]
+    fn test_relayed_addresses_keep_relay_identity_and_append_ours() {
+        let manager = create_manager(vec![]);
+        let local_id = PeerId::random();
+        manager.register_local_peer_id(local_id);
+
+        let relay = PeerId::random();
+        // Confirmation may arrive with our own trailing /p2p/ component; it is
+        // normalized away and re-appended on serve.
+        let confirmed = circuit_addr(relay).with(Protocol::P2p(local_id));
+        manager.on_external_addr_confirmed(&confirmed);
+
+        let addrs = manager.relayed_addresses();
+        assert_eq!(
+            addrs,
+            vec![circuit_addr(relay).with(Protocol::P2p(local_id))]
+        );
+        // The inner relay identity survives normalization.
+        assert!(addrs[0].to_string().contains(&relay.to_string()));
+    }
+
+    #[test]
+    fn test_configured_circuit_nat_addr_not_advertised() {
+        let relayed = circuit_addr(PeerId::random());
+        let manager = create_manager(vec![relayed, parse_addr("/ip4/203.0.113.50/tcp/1634")]);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
+        assert!(!has_circuit(&addrs));
+        assert!(addrs.iter().any(|a| a.to_string().contains("203.0.113.50")));
+    }
+
+    #[test]
+    fn test_observed_relayed_addr_does_not_flip_reachable() {
+        let manager = create_manager(vec![]);
+
+        // Observed through a circuit: the public IP belongs to the relay.
+        manager.on_observed_addr(&circuit_addr(PeerId::random()));
+
+        assert!(!manager.is_reachable());
+        assert!(!manager.has_confirmed_reachability());
     }
 
     #[test]

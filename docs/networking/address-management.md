@@ -61,6 +61,8 @@ Advertised addresses are ordered by the `AddressTrust` tier of their source, hig
 
 The tier order also decides what survives the handshake's pre-encoding bound (see "What we put in our signed record" below): bounding truncates from the low-trust tail.
 
+Relayed `/p2p-circuit` addresses (classified `TransportRequirement::Relay` in `vertex-net-local`) are excluded from every tier: a confirmed circuit address (a relay reservation) is tracked in its own set, does not count as public reachability, and is served only through `LocalAddressManager::relayed_addresses` for consumers that dial through a relay client. The signed handshake record and hive gossip never carry a circuit address, since their consumers dial direct suites only.
+
 ### Scope-Based Selection
 
 When selecting addresses for a peer during handshake:
