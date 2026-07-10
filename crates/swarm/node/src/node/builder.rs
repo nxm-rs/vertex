@@ -272,11 +272,13 @@ where
 /// Assemble the libp2p [`Swarm`] for native targets.
 ///
 /// With no override this is a TCP transport with DNS resolution, Noise
-/// authentication, and Yamux multiplexing; production always takes this path,
-/// so its bytes are unchanged. A [`TransportOverride`] (tests only) replaces
-/// the TCP stack wholesale with the supplied transport, which is why
+/// authentication, and Yamux multiplexing, plus a QUIC v1 transport
+/// (self-securing and self-multiplexing) that listens and dials next to it;
+/// TCP with Noise and Yamux stays the primary suite for network-wide interop.
+/// A [`TransportOverride`] (tests only) replaces the whole stack with the
+/// supplied transport, which is why
 /// [`TransportCapability::platform`](vertex_net_local::TransportCapability::platform)
-/// keeps mirroring the default TCP stack rather than the override.
+/// keeps mirroring the default TCP+QUIC stack rather than the override.
 #[cfg(not(target_arch = "wasm32"))]
 fn build_swarm<B, F>(
     idle_timeout: Duration,
@@ -308,6 +310,7 @@ where
             noise::Config::new,
             yamux::Config::default,
         )?
+        .with_quic()
         .with_dns()?
         .with_behaviour(behaviour_builder)?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))

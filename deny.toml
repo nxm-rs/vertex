@@ -36,4 +36,7 @@ allow-git = [
     "https://github.com/nxm-rs/nectar",
     # rust-libp2p fork carrying the websocket-websys browser flush/send fix.
     "https://github.com/nxm-rs/rust-libp2p",
+    # quinn fork the libp2p fork's quic crates build against; pinned in the
+    # workspace `[patch.crates-io]` table.
+    "https://github.com/mfw78/quinn",
 ]

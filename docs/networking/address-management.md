@@ -25,7 +25,7 @@ Classifies IP addresses into scopes for smart address selection:
 Whether an address is dialable has two independent halves, combined in `DialCapability`:
 
 - **IP half** (`IpCapability`): derived from the node's own listen addresses. A dial-only node (no listen addresses configured, including every `ClientLauncher` node and the browser client) never registers a listener, so its capability is pinned to dual-stack instead: an outbound-only node dials whatever address family its host stack routes.
-- **Transport half** (`TransportCapability`): what the assembled libp2p stack can open, mirroring the swarm assembly in `vertex-swarm-node`. Native builds dial TCP (with DNS resolution) and no websockets; the browser build dials secure websockets only (`/dns4/<host>/../tls/ws` and the AutoTLS `/ip4/../tls/sni/<host>/ws` shapes).
+- **Transport half** (`TransportCapability`): what the assembled libp2p stack can open, mirroring the swarm assembly in `vertex-swarm-node`. Native builds dial TCP (with DNS resolution) and QUIC v1, and no websockets; the browser build dials secure websockets only (`/dns4/<host>/../tls/ws` and the AutoTLS `/ip4/../tls/sni/<host>/ws` shapes).
 
 `DialCapability` is applied in two places, which therefore can never disagree:
 

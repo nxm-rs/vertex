@@ -128,15 +128,17 @@ mod tests {
 
         let network = config.network_config().expect("default config is valid");
         let v6: Multiaddr = "/ip6/::/tcp/1634".parse().expect("valid multiaddr");
-        assert_eq!(network.listen_addrs().len(), 2);
+        let v6_quic: Multiaddr = "/ip6/::/udp/1634/quic-v1".parse().expect("valid multiaddr");
+        assert_eq!(network.listen_addrs().len(), 4);
         assert!(network.listen_addrs().contains(&v6));
+        assert!(network.listen_addrs().contains(&v6_quic));
     }
 
     #[test]
-    fn client_keeps_the_single_ipv4_listener() {
+    fn client_keeps_the_ipv4_listener_pair() {
         let config = ProtocolConfig::default();
         let network = config.network_config().expect("default config is valid");
-        assert_eq!(network.listen_addrs().len(), 1);
+        assert_eq!(network.listen_addrs().len(), 2);
     }
 
     #[test]

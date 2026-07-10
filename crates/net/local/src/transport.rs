@@ -23,13 +23,16 @@ pub enum TransportRequirement {
     /// TLS websocket: `/tls/ws` (with or without `/sni`) or the legacy
     /// `/wss` form.
     SecureWebsocket,
+    /// QUIC v1 over UDP (`/udp/../quic-v1`), without a `/webtransport`
+    /// suffix.
+    Quic,
     /// In-process memory transport (`/memory/<port>`). Dialable only by a node
     /// that has a channel-based memory transport injected; the default TCP and
     /// websocket stacks carry none, so a self-signed record advertising one is
     /// rejected pre-dial rather than admitted for a dial that always fails.
     Memory,
-    /// Anything else (QUIC, relay-only); dialable by no transport stack vertex
-    /// currently assembles.
+    /// Anything else (legacy draft QUIC, WebTransport, relay-only); dialable
+    /// by no transport stack vertex currently assembles.
     Other,
 }
 
@@ -42,12 +45,17 @@ impl TransportRequirement {
     pub fn of(addr: &Multiaddr) -> Self {
         let mut saw_tcp = false;
         let mut saw_tls = false;
+        let mut saw_quic = false;
 
         for proto in addr.iter() {
             match proto {
                 Protocol::Memory(_) => return Self::Memory,
                 Protocol::Tcp(_) => saw_tcp = true,
                 Protocol::Tls => saw_tls = true,
+                Protocol::QuicV1 => saw_quic = true,
+                // A raw QUIC dialer cannot complete the WebTransport
+                // handshake the address demands, so the suffix dominates.
+                Protocol::WebTransport => return Self::Other,
                 Protocol::Wss(_) => return Self::SecureWebsocket,
                 Protocol::Ws(_) => {
                     return if saw_tls {
@@ -60,21 +68,29 @@ impl TransportRequirement {
             }
         }
 
-        if saw_tcp { Self::Tcp } else { Self::Other }
+        if saw_quic {
+            Self::Quic
+        } else if saw_tcp {
+            Self::Tcp
+        } else {
+            Self::Other
+        }
     }
 }
 
 /// The transport suites the local node's assembled libp2p stack can dial.
 ///
 /// Mirrors the swarm assembly in `vertex-swarm-node`: the native stack is
-/// TCP with DNS resolution and no websocket client; the browser stack is
-/// `libp2p-websocket-websys`, which dials secure websockets only (both the
-/// `/dns4/<host>/../tls/ws` and the AutoTLS `/ip4/../tls/sni/<host>/ws`
-/// shapes).
+/// TCP with DNS resolution plus a QUIC v1 dialer and no websocket client;
+/// the browser stack is `libp2p-websocket-websys`, which dials secure
+/// websockets only (both the `/dns4/<host>/../tls/ws` and the AutoTLS
+/// `/ip4/../tls/sni/<host>/ws` shapes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportCapability {
     /// TCP with DNS resolution; no websocket client.
     Tcp,
+    /// TCP with DNS resolution plus a QUIC v1 dialer; no websocket client.
+    TcpQuic,
     /// Secure websockets only.
     SecureWebsocket,
 }
@@ -83,7 +99,7 @@ impl TransportCapability {
     /// The capability matching the swarm this build target assembles.
     #[cfg(not(target_arch = "wasm32"))]
     pub const fn platform() -> Self {
-        Self::Tcp
+        Self::TcpQuic
     }
 
     /// The capability matching the swarm this build target assembles.
@@ -94,15 +110,19 @@ impl TransportCapability {
 
     /// Whether this stack can dial `addr` at the transport layer.
     ///
-    /// Covers only the statically assembled suites (TCP or secure websockets).
-    /// A `/memory/<port>` address is never dialable through the platform stack;
-    /// memory admission is a property of the combined
+    /// Covers only the statically assembled suites (TCP, QUIC, or secure
+    /// websockets). A `/memory/<port>` address is never dialable through the
+    /// platform stack; memory admission is a property of the combined
     /// [`DialCapability::allow_memory`] bit, set only when an in-process memory
     /// transport is injected.
     pub fn can_dial(&self, addr: &Multiaddr) -> bool {
         matches!(
             (self, TransportRequirement::of(addr)),
             (Self::Tcp, TransportRequirement::Tcp)
+                | (
+                    Self::TcpQuic,
+                    TransportRequirement::Tcp | TransportRequirement::Quic
+                )
                 | (Self::SecureWebsocket, TransportRequirement::SecureWebsocket)
         )
     }
@@ -180,7 +200,16 @@ mod tests {
                 TransportRequirement::SecureWebsocket,
             ),
             ("/ip4/1.2.3.4/tcp/1634/ws", TransportRequirement::Websocket),
-            ("/ip4/1.2.3.4/udp/1634/quic-v1", TransportRequirement::Other),
+            ("/ip4/1.2.3.4/udp/1634/quic-v1", TransportRequirement::Quic),
+            (
+                "/ip6/2001:db8::1/udp/1634/quic-v1",
+                TransportRequirement::Quic,
+            ),
+            ("/ip4/1.2.3.4/udp/1634/quic", TransportRequirement::Other),
+            (
+                "/ip4/1.2.3.4/udp/1634/quic-v1/webtransport",
+                TransportRequirement::Other,
+            ),
         ];
         for (s, expected) in cases {
             assert_eq!(TransportRequirement::of(&addr(s)), expected, "{s}");
@@ -198,10 +227,14 @@ mod tests {
         );
         let tcp = addr("/ip4/1.2.3.4/tcp/1634/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg");
         assert_eq!(TransportRequirement::of(&tcp), TransportRequirement::Tcp);
+        let quic = addr(
+            "/ip4/1.2.3.4/udp/1634/quic-v1/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg",
+        );
+        assert_eq!(TransportRequirement::of(&quic), TransportRequirement::Quic);
     }
 
     #[test]
-    fn tcp_stack_rejects_websockets() {
+    fn tcp_stack_rejects_websockets_and_quic() {
         let cap = TransportCapability::Tcp;
         assert!(cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
         assert!(cap.can_dial(&addr("/dns4/bee.example.org/tcp/1634")));
@@ -209,10 +242,26 @@ mod tests {
             "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws"
         )));
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634/ws")));
+        assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic-v1")));
     }
 
     #[test]
-    fn secure_websocket_stack_rejects_tcp_and_plain_ws() {
+    fn tcp_quic_stack_dials_both_but_rejects_websockets() {
+        let cap = TransportCapability::TcpQuic;
+        assert!(cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
+        assert!(cap.can_dial(&addr("/dns4/bee.example.org/tcp/1634")));
+        assert!(cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic-v1")));
+        assert!(cap.can_dial(&addr("/ip6/2001:db8::1/udp/1634/quic-v1")));
+        assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic")));
+        assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic-v1/webtransport")));
+        assert!(!cap.can_dial(&addr(
+            "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws"
+        )));
+        assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634/ws")));
+    }
+
+    #[test]
+    fn secure_websocket_stack_rejects_tcp_plain_ws_and_quic() {
         let cap = TransportCapability::SecureWebsocket;
         assert!(cap.can_dial(&addr(
             "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws"
@@ -220,6 +269,7 @@ mod tests {
         assert!(cap.can_dial(&addr("/dns4/host.example.org/tcp/443/tls/ws")));
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634/ws")));
+        assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/udp/1634/quic-v1")));
     }
 
     #[test]
@@ -228,6 +278,7 @@ mod tests {
         assert_eq!(TransportRequirement::of(&mem), TransportRequirement::Memory);
         // The platform transport half never admits memory on its own.
         assert!(!TransportCapability::Tcp.can_dial(&mem));
+        assert!(!TransportCapability::TcpQuic.can_dial(&mem));
         assert!(!TransportCapability::SecureWebsocket.can_dial(&mem));
 
         // A /p2p/ suffix does not change the classification.
