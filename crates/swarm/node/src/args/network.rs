@@ -361,21 +361,26 @@ impl<R> NetworkConfig<R> {
     }
 
     /// Widen an untouched default listen set to dual-stack by adding the IPv6
-    /// wildcard listener next to the stock IPv4 one. No-op when any listen
-    /// address or the legacy address/port pair was configured explicitly, so
-    /// operator configuration always wins.
+    /// wildcard TCP and QUIC listeners next to the stock IPv4 pair. No-op when
+    /// any listen address or the legacy address/port pair was configured
+    /// explicitly, so operator configuration always wins.
     #[allow(clippy::expect_used)]
     pub fn apply_dual_stack_listen_default(&mut self) {
         if !self.listen_defaulted {
             return;
         }
         // Widening consumes the stock-default status, so a repeat call is a
-        // no-op rather than appending a duplicate listener.
+        // no-op rather than appending duplicate listeners.
         self.listen_defaulted = false;
         let v6: Multiaddr = format!("/ip6/{DEFAULT_LISTEN_ADDR_V6}/tcp/{DEFAULT_P2P_PORT}")
             .parse()
             .expect("default IPv6 listen address is valid");
         self.listen_addrs.push(v6);
+        let v6_quic: Multiaddr =
+            format!("/ip6/{DEFAULT_LISTEN_ADDR_V6}/udp/{DEFAULT_P2P_PORT}/quic-v1")
+                .parse()
+                .expect("default IPv6 QUIC listen address is valid");
+        self.listen_addrs.push(v6_quic);
     }
 }
 
@@ -413,8 +418,14 @@ impl Default for NetworkConfig<KademliaConfig> {
             format!("/ip4/{}/tcp/{}", DEFAULT_LISTEN_ADDR, DEFAULT_P2P_PORT)
                 .parse()
                 .expect("default listen address is valid");
+        let quic_listen_addr: Multiaddr = format!(
+            "/ip4/{}/udp/{}/quic-v1",
+            DEFAULT_LISTEN_ADDR, DEFAULT_P2P_PORT
+        )
+        .parse()
+        .expect("default QUIC listen address is valid");
         Self {
-            listen_addrs: vec![listen_addr],
+            listen_addrs: vec![listen_addr, quic_listen_addr],
             listen_defaulted: true,
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
@@ -448,15 +459,24 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
         }
 
         // Explicit multiaddrs win; the legacy address/port pair is a
-        // convenience that expands to exactly one IPv4 entry.
+        // convenience that expands to an IPv4 TCP listener and a QUIC one on
+        // the same port.
         let listen_addrs: Vec<Multiaddr> = if args.listen_addrs_raw.is_empty() {
             let listen_addr_str = format!("/ip4/{}/tcp/{}", args.addr, args.port);
+            let quic_listen_addr_str = format!("/ip4/{}/udp/{}/quic-v1", args.addr, args.port);
             vec![
                 listen_addr_str
                     .parse()
                     .map_err(|e| ConfigError::InvalidAddress {
                         kind: ConfigAddressKind::ListenAddr,
                         addr: listen_addr_str,
+                        source: e,
+                    })?,
+                quic_listen_addr_str
+                    .parse()
+                    .map_err(|e| ConfigError::InvalidAddress {
+                        kind: ConfigAddressKind::ListenAddr,
+                        addr: quic_listen_addr_str,
                         source: e,
                     })?,
             ]
@@ -916,15 +936,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pair_expands_to_one_entry() {
+    fn legacy_pair_expands_to_a_tcp_and_quic_pair() {
         let args = NetworkArgs {
             port: 1700,
             ..Default::default()
         };
         let config = NetworkConfig::try_from(&args).expect("valid args");
 
-        let expected: Multiaddr = "/ip4/0.0.0.0/tcp/1700".parse().expect("valid multiaddr");
-        assert_eq!(config.listen_addrs(), std::slice::from_ref(&expected));
+        let tcp: Multiaddr = "/ip4/0.0.0.0/tcp/1700".parse().expect("valid multiaddr");
+        let quic: Multiaddr = "/ip4/0.0.0.0/udp/1700/quic-v1"
+            .parse()
+            .expect("valid multiaddr");
+        assert_eq!(config.listen_addrs(), [tcp, quic]);
     }
 
     #[test]
@@ -936,15 +959,25 @@ mod tests {
         assert!(NetworkConfig::try_from(&args).is_err());
     }
 
+    #[allow(clippy::expect_used)]
+    fn default_listen_set_widened() -> [Multiaddr; 4] {
+        [
+            "/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr"),
+            "/ip4/0.0.0.0/udp/1634/quic-v1"
+                .parse()
+                .expect("valid multiaddr"),
+            "/ip6/::/tcp/1634".parse().expect("valid multiaddr"),
+            "/ip6/::/udp/1634/quic-v1".parse().expect("valid multiaddr"),
+        ]
+    }
+
     #[test]
     fn dual_stack_default_widens_the_untouched_listen_set() {
         let mut config =
             NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
         config.apply_dual_stack_listen_default();
 
-        let v4: Multiaddr = "/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr");
-        let v6: Multiaddr = "/ip6/::/tcp/1634".parse().expect("valid multiaddr");
-        assert_eq!(config.listen_addrs(), [v4, v6]);
+        assert_eq!(config.listen_addrs(), default_listen_set_widened());
     }
 
     #[test]
@@ -954,9 +987,7 @@ mod tests {
         config.apply_dual_stack_listen_default();
         config.apply_dual_stack_listen_default();
 
-        let v4: Multiaddr = "/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr");
-        let v6: Multiaddr = "/ip6/::/tcp/1634".parse().expect("valid multiaddr");
-        assert_eq!(config.listen_addrs(), [v4, v6]);
+        assert_eq!(config.listen_addrs(), default_listen_set_widened());
     }
 
     #[test]
@@ -970,14 +1001,15 @@ mod tests {
         config.apply_dual_stack_listen_default();
         assert_eq!(config.listen_addrs().len(), 1);
 
-        // So does a changed legacy address/port pair.
+        // So does a changed legacy address/port pair: the pair still expands
+        // to its own TCP and QUIC entries but is not widened to IPv6.
         let args = NetworkArgs {
             port: 1700,
             ..Default::default()
         };
         let mut config = NetworkConfig::try_from(&args).expect("valid args");
         config.apply_dual_stack_listen_default();
-        assert_eq!(config.listen_addrs().len(), 1);
+        assert_eq!(config.listen_addrs().len(), 2);
     }
 
     #[test]
@@ -986,7 +1018,7 @@ mod tests {
             NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
         let mut swapped = config.with_routing(KademliaConfig::default());
         swapped.apply_dual_stack_listen_default();
-        assert_eq!(swapped.listen_addrs().len(), 2);
+        assert_eq!(swapped.listen_addrs().len(), 4);
     }
 
     #[test]

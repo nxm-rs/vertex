@@ -308,13 +308,15 @@ opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_u
 # based on upstream b44e1286 / libp2p 0.57, keeping libp2p-dns 0.45.0 against hickory
 # 0.26.1 for RUSTSEC-2026-0119 / RUSTSEC-2026-0118). Carries the websocket-websys
 # browser `poll_flush` and inbound-overflow-wake fixes plus the libp2p-timer pausable
-# sweep that the `start_paused` cluster harness relies on. The fork's
-# webtransport/quic/quicreuse/webrtc crates (and their quinn/wtransport `[patch]`
-# pins) are not compiled by the feature set below, so vertex needs no patch pins.
+# sweep that the `start_paused` cluster harness relies on. The `quic` feature
+# compiles the fork's quic/quicreuse crates, which build against the quinn fork
+# pinned in `[patch.crates-io]` below; the webtransport/webrtc crates (and the
+# wtransport pin) stay uncompiled by this feature set.
 libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "c8b360fa8e247a2388c644d314fd6dd3fb544ed1", features = [
     "tokio",
     "noise",
     "tcp",
+    "quic",
     "yamux",
     "dns",
     "macros",
@@ -484,3 +486,11 @@ inherits = "release"
 lto = "thin"
 codegen-units = 1
 debug = 0
+
+# The rust-libp2p fork's quic/quicreuse crates depend on crates-io quinn but are
+# built and tested against this quinn fork; `[patch]` pins do not propagate to
+# dependents, so vertex carries the same pin. Keep the rev in lockstep with the
+# libp2p fork's own `[patch.crates-io]` table.
+[patch.crates-io]
+quinn = { git = "https://github.com/mfw78/quinn.git", rev = "d9635714f4909e574146c8cc04846bc36beb31df" }
+quinn-proto = { git = "https://github.com/mfw78/quinn.git", rev = "d9635714f4909e574146c8cc04846bc36beb31df" }
