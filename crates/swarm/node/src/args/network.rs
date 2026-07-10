@@ -369,6 +369,9 @@ impl<R> NetworkConfig<R> {
         if !self.listen_defaulted {
             return;
         }
+        // Widening consumes the stock-default status, so a repeat call is a
+        // no-op rather than appending a duplicate listener.
+        self.listen_defaulted = false;
         let v6: Multiaddr = format!("/ip6/{DEFAULT_LISTEN_ADDR_V6}/tcp/{DEFAULT_P2P_PORT}")
             .parse()
             .expect("default IPv6 listen address is valid");
@@ -937,6 +940,18 @@ mod tests {
     fn dual_stack_default_widens_the_untouched_listen_set() {
         let mut config =
             NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        config.apply_dual_stack_listen_default();
+
+        let v4: Multiaddr = "/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr");
+        let v6: Multiaddr = "/ip6/::/tcp/1634".parse().expect("valid multiaddr");
+        assert_eq!(config.listen_addrs(), [v4, v6]);
+    }
+
+    #[test]
+    fn dual_stack_default_is_idempotent() {
+        let mut config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        config.apply_dual_stack_listen_default();
         config.apply_dual_stack_listen_default();
 
         let v4: Multiaddr = "/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr");
