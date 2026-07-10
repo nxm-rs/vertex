@@ -31,8 +31,12 @@ pub enum TransportRequirement {
     /// websocket stacks carry none, so a self-signed record advertising one is
     /// rejected pre-dial rather than admitted for a dial that always fails.
     Memory,
-    /// Anything else (legacy draft QUIC, WebTransport, relay-only); dialable
-    /// by no transport stack vertex currently assembles.
+    /// Relayed circuit (`/p2p-circuit`). Dialable only through a relay client
+    /// transport, never by a bare platform suite, so the circuit component
+    /// dominates whatever suite the relay leg rides.
+    Relay,
+    /// Anything else (legacy draft QUIC, WebTransport); dialable by no
+    /// transport stack vertex currently assembles.
     Other,
 }
 
@@ -50,6 +54,7 @@ impl TransportRequirement {
         for proto in addr.iter() {
             match proto {
                 Protocol::Memory(_) => return Self::Memory,
+                Protocol::P2pCircuit => return Self::Relay,
                 Protocol::Tcp(_) => saw_tcp = true,
                 Protocol::Tls => saw_tls = true,
                 Protocol::QuicV1 => saw_quic = true,
@@ -87,6 +92,7 @@ fn advertise_rank(addr: &Multiaddr) -> u8 {
         TransportRequirement::SecureWebsocket => 2,
         TransportRequirement::Websocket
         | TransportRequirement::Memory
+        | TransportRequirement::Relay
         | TransportRequirement::Other => 3,
     }
 }
@@ -147,7 +153,9 @@ impl TransportCapability {
     /// websockets). A `/memory/<port>` address is never dialable through the
     /// platform stack; memory admission is a property of the combined
     /// [`DialCapability::allow_memory`] bit, set only when an in-process memory
-    /// transport is injected.
+    /// transport is injected. A `/p2p-circuit` address is likewise never
+    /// dialable here: circuit dialability is a property of an injected relay
+    /// client transport, not of the static suite.
     pub fn can_dial(&self, addr: &Multiaddr) -> bool {
         matches!(
             (self, TransportRequirement::of(addr)),
@@ -320,6 +328,44 @@ mod tests {
             TransportRequirement::of(&with_peer),
             TransportRequirement::Memory
         );
+    }
+
+    #[test]
+    fn relay_classification_dominates_the_relay_leg() {
+        // The circuit component wins regardless of the suite the relay leg
+        // rides, and a target /p2p/ suffix does not change it.
+        let cases = [
+            "/ip4/1.2.3.4/tcp/1634/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg/p2p-circuit",
+            "/ip4/1.2.3.4/udp/1634/quic-v1/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg/p2p-circuit",
+            "/ip4/1.2.3.4/tcp/1634/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg/p2p-circuit/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N",
+            "/p2p-circuit",
+        ];
+        for s in cases {
+            assert_eq!(
+                TransportRequirement::of(&addr(s)),
+                TransportRequirement::Relay,
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_platform_stack_dials_a_relayed_address() {
+        let relayed = addr(
+            "/ip4/1.2.3.4/tcp/1634/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg/p2p-circuit",
+        );
+        assert!(!TransportCapability::Tcp.can_dial(&relayed));
+        assert!(!TransportCapability::TcpQuic.can_dial(&relayed));
+        assert!(!TransportCapability::SecureWebsocket.can_dial(&relayed));
+    }
+
+    #[test]
+    fn relayed_address_ranks_last_for_advertisement() {
+        let tcp = addr("/ip4/8.8.8.8/tcp/1634");
+        let relayed = addr(
+            "/ip4/1.2.3.4/tcp/1634/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg/p2p-circuit",
+        );
+        assert_eq!(transport_order(&tcp, &relayed), std::cmp::Ordering::Less);
     }
 
     #[test]
