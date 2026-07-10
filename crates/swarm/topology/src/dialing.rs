@@ -348,6 +348,21 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         Some(Box::pin(async move {
             let bootnodes = resolver.resolve_all(bootnodes.iter()).await;
             let trusted = resolver.resolve_all(trusted_peers.iter()).await;
+
+            let invalid_leaves = bootnodes.invalid_leaves + trusted.invalid_leaves;
+            if invalid_leaves > 0 {
+                warn!(
+                    count = invalid_leaves,
+                    "dropped dnsaddr leaves lacking a /p2p/ component"
+                );
+                metrics::counter!("topology_dnsaddr_invalid_leaves_total")
+                    .increment(invalid_leaves as u64);
+            }
+            if bootnodes.truncated || trusted.truncated {
+                warn!("dnsaddr resolution truncated at the record-breadth cap");
+                metrics::counter!("topology_dnsaddr_truncated_total").increment(1);
+            }
+
             let min_ttl = match (bootnodes.min_ttl, trusted.min_ttl) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
