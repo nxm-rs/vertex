@@ -185,6 +185,26 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
         self.inner.mdns_enabled()
     }
 
+    fn relay_server_enabled(&self) -> Option<bool> {
+        self.inner.relay_server_enabled()
+    }
+
+    fn relay_max_reservations(&self) -> usize {
+        self.inner.relay_max_reservations()
+    }
+
+    fn relay_max_circuits(&self) -> usize {
+        self.inner.relay_max_circuits()
+    }
+
+    fn relay_max_circuit_bytes(&self) -> u64 {
+        self.inner.relay_max_circuit_bytes()
+    }
+
+    fn relay_reservation_ttl(&self) -> Duration {
+        self.inner.relay_reservation_ttl()
+    }
+
     fn trust_local_peers(&self) -> bool {
         self.inner.trust_local_peers()
     }

@@ -42,26 +42,37 @@ impl NatBehaviour {
     /// Build the NAT behaviours from a network configuration.
     ///
     /// AutoNAT v2 and mDNS are enabled by default for every node type; UPnP is
-    /// opt-in. The circuit relay v2 server is off by default and enabled for
-    /// the bootnode and storer node types, which listen on publicly reachable
-    /// multiaddrs; reservations and circuits are bounded by the libp2p relay
-    /// defaults (reservation and circuit caps, per-peer and per-IP rate
-    /// limits, circuit duration and byte limits). mDNS needs the local
-    /// [`PeerId`], so the behaviour is built where the swarm's public key is
-    /// available.
+    /// opt-in. The circuit relay v2 server follows the explicit configuration
+    /// toggle when set and otherwise defaults by node type: on for the
+    /// bootnode and storer node types, which listen on publicly reachable
+    /// multiaddrs, off for clients. The reservation cap and TTL and the
+    /// circuit cap and per-circuit byte budget come from the configuration;
+    /// the remaining bounds (per-peer caps, per-peer and per-IP rate limits,
+    /// circuit duration) stay at the libp2p relay defaults. mDNS needs the
+    /// local [`PeerId`], so the behaviour is built where the swarm's public
+    /// key is available.
     pub(crate) fn from_config(
         config: &impl SwarmNetworkConfig,
         local_peer_id: PeerId,
         node_type: SwarmNodeType,
     ) -> Self {
         let autonat = config.autonat_enabled();
-        let relay_server = matches!(node_type, SwarmNodeType::Bootnode | SwarmNodeType::Storer);
+        let relay_server = config.relay_server_enabled().unwrap_or(matches!(
+            node_type,
+            SwarmNodeType::Bootnode | SwarmNodeType::Storer
+        ));
+        let relay_config = relay::Config {
+            max_reservations: config.relay_max_reservations(),
+            reservation_duration: config.relay_reservation_ttl(),
+            max_circuits: config.relay_max_circuits(),
+            max_circuit_bytes: config.relay_max_circuit_bytes(),
+            ..relay::Config::default()
+        };
         Self {
             autonat_client: Toggle::from(autonat.then(autonat::client::Behaviour::default)),
             autonat_server: Toggle::from(autonat.then(autonat::server::Behaviour::default)),
             relay_server: Toggle::from(
-                relay_server
-                    .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
+                relay_server.then(|| relay::Behaviour::new(local_peer_id, relay_config)),
             ),
             upnp: Toggle::from(config.upnp_enabled().then(upnp::tokio::Behaviour::default)),
             mdns: build_mdns_toggle(config.mdns_enabled(), local_peer_id),
@@ -315,6 +326,7 @@ mod tests {
     #[derive(Default)]
     struct TestConfig {
         addrs: Vec<Multiaddr>,
+        relay: Option<bool>,
     }
 
     impl SwarmNetworkConfig for TestConfig {
@@ -336,6 +348,9 @@ mod tests {
         fn mdns_enabled(&self) -> bool {
             false
         }
+        fn relay_server_enabled(&self) -> Option<bool> {
+            self.relay
+        }
     }
 
     #[test]
@@ -351,6 +366,26 @@ mod tests {
                 nat.relay_server.is_enabled(),
                 enabled,
                 "relay server toggle for {node_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_server_toggle_overrides_node_type() {
+        for (relay, node_type, enabled) in [
+            (Some(true), SwarmNodeType::Client, true),
+            (Some(false), SwarmNodeType::Bootnode, false),
+            (Some(false), SwarmNodeType::Storer, false),
+        ] {
+            let config = TestConfig {
+                relay,
+                ..TestConfig::default()
+            };
+            let nat = NatBehaviour::from_config(&config, random_peer_id(), node_type);
+            assert_eq!(
+                nat.relay_server.is_enabled(),
+                enabled,
+                "explicit toggle {relay:?} for {node_type:?}"
             );
         }
     }
