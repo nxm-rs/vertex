@@ -481,6 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn quic_multiaddr_round_trips_the_signed_record() {
+        // A QUIC leaf crosses the record codec unchanged next to its TCP
+        // sibling, so advertising QUIC needs no wire change.
+        let network_id = NetworkId::new(1);
+        let nonce = Nonce::from([0x44u8; 32]);
+        let timestamp = Timestamp::from_seconds(now_secs());
+
+        let identity = test_identity(network_id, nonce);
+        let multiaddrs: Vec<Multiaddr> = vec![
+            "/ip4/203.0.113.5/tcp/1634".parse().unwrap(),
+            "/ip4/203.0.113.5/udp/1634/quic-v1".parse().unwrap(),
+        ];
+
+        let addr = SwarmPeer::sign(&identity, multiaddrs.clone(), timestamp, None).unwrap();
+
+        let multiaddrs_bytes = addr.serialize_multiaddrs();
+        let parsed = SwarmPeer::parse(
+            wire(&addr, &multiaddrs_bytes, &[]),
+            network_id,
+            Some((Timestamp::from_seconds(now_secs()), skew_tolerance())),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.multiaddrs(), multiaddrs.as_slice());
+    }
+
+    #[test]
     fn rejects_wrong_chequebook_length() {
         let res = parse_chequebook(&[0u8; 19]);
         assert!(matches!(res, Err(SwarmPeerError::InvalidChequebook)));

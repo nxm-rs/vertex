@@ -12,7 +12,7 @@ use strum::IntoEnumIterator;
 use tracing::{debug, info, warn};
 use vertex_net_local::{
     AddressScope, IpCapability, LocalCapabilities, advertise_filter, classify_multiaddr,
-    family_order,
+    family_order, transport_order,
 };
 use vertex_swarm_net_handshake::AddressProvider;
 
@@ -24,11 +24,16 @@ fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
         .collect()
 }
 
-/// Total order within a trust tier: IPv6 before IPv4, then byte order. The
-/// byte tie-break keeps the advertised list stable across restarts regardless
-/// of set iteration order, so an unchanged node re-signs an unchanged record.
+/// Total order within a trust tier: IPv6 before IPv4, TCP before QUIC within
+/// a family, then byte order. The transport rank makes the handshake's
+/// pre-encoding bound shed a family's QUIC leaves before any of its TCP ones
+/// (every peer dials TCP; QUIC is additive), and the byte tie-break keeps the
+/// advertised list stable across restarts regardless of set iteration order,
+/// so an unchanged node re-signs an unchanged record.
 fn tier_order(a: &Multiaddr, b: &Multiaddr) -> std::cmp::Ordering {
-    family_order(a, b).then_with(|| a.cmp(b))
+    family_order(a, b)
+        .then_with(|| transport_order(a, b))
+        .then_with(|| a.cmp(b))
 }
 
 /// Trust tier of a locally advertised address. Variant order is advertisement
@@ -245,16 +250,18 @@ impl LocalAddressManager {
     ///
     /// The advertised list is built in [`AddressTrust`] order (configured
     /// static, then verified external, then public listen), and within each
-    /// tier IPv6 leads IPv4. A peer reads this order as a hint only; its own
-    /// dial preference may reorder families. The order also decides which
-    /// addresses survive the handshake's pre-encoding bound, so the
-    /// operator-configured tier is never truncated in favour of an assumed one.
+    /// tier IPv6 leads IPv4 with TCP before QUIC inside a family. A peer reads
+    /// this order as a hint only; its own dial preference may reorder it. The
+    /// order also decides which addresses survive the handshake's pre-encoding
+    /// bound, so the operator-configured tier is never truncated in favour of
+    /// an assumed one and a family's TCP leaf outlives its QUIC siblings.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
-        // Trust tier is the primary key; family (IPv6 before IPv4) then byte
-        // order is the key within a tier. Sort each tier independently, then
-        // chain in tier order, so a global sort never reorders across tiers.
+        // Trust tier is the primary key; family (IPv6 before IPv4), transport
+        // (TCP before QUIC), then byte order is the key within a tier. Sort
+        // each tier independently, then chain in tier order, so a global sort
+        // never reorders across tiers.
         // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
         let addrs: Vec<Multiaddr> = AddressTrust::iter()
@@ -314,8 +321,8 @@ impl LocalAddressManager {
     /// All known addresses, ordered by trust tier.
     ///
     /// Tiers mirror [`Self::addresses_for_peer`]: [`AddressTrust`] order with
-    /// IPv6 leading IPv4 within each tier. No peer-scope filter is applied
-    /// here; this is the full local view.
+    /// IPv6 leading IPv4 and TCP leading QUIC within each tier. No peer-scope
+    /// filter is applied here; this is the full local view.
     pub fn all_addresses(&self) -> Vec<Multiaddr> {
         // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
@@ -488,6 +495,94 @@ mod tests {
         assert!(verified_v4 < listen_v6);
         // Within the assumed-public tier: IPv6 before IPv4.
         assert!(listen_v6 < listen_v4);
+    }
+
+    #[test]
+    fn test_quic_listen_addrs_advertised_next_to_tcp() {
+        // A QUIC listener's leaves flow the same NewListenAddr ->
+        // LocalCapabilities -> addresses_for_peer path as TCP.
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/udp/1634/quic-v1"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
+
+        assert!(addrs.iter().any(|a| a.to_string().contains("/tcp/1634")));
+        assert!(addrs.iter().any(|a| a.to_string().contains("/quic-v1")));
+    }
+
+    #[test]
+    fn test_tcp_leads_quic_within_tier_regardless_of_byte_order() {
+        // The QUIC leaf sits on the bytewise-smaller IP; the transport rank
+        // still puts the TCP leaf first, so the pre-encoding bound sheds QUIC
+        // before TCP.
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/udp/1634/quic-v1"));
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.8.8/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/1.1.1.1/tcp/5000"));
+
+        let tcp = position_of(&addrs, "8.8.8.8").unwrap();
+        let quic = position_of(&addrs, "8.8.4.4").unwrap();
+        assert!(tcp < quic);
+    }
+
+    #[test]
+    fn test_tier_order_is_family_then_transport() {
+        // Dual-stack TCP+QUIC listen set: IPv6 leads IPv4, and inside each
+        // family TCP leads QUIC.
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/udp/1634/quic-v1"));
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/udp/1634/quic-v1"));
+        local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
+
+        let expected = [
+            "/ip6/2606:4700:4700::1111/tcp/1634",
+            "/ip6/2606:4700:4700::1111/udp/1634/quic-v1",
+            "/ip4/8.8.4.4/tcp/1634",
+            "/ip4/8.8.4.4/udp/1634/quic-v1",
+        ]
+        .map(parse_addr);
+        assert_eq!(addrs, expected);
+    }
+
+    #[test]
+    fn test_is_reachable_with_public_quic_listen() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.8.8/udp/1634/quic-v1"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        assert!(manager.is_reachable());
+    }
+
+    #[test]
+    fn test_configured_quic_nat_addr_advertised() {
+        // An operator-configured static QUIC multiaddr rides the Configured
+        // tier like any other.
+        let nat_addr = parse_addr("/ip4/203.0.113.50/udp/1634/quic-v1");
+        let manager = create_manager(vec![nat_addr.clone()]);
+
+        let addrs = manager.addresses_for_peer(&parse_addr("/ip4/8.8.8.8/tcp/5000"));
+        assert!(addrs.contains(&nat_addr));
+    }
+
+    #[test]
+    fn test_all_addresses_includes_quic_leaves() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/udp/1634/quic-v1"));
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let all = manager.all_addresses();
+        let tcp = position_of(&all, "/tcp/1634").unwrap();
+        let quic = position_of(&all, "/quic-v1").unwrap();
+        assert!(tcp < quic);
     }
 
     #[test]

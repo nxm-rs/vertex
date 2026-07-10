@@ -78,6 +78,39 @@ impl TransportRequirement {
     }
 }
 
+/// Advertisement rank of a transport suite: TCP first, QUIC second, secure
+/// websockets third, everything else last.
+fn advertise_rank(addr: &Multiaddr) -> u8 {
+    match TransportRequirement::of(addr) {
+        TransportRequirement::Tcp => 0,
+        TransportRequirement::Quic => 1,
+        TransportRequirement::SecureWebsocket => 2,
+        TransportRequirement::Websocket
+        | TransportRequirement::Memory
+        | TransportRequirement::Other => 3,
+    }
+}
+
+/// Compare two multiaddrs by transport suite for advertisement ordering: TCP
+/// before QUIC before secure websockets before anything else.
+///
+/// TCP is the one suite every peer on the network dials, so TCP leaves must
+/// outlive the additive suites under the handshake record's deterministic
+/// prefix truncation. Like [`crate::family_order`] this is a partial key:
+/// addresses of the same suite compare `Equal`, so combine it with further
+/// tie-breaks or a stable sort.
+///
+/// ```
+/// use vertex_net_local::transport_order;
+///
+/// let tcp: libp2p::Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+/// let quic: libp2p::Multiaddr = "/ip4/1.1.1.1/udp/1634/quic-v1".parse().unwrap();
+/// assert_eq!(transport_order(&tcp, &quic), std::cmp::Ordering::Less);
+/// ```
+pub fn transport_order(a: &Multiaddr, b: &Multiaddr) -> std::cmp::Ordering {
+    advertise_rank(a).cmp(&advertise_rank(b))
+}
+
 /// The transport suites the local node's assembled libp2p stack can dial.
 ///
 /// Mirrors the swarm assembly in `vertex-swarm-node`: the native stack is
@@ -356,6 +389,28 @@ mod tests {
             allow_memory: false,
         };
         assert!(!cap.can_dial(&addr("/ip4/8.8.8.8/tcp/1634")));
+    }
+
+    #[test]
+    fn transport_order_ranks_tcp_quic_wss_then_other() {
+        use std::cmp::Ordering;
+
+        let tcp = addr("/ip4/8.8.8.8/tcp/1634");
+        let quic = addr("/ip4/1.1.1.1/udp/1634/quic-v1");
+        let wss = addr("/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws");
+        let other = addr("/ip4/8.8.8.8/udp/1634/quic-v1/webtransport");
+
+        assert_eq!(transport_order(&tcp, &quic), Ordering::Less);
+        assert_eq!(transport_order(&quic, &wss), Ordering::Less);
+        assert_eq!(transport_order(&wss, &other), Ordering::Less);
+        assert_eq!(transport_order(&quic, &tcp), Ordering::Greater);
+
+        // Same suite compares Equal: the rank is a partial key, callers add
+        // their own tie-breaks.
+        assert_eq!(
+            transport_order(&quic, &addr("/ip6/2001:db8::1/udp/1634/quic-v1")),
+            Ordering::Equal
+        );
     }
 
     // Pin the native platform seam so a regression back to a TCP-only
