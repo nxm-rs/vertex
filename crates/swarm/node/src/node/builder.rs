@@ -215,9 +215,11 @@ impl<C: SwarmRoutingConfig> SwarmRoutingConfig for ConfigWithBootnodes<'_, C> {
 /// Handles the common SwarmBuilder pipeline, peer ID logging, and bootnode
 /// connection that all node types share.
 ///
-/// The `behaviour_fn` receives the libp2p public key and the topology behaviour,
-/// and must return both the composed NetworkBehaviour and a reference to its
-/// topology so we can call `register_local_peer_id`.
+/// The `behaviour_fn` receives the libp2p public key, the topology behaviour,
+/// and the relay-client behaviour the transport assembly yields (paired with
+/// the circuit transport, so the composite must hold it), and must return the
+/// composed NetworkBehaviour with its topology so we can call
+/// `register_local_peer_id`.
 pub(crate) async fn build_base_node<I, B, C, F>(
     mut infra: BuiltInfrastructure<I>,
     network_config: &C,
@@ -229,7 +231,7 @@ where
     I: SwarmIdentity + Clone,
     B: NetworkBehaviour,
     C: SwarmNetworkConfig,
-    F: FnOnce(PublicKey, TopologyBehaviour<I>) -> B,
+    F: FnOnce(PublicKey, TopologyBehaviour<I>, super::nat::RelayClientBehaviour) -> B,
 {
     let topology_behaviour = infra
         .take_behaviour()
@@ -239,17 +241,19 @@ where
 
     let topology_cell = std::sync::Mutex::new(Some(topology_behaviour));
 
-    let behaviour_builder = |keypair: &libp2p::identity::Keypair| {
-        let topology = topology_cell
-            .lock()
-            .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
-            .take()
-            .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(behaviour_fn(
-            keypair.public().clone(),
-            topology,
-        ))
-    };
+    let behaviour_builder =
+        |keypair: &libp2p::identity::Keypair, relay_client: super::nat::RelayClientBehaviour| {
+            let topology = topology_cell
+                .lock()
+                .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
+                .take()
+                .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(behaviour_fn(
+                keypair.public().clone(),
+                topology,
+                relay_client,
+            ))
+        };
 
     let swarm = build_swarm(idle_timeout, transport, behaviour_builder)?;
 
@@ -275,8 +279,12 @@ where
 /// authentication, and Yamux multiplexing, plus a QUIC v1 transport
 /// (self-securing and self-multiplexing) that listens and dials next to it;
 /// TCP with Noise and Yamux stays the primary suite for network-wide interop.
-/// A [`TransportOverride`] (tests only) replaces the whole stack with the
-/// supplied transport, which is why
+/// A circuit relay v2 client transport is layered over both, upgraded with the
+/// same Noise and Yamux suite, so relayed connections reach the relay over TCP
+/// or QUIC; its behaviour handle flows into `behaviour_builder`, which must
+/// compose it into the swarm behaviour. A [`TransportOverride`] (tests only)
+/// replaces the base stack with the supplied transport (the relay client still
+/// rides it), which is why
 /// [`TransportCapability::platform`](vertex_net_local::TransportCapability::platform)
 /// keeps mirroring the default TCP+QUIC stack rather than the override.
 #[cfg(not(target_arch = "wasm32"))]
@@ -289,6 +297,7 @@ where
     B: NetworkBehaviour,
     F: FnOnce(
         &libp2p::identity::Keypair,
+        super::nat::RelayClientBehaviour,
     ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
 {
     use libp2p::{SwarmBuilder, noise, tcp, yamux};
@@ -297,6 +306,7 @@ where
         let swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_other_transport(transport)?
+            .with_relay_client(noise::Config::new, yamux::Config::default)?
             .with_behaviour(behaviour_builder)?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
@@ -312,6 +322,7 @@ where
         )?
         .with_quic()
         .with_dns()?
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(behaviour_builder)?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
         .build();
@@ -349,6 +360,7 @@ where
     B: NetworkBehaviour,
     F: FnOnce(
         &libp2p::identity::Keypair,
+        super::nat::RelayClientBehaviour,
     ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
 {
     use libp2p::{SwarmBuilder, Transport as _, core::upgrade::Version, noise, yamux};
@@ -366,7 +378,12 @@ where
                 .multiplex(yamux::Config::default());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(transport)
         })?
-        .with_behaviour(behaviour_builder)?
+        // No relay transport in the browser yet (it arrives with the
+        // WebTransport stack); the inert stand-in keeps behaviour assembly
+        // uniform across targets.
+        .with_behaviour(|keypair| {
+            behaviour_builder(keypair, super::nat::RelayClientBehaviour::new())
+        })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
         .build();
 
@@ -425,10 +442,14 @@ mod tests {
         }
 
         let idle = Duration::from_secs(5);
-        let mut listener = build_swarm(idle, Some(memory_override()), |_kp| Ok(dummy::Behaviour))
-            .expect("listener swarm builds over the injected transport");
-        let mut dialer = build_swarm(idle, Some(memory_override()), |_kp| Ok(dummy::Behaviour))
-            .expect("dialer swarm builds over the injected transport");
+        let mut listener = build_swarm(idle, Some(memory_override()), |_kp, _relay_client| {
+            Ok(dummy::Behaviour)
+        })
+        .expect("listener swarm builds over the injected transport");
+        let mut dialer = build_swarm(idle, Some(memory_override()), |_kp, _relay_client| {
+            Ok(dummy::Behaviour)
+        })
+        .expect("dialer swarm builds over the injected transport");
 
         listener
             .listen_on("/memory/0".parse::<Multiaddr>().unwrap())

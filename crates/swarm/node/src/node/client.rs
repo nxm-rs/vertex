@@ -25,7 +25,7 @@ use vertex_swarm_api::SwarmLocalStore;
 use super::base::{AdmissionLimits, BaseNode};
 use super::builder::BuiltInfrastructure;
 use super::ip_limits::IpConnectionLimits;
-use super::nat::{NatBehaviour, NatEvent};
+use super::nat::{NatBehaviour, NatEvent, RelayClientBehaviour, RelayClientEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
     PseudosettleEvent, StubForwarder,
@@ -46,6 +46,10 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     /// NAT traversal and LAN discovery as one platform sub-behaviour; a no-op in
     /// the browser, where a wasm client dials over websockets and never listens.
     pub(crate) nat: NatBehaviour,
+    /// Relay-client reservations and relayed circuits, paired with the circuit
+    /// transport assembled into the swarm; inert in the browser, which has no
+    /// relay transport yet.
+    pub(crate) relay_client: RelayClientBehaviour,
     /// Before topology: reads the active-peers view at connection close while the
     /// registry entry is live.
     pub(crate) client: ClientBehaviour,
@@ -57,6 +61,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
+        relay_client: RelayClientBehaviour,
         limits: AdmissionLimits,
         store: Arc<dyn SwarmLocalStore>,
         agent_version: Option<&str>,
@@ -76,6 +81,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
                 observed_addresses,
             ),
             nat,
+            relay_client,
             // Cache-only client never relays: the stub forwarder resets the
             // substream on cache miss and every inbound pushsync. The real relay
             // is installed by `enable_forwarding`.
@@ -108,7 +114,7 @@ where
         network_config,
         "Client node",
         transport,
-        move |pk, topology| {
+        move |pk, topology, relay_client| {
             let nat = NatBehaviour::from_config(
                 network_config,
                 pk.to_peer_id(),
@@ -118,6 +124,7 @@ where
                 pk,
                 topology,
                 nat,
+                relay_client,
                 limits,
                 store,
                 network_config.agent_version(),
@@ -132,6 +139,7 @@ where
 pub enum ClientNodeEvent {
     Identify(Box<identify::Event>),
     Nat(NatEvent),
+    RelayClient(RelayClientEvent),
     Topology(()),
     Client(ClientEvent),
 }
@@ -152,6 +160,12 @@ impl From<identify::Event> for ClientNodeEvent {
 impl From<NatEvent> for ClientNodeEvent {
     fn from(event: NatEvent) -> Self {
         ClientNodeEvent::Nat(event)
+    }
+}
+
+impl From<RelayClientEvent> for ClientNodeEvent {
+    fn from(event: RelayClientEvent) -> Self {
+        ClientNodeEvent::RelayClient(event)
     }
 }
 
@@ -390,6 +404,9 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                     &mut self.base.swarm.behaviour_mut().topology,
                     event,
                 );
+            }
+            ClientNodeEvent::RelayClient(event) => {
+                super::nat::handle_relay_client_event(event);
             }
             ClientNodeEvent::Topology(_) => {}
             ClientNodeEvent::Client(event) => {
