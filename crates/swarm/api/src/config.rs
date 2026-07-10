@@ -132,6 +132,18 @@ impl PeerConfigValues for DefaultPeerConfig {
 /// address are unaffected.
 pub const DEFAULT_MAX_INBOUND_PER_IP: u32 = 32;
 
+/// Default cap on concurrently active relay reservations.
+pub const DEFAULT_RELAY_MAX_RESERVATIONS: usize = 128;
+
+/// Default cap on concurrently active relayed circuits.
+pub const DEFAULT_RELAY_MAX_CIRCUITS: usize = 16;
+
+/// Default relayed data budget per circuit, in bytes.
+pub const DEFAULT_RELAY_MAX_CIRCUIT_BYTES: u64 = 128 * 1024;
+
+/// Default relay reservation lifetime.
+pub const DEFAULT_RELAY_RESERVATION_TTL: Duration = Duration::from_secs(60 * 60);
+
 /// Configuration for P2P networking.
 ///
 /// Address methods return parsed `Multiaddr` to ensure validation happens early.
@@ -207,6 +219,34 @@ pub trait SwarmNetworkConfig {
     /// bootnodes or NAT configuration. The multicast traffic stays link-local.
     fn mdns_enabled(&self) -> bool {
         true
+    }
+
+    /// Explicit circuit relay v2 server toggle, if any (default: none).
+    ///
+    /// `None` means the node type decides: on for bootnodes and storers,
+    /// which listen on publicly reachable multiaddrs, off for clients.
+    fn relay_server_enabled(&self) -> Option<bool> {
+        None
+    }
+
+    /// Maximum concurrently active relay reservations.
+    fn relay_max_reservations(&self) -> usize {
+        DEFAULT_RELAY_MAX_RESERVATIONS
+    }
+
+    /// Maximum concurrently active relayed circuits.
+    fn relay_max_circuits(&self) -> usize {
+        DEFAULT_RELAY_MAX_CIRCUITS
+    }
+
+    /// Relayed data budget per circuit, in bytes. `0` removes the limit.
+    fn relay_max_circuit_bytes(&self) -> u64 {
+        DEFAULT_RELAY_MAX_CIRCUIT_BYTES
+    }
+
+    /// Lifetime granted to a relay reservation.
+    fn relay_reservation_ttl(&self) -> Duration {
+        DEFAULT_RELAY_RESERVATION_TTL
     }
 
     /// Whether same-subnet / private-LAN peers are protected from

@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "cli")]
 use vertex_swarm_api::{ConfigAddressKind, ConfigError};
 use vertex_swarm_api::{
-    ConnectionProfile, DEFAULT_MAX_INBOUND_PER_IP, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig,
-    SwarmRoutingConfig,
+    ConnectionProfile, DEFAULT_MAX_INBOUND_PER_IP, DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+    DEFAULT_RELAY_MAX_CIRCUITS, DEFAULT_RELAY_MAX_RESERVATIONS, DEFAULT_RELAY_RESERVATION_TTL,
+    Multiaddr, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_topology::KademliaConfig;
 #[cfg(feature = "cli")]
@@ -155,6 +156,48 @@ pub struct NetworkArgs {
     #[serde(default = "default_mdns")]
     pub mdns: bool,
 
+    /// Enable the circuit relay v2 server. Defaults by node mode:
+    /// bootnode/storer = enabled, client = disabled.
+    ///
+    /// Accepts a bare `--network.relay` (enables) or an explicit
+    /// `--network.relay=true`/`--network.relay=false`.
+    #[arg(
+        long = "network.relay",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<bool>,
+
+    /// Maximum concurrently active relay reservations.
+    #[arg(
+        long = "network.relay-max-reservations",
+        default_value_t = DEFAULT_RELAY_MAX_RESERVATIONS
+    )]
+    pub relay_max_reservations: usize,
+
+    /// Maximum concurrently active relayed circuits.
+    #[arg(
+        long = "network.relay-max-circuits",
+        default_value_t = DEFAULT_RELAY_MAX_CIRCUITS
+    )]
+    pub relay_max_circuits: usize,
+
+    /// Maximum bytes relayed per circuit. Set to 0 to remove the limit.
+    #[arg(
+        long = "network.relay-max-circuit-bytes",
+        default_value_t = DEFAULT_RELAY_MAX_CIRCUIT_BYTES
+    )]
+    pub relay_max_circuit_bytes: u64,
+
+    /// Relay reservation lifetime in seconds.
+    #[arg(
+        long = "network.relay-reservation-ttl",
+        default_value_t = DEFAULT_RELAY_RESERVATION_TTL.as_secs()
+    )]
+    pub relay_reservation_ttl_secs: u64,
+
     /// Connection pacing profile: aggressive, balanced, or conservative.
     /// Defaults by node mode: client = aggressive, bootnode/storer = balanced.
     #[arg(long = "network.connection-profile", value_name = "PROFILE")]
@@ -210,6 +253,11 @@ impl Default for NetworkArgs {
             autonat: true,
             upnp: false,
             mdns: true,
+            relay: None,
+            relay_max_reservations: DEFAULT_RELAY_MAX_RESERVATIONS,
+            relay_max_circuits: DEFAULT_RELAY_MAX_CIRCUITS,
+            relay_max_circuit_bytes: DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+            relay_reservation_ttl_secs: DEFAULT_RELAY_RESERVATION_TTL.as_secs(),
             connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
             max_inbound_per_ip: DEFAULT_MAX_INBOUND_PER_IP,
@@ -267,6 +315,11 @@ pub struct NetworkConfig<R = KademliaConfig> {
     autonat: bool,
     upnp: bool,
     mdns: bool,
+    relay: Option<bool>,
+    relay_max_reservations: usize,
+    relay_max_circuits: usize,
+    relay_max_circuit_bytes: u64,
+    relay_reservation_ttl: Duration,
     discovery_enabled: bool,
     trust_local_peers: bool,
     connection_profile: Option<ConnectionProfile>,
@@ -326,6 +379,11 @@ impl<R> NetworkConfig<R> {
             autonat: self.autonat,
             upnp: self.upnp,
             mdns: self.mdns,
+            relay: self.relay,
+            relay_max_reservations: self.relay_max_reservations,
+            relay_max_circuits: self.relay_max_circuits,
+            relay_max_circuit_bytes: self.relay_max_circuit_bytes,
+            relay_reservation_ttl: self.relay_reservation_ttl,
             discovery_enabled: self.discovery_enabled,
             trust_local_peers: self.trust_local_peers,
             connection_profile: self.connection_profile,
@@ -359,6 +417,12 @@ impl NetworkConfig<KademliaConfig> {
             autonat: false,
             upnp: false,
             mdns: false,
+            // A dial-only node never listens, so it can never serve circuits.
+            relay: Some(false),
+            relay_max_reservations: DEFAULT_RELAY_MAX_RESERVATIONS,
+            relay_max_circuits: DEFAULT_RELAY_MAX_CIRCUITS,
+            relay_max_circuit_bytes: DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+            relay_reservation_ttl: DEFAULT_RELAY_RESERVATION_TTL,
             discovery_enabled: true,
             trust_local_peers: true,
             connection_profile: None,
@@ -388,6 +452,11 @@ impl Default for NetworkConfig<KademliaConfig> {
             autonat: true,
             upnp: false,
             mdns: true,
+            relay: None,
+            relay_max_reservations: DEFAULT_RELAY_MAX_RESERVATIONS,
+            relay_max_circuits: DEFAULT_RELAY_MAX_CIRCUITS,
+            relay_max_circuit_bytes: DEFAULT_RELAY_MAX_CIRCUIT_BYTES,
+            relay_reservation_ttl: DEFAULT_RELAY_RESERVATION_TTL,
             discovery_enabled: true,
             trust_local_peers: true,
             connection_profile: None,
@@ -469,6 +538,11 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             autonat: args.autonat,
             upnp: args.upnp,
             mdns: args.mdns,
+            relay: args.relay,
+            relay_max_reservations: args.relay_max_reservations,
+            relay_max_circuits: args.relay_max_circuits,
+            relay_max_circuit_bytes: args.relay_max_circuit_bytes,
+            relay_reservation_ttl: Duration::from_secs(args.relay_reservation_ttl_secs),
             discovery_enabled: !args.disable_discovery,
             trust_local_peers: !args.no_trust_local_peers,
             connection_profile: args.connection_profile,
@@ -535,6 +609,26 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
         self.mdns
     }
 
+    fn relay_server_enabled(&self) -> Option<bool> {
+        self.relay
+    }
+
+    fn relay_max_reservations(&self) -> usize {
+        self.relay_max_reservations
+    }
+
+    fn relay_max_circuits(&self) -> usize {
+        self.relay_max_circuits
+    }
+
+    fn relay_max_circuit_bytes(&self) -> u64 {
+        self.relay_max_circuit_bytes
+    }
+
+    fn relay_reservation_ttl(&self) -> Duration {
+        self.relay_reservation_ttl
+    }
+
     fn trust_local_peers(&self) -> bool {
         self.trust_local_peers
     }
@@ -580,6 +674,7 @@ mod dial_only_tests {
         assert!(!config.autonat_enabled());
         assert!(!config.upnp_enabled());
         assert!(!config.mdns_enabled());
+        assert_eq!(config.relay_server_enabled(), Some(false));
         assert!(config.trust_local_peers());
         assert_eq!(config.connection_profile(), None);
         assert_eq!(config.agent_version(), None);
@@ -873,6 +968,105 @@ mod tests {
         let config = PeerConfig::from(&args);
 
         assert_eq!(config.max_per_bin(), DEFAULT_PEER_MAX_PER_BIN);
+    }
+
+    #[test]
+    fn relay_flag_default_is_unset() {
+        use clap::Parser;
+
+        // No flag: the toggle stays unset so the node type decides at build
+        // time (bootnode/storer on, client off).
+        let parsed = TestCli::try_parse_from(["test"]).expect("default should parse");
+        assert_eq!(parsed.network.relay, None);
+
+        let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+        assert_eq!(config.relay_server_enabled(), None);
+    }
+
+    #[test]
+    fn relay_flag_accepts_bare_and_explicit_forms() {
+        use clap::Parser;
+
+        for (argv, expected) in [
+            (vec!["test", "--network.relay"], Some(true)),
+            (vec!["test", "--network.relay=true"], Some(true)),
+            (vec!["test", "--network.relay=false"], Some(false)),
+        ] {
+            let parsed = TestCli::try_parse_from(argv).expect("relay flag should parse");
+            assert_eq!(parsed.network.relay, expected);
+
+            let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+            assert_eq!(config.relay_server_enabled(), expected);
+        }
+    }
+
+    #[test]
+    fn relay_limits_default_and_propagate() {
+        use vertex_swarm_api::{
+            DEFAULT_RELAY_MAX_CIRCUIT_BYTES, DEFAULT_RELAY_MAX_CIRCUITS,
+            DEFAULT_RELAY_MAX_RESERVATIONS, DEFAULT_RELAY_RESERVATION_TTL,
+        };
+
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert_eq!(
+            config.relay_max_reservations(),
+            DEFAULT_RELAY_MAX_RESERVATIONS
+        );
+        assert_eq!(config.relay_max_circuits(), DEFAULT_RELAY_MAX_CIRCUITS);
+        assert_eq!(
+            config.relay_max_circuit_bytes(),
+            DEFAULT_RELAY_MAX_CIRCUIT_BYTES
+        );
+        assert_eq!(
+            config.relay_reservation_ttl(),
+            DEFAULT_RELAY_RESERVATION_TTL
+        );
+
+        let args = NetworkArgs {
+            relay_max_reservations: 7,
+            relay_max_circuits: 3,
+            relay_max_circuit_bytes: 0,
+            relay_reservation_ttl_secs: 90,
+            ..Default::default()
+        };
+        let config = NetworkConfig::try_from(&args).expect("valid args");
+        assert_eq!(config.relay_max_reservations(), 7);
+        assert_eq!(config.relay_max_circuits(), 3);
+        assert_eq!(config.relay_max_circuit_bytes(), 0, "0 removes the limit");
+        assert_eq!(config.relay_reservation_ttl(), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn relay_limit_flags_parse() {
+        use clap::Parser;
+
+        let parsed = TestCli::try_parse_from([
+            "test",
+            "--network.relay-max-reservations=64",
+            "--network.relay-max-circuits=8",
+            "--network.relay-max-circuit-bytes=4096",
+            "--network.relay-reservation-ttl=600",
+        ])
+        .expect("relay limit flags should parse");
+        assert_eq!(parsed.network.relay_max_reservations, 64);
+        assert_eq!(parsed.network.relay_max_circuits, 8);
+        assert_eq!(parsed.network.relay_max_circuit_bytes, 4096);
+        assert_eq!(parsed.network.relay_reservation_ttl_secs, 600);
+    }
+
+    #[test]
+    fn relay_settings_survive_with_routing() {
+        let args = NetworkArgs {
+            relay: Some(true),
+            relay_max_reservations: 5,
+            ..Default::default()
+        };
+        let config = NetworkConfig::try_from(&args).expect("valid args");
+        // The type-changing routing swap must carry the relay knobs through.
+        let swapped = config.with_routing(KademliaConfig::default());
+        assert_eq!(swapped.relay_server_enabled(), Some(true));
+        assert_eq!(swapped.relay_max_reservations(), 5);
     }
 
     #[test]
