@@ -42,8 +42,15 @@ pub struct ProtocolConfig {
 
 impl ProtocolConfig {
     /// Create validated network configuration.
+    ///
+    /// A bootnode left on the stock listen set widens it to dual-stack
+    /// (IPv4 plus IPv6 wildcard listeners); explicit configuration wins.
     pub fn network_config(&self) -> Result<NetworkConfig, ConfigError> {
-        NetworkConfig::try_from(&self.network)
+        let mut config = NetworkConfig::try_from(&self.network)?;
+        if matches!(self.node_type, SwarmNodeType::Bootnode) {
+            config.apply_dual_stack_listen_default();
+        }
+        Ok(config)
     }
 
     /// Create identity from keystore or ephemeral.
@@ -106,5 +113,39 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.chain = args.chain.clone();
         self.swap = args.swap.clone();
         self.rpc = args.rpc;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vertex_swarm_api::{Multiaddr, SwarmNetworkConfig};
+
+    #[test]
+    fn bootnode_defaults_to_dual_stack_listeners() {
+        let mut config = ProtocolConfig::default();
+        config.override_node_type(SwarmNodeType::Bootnode);
+
+        let network = config.network_config().expect("default config is valid");
+        let v6: Multiaddr = "/ip6/::/tcp/1634".parse().expect("valid multiaddr");
+        assert_eq!(network.listen_addrs().len(), 2);
+        assert!(network.listen_addrs().contains(&v6));
+    }
+
+    #[test]
+    fn client_keeps_the_single_ipv4_listener() {
+        let config = ProtocolConfig::default();
+        let network = config.network_config().expect("default config is valid");
+        assert_eq!(network.listen_addrs().len(), 1);
+    }
+
+    #[test]
+    fn explicit_listen_addrs_override_the_bootnode_default() {
+        let mut config = ProtocolConfig::default();
+        config.override_node_type(SwarmNodeType::Bootnode);
+        config.network.listen_addrs_raw = vec!["/ip4/127.0.0.1/tcp/1700".to_string()];
+
+        let network = config.network_config().expect("valid config");
+        assert_eq!(network.listen_addrs().len(), 1);
     }
 }

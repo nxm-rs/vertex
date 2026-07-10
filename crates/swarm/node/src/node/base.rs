@@ -104,13 +104,25 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
         self.connected_peers() > 0
     }
 
+    /// Start every configured listener.
+    ///
+    /// A partial failure only warns so a dual-stack listen set still comes up
+    /// on a single-stack host; failing every listener is an error. A dial-only
+    /// node with no listen addresses succeeds trivially.
     #[must_use = "listen failures should be checked"]
     pub fn start_listening(&mut self) -> Result<()> {
+        let mut bound = 0usize;
         for addr in &self.listen_addrs {
             match self.swarm.listen_on(addr.clone()) {
-                Ok(_) => info!(%addr, "Listening on address"),
+                Ok(_) => {
+                    info!(%addr, "Listening on address");
+                    bound += 1;
+                }
                 Err(e) => warn!(%addr, %e, "Failed to listen on address"),
             }
+        }
+        if bound == 0 && !self.listen_addrs.is_empty() {
+            eyre::bail!("failed to listen on any configured address");
         }
         Ok(())
     }
