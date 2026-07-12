@@ -102,6 +102,20 @@ check-cone:
         exit 1
     fi
     echo "cone guard: default vertex is free of the swap and chain cone"
+    # The dev-only generator crates stay out of the bare client too: the
+    # `arbitrary` features across the workspace are test and fuzz surfaces.
+    default_dep_tree="$(cargo tree -p vertex -e normal)"
+    default_dev_leaked=""
+    for crate in arbitrary proptest; do
+        if grep -q " $crate v" <<<"$default_dep_tree"; then
+            default_dev_leaked="$default_dev_leaked $crate"
+        fi
+    done
+    if [ -n "$default_dev_leaked" ]; then
+        echo "cone guard: default vertex pulls the dev-only generator crates:$default_dev_leaked" >&2
+        exit 1
+    fi
+    echo "cone guard: default vertex is free of the dev-only generator crates"
 
 build:
     cargo build --all-features
