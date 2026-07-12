@@ -11,7 +11,7 @@ cargo-fuzz = true
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 quick-protobuf = "0.8"
-vertex-net-codec = { path = "../crates/net/codec" }
+vertex-net-codec = { path = "../crates/net/codec", features = ["arbitrary"] }
 vertex-swarm-net-proto = { path = "../crates/swarm/net/proto" }
 # The `arbitrary` feature is the shared generator layer: the same
 # valid-by-construction impls drive the stable proptest suites, and they
@@ -39,6 +39,17 @@ vertex-swarm-net-retrieval = { path = "../crates/swarm/net/retrieval", features 
 	"arbitrary",
 ] }
 vertex-swarm-net-headers = { path = "../crates/swarm/net/headers", features = [
+	"arbitrary",
+] }
+vertex-swarm-net-pricing = { path = "../crates/swarm/net/pricing", features = [
+	"arbitrary",
+] }
+vertex-swarm-net-pseudosettle = { path = "../crates/swarm/net/pseudosettle", features = [
+	"arbitrary",
+] }
+# The swap cone stays out of the default and wasm clients; the fuzz
+# workspace is the sanctioned consumer of its `arbitrary` surface.
+vertex-swarm-net-swap = { path = "../crates/swarm/net/swap", features = [
 	"arbitrary",
 ] }
 
@@ -150,6 +161,55 @@ bench = false
 [[bin]]
 name = "headers_roundtrip"
 path = "fuzz_targets/headers_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pricing_decode"
+path = "fuzz_targets/pricing_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pricing_roundtrip"
+path = "fuzz_targets/pricing_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pseudosettle_decode"
+path = "fuzz_targets/pseudosettle_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pseudosettle_roundtrip"
+path = "fuzz_targets/pseudosettle_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swap_decode"
+path = "fuzz_targets/swap_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swap_roundtrip"
+path = "fuzz_targets/swap_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u256_wire"
+path = "fuzz_targets/u256_wire.rs"
 test = false
 doc = false
 bench = false

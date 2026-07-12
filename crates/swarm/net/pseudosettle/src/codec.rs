@@ -42,7 +42,7 @@ impl ProtoMessage for Payment {
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         Ok(Self {
-            amount: decode_u256_be(&proto.amount),
+            amount: decode_u256_be(&proto.amount)?,
         })
     }
 }
@@ -82,7 +82,7 @@ impl ProtoMessage for PaymentAck {
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         Ok(Self {
-            amount: decode_u256_be(&proto.amount),
+            amount: decode_u256_be(&proto.amount)?,
             timestamp: proto.timestamp,
         })
     }
@@ -136,30 +136,87 @@ mod tests {
         assert_eq!(ack.amount, amount);
         assert!(ack.timestamp > 0);
     }
+
+    #[test]
+    fn test_oversized_amount_rejected() {
+        let proto = vertex_swarm_net_proto::pseudosettle::Payment {
+            amount: vec![0xff; 33],
+        };
+        assert!(matches!(
+            Payment::from_proto(proto),
+            Err(PseudosettleError::InvalidAmount(_))
+        ));
+    }
+
+    #[test]
+    fn test_leading_zero_amount_rejected() {
+        let proto = vertex_swarm_net_proto::pseudosettle::PaymentAck {
+            amount: vec![0x00, 0x01],
+            timestamp: 1,
+        };
+        assert!(matches!(
+            PaymentAck::from_proto(proto),
+            Err(PseudosettleError::InvalidAmount(_))
+        ));
+    }
+
+    /// Replay the committed fuzz seeds through the same decode paths the
+    /// `pseudosettle_decode` fuzz target drives, so the stable test gate
+    /// proves the seeds stay panic-free without the fuzzer.
+    #[test]
+    fn seed_replay_pseudosettle_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/pseudosettle_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let payment = crate::fuzz::decode_payment(&data);
+            let ack = crate::fuzz::decode_payment_ack(&data);
+
+            if name.starts_with("valid-payment-") {
+                assert!(payment.is_some(), "seed {name} must decode as a payment");
+            } else if name.starts_with("valid-ack-") {
+                assert!(ack.is_some(), "seed {name} must decode as an ack");
+            } else if name.starts_with("invalid-") || name.starts_with("crash-") {
+                assert!(payment.is_none(), "seed {name} must stay a payment Err");
+                assert!(ack.is_none(), "seed {name} must stay an ack Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 6,
+            "expected at least the 6 curated seeds, found {replayed}"
+        );
+    }
 }
 
+// Stable pins of the round-trip invariant, drawing both messages through the
+// shared `Arbitrary` impls so the proptest suite and the fuzz round-trip
+// target drive one construction path.
 #[cfg(test)]
 mod proptests {
     use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
     use vertex_net_codec::prop_assert_proto_roundtrip;
 
     use super::*;
-
-    fn amount() -> impl Strategy<Value = U256> {
-        any::<[u8; 32]>().prop_map(U256::from_be_bytes)
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn payment_roundtrips(amount in amount()) {
-            prop_assert_proto_roundtrip!(Payment::new(amount));
+        fn payment_roundtrips(payment in arb::<Payment>()) {
+            prop_assert_proto_roundtrip!(payment);
         }
 
         #[test]
-        fn payment_ack_roundtrips(amount in amount(), timestamp in any::<i64>()) {
-            prop_assert_proto_roundtrip!(PaymentAck::new(amount, timestamp));
+        fn payment_ack_roundtrips(ack in arb::<PaymentAck>()) {
+            prop_assert_proto_roundtrip!(ack);
         }
     }
 }

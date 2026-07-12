@@ -41,6 +41,19 @@ serde_json.workspace = true
 ## tracing
 tracing.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
 [dev-dependencies]
 vertex-swarm-test-utils.workspace = true
+arbitrary = { workspace = true }
 proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+
+[features]
+# Valid-by-construction `Arbitrary` impls for the swap messages plus the
+# fuzz-facing surface (the raw decode entry points, cheque payload path
+# included), shared by the proptest suite and the fuzz targets. Dev-only:
+# never enabled by a shipped artefact cone, and only ever pulled inside the
+# swap cone / fuzz workspace.
+arbitrary = ["dep:arbitrary"]
