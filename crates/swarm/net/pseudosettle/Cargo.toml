@@ -39,3 +39,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 vertex-util-runtime = { workspace = true }
+proptest = { workspace = true }

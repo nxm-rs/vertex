@@ -110,3 +110,38 @@ mod tests {
         assert!(matches!(result, Err(HandshakeError::MissingField("ack"))));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use vertex_swarm_test_utils::strategies;
+
+    use super::super::syn_msg::proptests::observed_multiaddr;
+    use super::*;
+
+    // A bootnode does not participate in handshake, and the boolean storer
+    // flag collapses it onto client, so only storer and client round-trip.
+    fn node_type() -> impl Strategy<Value = SwarmNodeType> {
+        prop_oneof![Just(SwarmNodeType::Storer), Just(SwarmNodeType::Client)]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn synack_roundtrips(
+            observed in observed_multiaddr(),
+            peer in strategies::swarm_peer(),
+            node_type in node_type(),
+        ) {
+            let network_id = strategies::swarm_peer_network_id();
+            let proto = encode_synack(&observed, &peer, node_type, "hello", network_id);
+            let (dec_observed, dec_peer, dec_type, dec_welcome) =
+                decode_synack(proto, network_id).expect("a validly signed synack decodes");
+            prop_assert_eq!(observed, dec_observed);
+            prop_assert_eq!(peer, dec_peer);
+            prop_assert_eq!(node_type, dec_type);
+            prop_assert_eq!("hello", dec_welcome.as_str());
+        }
+    }
+}

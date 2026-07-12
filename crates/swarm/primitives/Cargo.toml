@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"], optional = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 auto_impl = "1.1"
+arbitrary = { workspace = true, optional = true }
 
 # On wasm, nectar-primitives leaves the alloy-primitives `getrandom` feature
 # unselected even though its nonce generation calls `B256::random()`. Select
@@ -36,8 +37,19 @@ getrandom_04 = { workspace = true, features = ["wasm_js"] }
 [dev-dependencies]
 alloy-primitives = { workspace = true }
 alloy-signer-local = { workspace = true }
+arbitrary = { workspace = true }
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-postage = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["std"]
 std = ["nectar-primitives/std", "nectar-postage/std"]
 serde = ["dep:serde", "nectar-postage/serde"]
+# Valid-by-construction `Arbitrary` impls shared by proptest strategies and
+# fuzz targets. Dev-only: never enabled by a shipped artefact cone.
+arbitrary = [
+    "std",
+    "dep:arbitrary",
+    "nectar-primitives/arbitrary",
+    "nectar-postage/arbitrary",
+]

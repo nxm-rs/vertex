@@ -51,9 +51,10 @@ invariant is *no panic, no OOM, no hang*:
 |---|---|---|
 | `pushsync_decode` | `pushsync::{Delivery, Receipt}` deserialize + `from_proto` | address/nonce length checks, stamp parsing, chunk reconstruction, signature parsing, and the storage radius range never panic |
 
-Round-trip targets take a structured value via valid-by-construction
-`Arbitrary` inputs, so the invariant is stronger: encode must decode back to
-an equal value.
+Round-trip targets take a structured value via the valid-by-construction
+`Arbitrary` impls behind each owning crate's `arbitrary` feature (the same
+impls drive the stable proptest suites), so the invariant is stronger:
+encode must decode back to an equal value.
 
 | Target | Invariant |
 |---|---|

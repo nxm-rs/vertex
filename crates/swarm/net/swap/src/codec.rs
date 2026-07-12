@@ -116,3 +116,48 @@ mod tests {
         assert_eq!(original, decoded);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use alloy_primitives::U256;
+    use bytes::Bytes;
+    use proptest::prelude::*;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt};
+
+    use super::*;
+
+    // The codec carries the signature opaquely (the JSON is transport-only),
+    // so any 65 bytes round-trip; signature validity is the chequebook
+    // layer's concern.
+    fn signed_cheque() -> impl Strategy<Value = SignedCheque> {
+        (
+            any::<[u8; 20]>(),
+            any::<[u8; 20]>(),
+            any::<[u8; 32]>(),
+            prop::collection::vec(any::<u8>(), 65),
+        )
+            .prop_map(|(chequebook, beneficiary, payout, signature)| {
+                let cheque = Cheque::new(
+                    Address::from(chequebook),
+                    Address::from(beneficiary),
+                    U256::from_be_bytes(payout),
+                );
+                SignedCheque::new(cheque, Bytes::from(signature))
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn emit_cheque_roundtrips(cheque in signed_cheque()) {
+            prop_assert_proto_roundtrip!(EmitCheque::new(cheque));
+        }
+
+        #[test]
+        fn handshake_roundtrips(beneficiary in any::<[u8; 20]>()) {
+            prop_assert_proto_roundtrip!(Handshake::new(Address::from(beneficiary)));
+        }
+    }
+}

@@ -8,25 +8,18 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-# `default-features = false` matches the parent workspace; the crate is
-# already in the graph transitively, this only names it for `Signature`.
-alloy-primitives = { version = "1.6", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
-# Same git rev as the parent workspace pin, so the fuzz lock resolves one
-# copy of the nectar types. The `arbitrary` feature carries the raw-tier
-# impls and the valid-tier `generators` modules.
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef", features = [
-	"arbitrary",
-] }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef", features = [
-	"arbitrary",
-] }
 quick-protobuf = "0.8"
 vertex-net-codec = { path = "../crates/net/codec" }
 vertex-swarm-net-proto = { path = "../crates/swarm/net/proto" }
-vertex-swarm-net-pushsync = { path = "../crates/swarm/net/pushsync" }
-vertex-swarm-primitives = { path = "../crates/swarm/primitives" }
+# The `arbitrary` feature is the shared generator layer: the same
+# valid-by-construction impls drive the stable proptest suites, and they
+# plumb the nectar `arbitrary` features through the parent workspace's
+# git pin so the fuzz lock resolves one copy of the nectar types.
+vertex-swarm-net-pushsync = { path = "../crates/swarm/net/pushsync", features = [
+	"arbitrary",
+] }
 
 [[bin]]
 name = "pushsync_decode"

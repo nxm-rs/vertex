@@ -52,6 +52,8 @@ thiserror.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 dashmap.workspace = true
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 
 [[bench]]

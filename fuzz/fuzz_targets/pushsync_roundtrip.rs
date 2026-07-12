@@ -1,62 +1,29 @@
 //! Structured round-trip fuzz of the pushsync codec.
 //!
-//! Inputs are valid by construction: a delivery carries a chunk from the
-//! valid-tier nectar generators (content, or single-owner signed by a key
-//! drawn from the same input) paired with a raw-tier arbitrary stamp (the
-//! codec carries the stamp opaquely), and a receipt carries a well-formed
-//! signature, a 32-byte nonce, and an in-range storage radius. The oracle is
-//! stronger than "no panic": `into_proto` must serialize, the wire bytes must
-//! deserialize, and `from_proto` must reproduce the original value. Any
-//! failure is a codec bug.
-//!
-//! The `Arbitrary` impl here is a local bootstrap; the shared generator layer
-//! replaces it once the workspace grows one.
+//! Inputs come from the shared generator layer: the `arbitrary` feature of
+//! `vertex-swarm-net-pushsync` builds valid-by-construction values (a really
+//! signed stamped chunk for a delivery, a real signature over the chunk
+//! address for a receipt), so this target and the crate's proptest suite
+//! drive one construction path. The oracle is stronger than "no panic":
+//! `into_proto` must serialize, the wire bytes must deserialize, and
+//! `from_proto` must reproduce the original value. Any failure is a codec
+//! bug.
 
 #![no_main]
 
-use arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use nectar_primitives::{Bin, ChunkAddress, DEFAULT_BODY_SIZE, Nonce, generators};
 use quick_protobuf::{BytesReader, MessageRead, MessageWrite, Writer};
 use vertex_net_codec::ProtoMessage;
-use vertex_swarm_net_pushsync::{Delivery, ReceiptResponse, WireReceipt};
-use vertex_swarm_primitives::{StampedChunk, StorageRadius};
+use vertex_swarm_net_pushsync::{Delivery, ReceiptResponse};
 
 /// One structured input: either pushsync frame, so a single corpus drives
 /// both codecs (the delivery arm pays chunk construction per exec, the
 /// receipt arms stay cheap).
-#[derive(Debug)]
+#[derive(Debug, Arbitrary)]
 enum PushsyncInput {
     Delivery(Delivery),
     Receipt(ReceiptResponse),
-}
-
-impl<'a> Arbitrary<'a> for PushsyncInput {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        if u.arbitrary()? {
-            let chunk = generators::any_chunk::<DEFAULT_BODY_SIZE>(u)?;
-            let stamp = nectar_postage::Stamp::arbitrary(u)?;
-            Ok(Self::Delivery(Delivery::new(StampedChunk::new(
-                chunk, stamp,
-            ))))
-        } else if u.arbitrary()? {
-            let address = ChunkAddress::new(u.arbitrary()?);
-            let signature = alloy_primitives::Signature::new(
-                alloy_primitives::U256::from_be_bytes(u.arbitrary::<[u8; 32]>()?),
-                alloy_primitives::U256::from_be_bytes(u.arbitrary::<[u8; 32]>()?),
-                u.arbitrary()?,
-            );
-            let nonce = Nonce::new(u.arbitrary()?);
-            let radius = StorageRadius::new(
-                Bin::new(u.int_in_range(0..=31)?).map_err(|_| arbitrary::Error::IncorrectFormat)?,
-            );
-            Ok(Self::Receipt(ReceiptResponse::Stored(WireReceipt::new(
-                address, signature, nonce, radius,
-            ))))
-        } else {
-            Ok(Self::Receipt(ReceiptResponse::Failed))
-        }
-    }
 }
 
 /// Encode through the generated writer, decode back through the generated
