@@ -85,3 +85,24 @@ mod tests {
         assert_eq!(proto.payment_threshold, vec![0x01, 0x00]);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+
+    use super::*;
+
+    fn threshold() -> impl Strategy<Value = U256> {
+        any::<[u8; 32]>().prop_map(U256::from_be_bytes)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn announce_roundtrips(threshold in threshold()) {
+            prop_assert_proto_roundtrip!(AnnouncePaymentThreshold::new(threshold));
+        }
+    }
+}

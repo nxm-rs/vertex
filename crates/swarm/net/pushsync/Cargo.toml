@@ -40,10 +40,30 @@ strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 # Receipt recovery tests sign real custody receipts.
 alloy-signer-local.workspace = true
+arbitrary = { workspace = true }
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-postage = { workspace = true, features = ["arbitrary"] }
+vertex-swarm-primitives = { workspace = true, features = ["arbitrary"] }
+
+[features]
+# Valid-by-construction `Arbitrary` impls for the wire types, shared by the
+# proptest suite and the fuzz round-trip target. Dev-only: never enabled by
+# a shipped artefact cone.
+arbitrary = [
+    "dep:arbitrary",
+    "nectar-primitives/arbitrary",
+    "nectar-postage/arbitrary",
+    "vertex-swarm-primitives/arbitrary",
+]
 
 [lints]
 workspace = true

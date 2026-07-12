@@ -395,3 +395,52 @@ mod tests {
         assert!(matches!(err, RetrievalError::InvalidStamp(_)));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use arbitrary::Unstructured;
+    use nectar_primitives::generators;
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+
+    use super::*;
+
+    // A valid chunk of either kind, drawn through nectar's valid-tier
+    // generators (a single-owner chunk is really signed).
+    fn valid_chunk() -> impl Strategy<Value = AnyChunk> {
+        prop::collection::vec(any::<u8>(), 128..2048).prop_filter_map(
+            "a byte pool the generator can draw a chunk from",
+            |bytes| {
+                let mut u = Unstructured::new(&bytes);
+                generators::any_chunk(&mut u).ok()
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn request_roundtrips(address in arb::<ChunkAddress>()) {
+            prop_assert_proto_roundtrip!(Request::new(address));
+        }
+
+        // The delivery codec is address-parameterized, so it round-trips
+        // through the codec pair rather than the `ProtoMessage` macro. The
+        // serve path ships data only, so the decoded success is stampless.
+        #[test]
+        fn delivery_roundtrips(chunk in valid_chunk()) {
+            let address = *chunk.address();
+            let original = Delivery::chunk(chunk, None);
+
+            let mut enc = DeliveryCodec::new(1024 * 1024, address);
+            let mut buf = BytesMut::new();
+            enc.encode(original.clone(), &mut buf).expect("encodes");
+
+            let mut dec = DeliveryCodec::new(1024 * 1024, address);
+            let decoded = dec.decode(&mut buf).expect("decodes").expect("one frame");
+            prop_assert_eq!(decoded, original);
+        }
+    }
+}

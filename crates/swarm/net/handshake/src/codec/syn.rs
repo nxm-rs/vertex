@@ -61,3 +61,36 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+pub(crate) mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    pub(crate) fn observed_multiaddr() -> impl Strategy<Value = Multiaddr> {
+        prop_oneof![
+            (any::<[u8; 4]>(), any::<u16>()).prop_map(|(ip, port)| {
+                format!("/ip4/{}.{}.{}.{}/tcp/{port}", ip[0], ip[1], ip[2], ip[3])
+                    .parse()
+                    .expect("a well-formed ip4/tcp multiaddr")
+            }),
+            (any::<[u8; 16]>(), any::<u16>()).prop_map(|(ip, port)| {
+                format!("/ip6/{}/tcp/{port}", std::net::Ipv6Addr::from(ip))
+                    .parse()
+                    .expect("a well-formed ip6/tcp multiaddr")
+            }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn syn_roundtrips(observed in observed_multiaddr()) {
+            let proto = encode_syn(&observed);
+            let decoded = decode_syn(proto).expect("a well-formed syn decodes");
+            prop_assert_eq!(observed, decoded);
+        }
+    }
+}

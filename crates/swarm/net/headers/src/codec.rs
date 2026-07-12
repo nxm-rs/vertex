@@ -56,3 +56,29 @@ impl ProtoMessage for Headers {
         })
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+
+    use super::*;
+
+    // Keys are unique by map construction, so decode's collect loses nothing.
+    fn headers_map() -> impl Strategy<Value = HashMap<String, Bytes>> {
+        prop::collection::hash_map(
+            any::<String>(),
+            prop::collection::vec(any::<u8>(), 0..=32).prop_map(Bytes::from),
+            0..=8,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn headers_roundtrip(map in headers_map()) {
+            prop_assert_proto_roundtrip!(Headers::new(map));
+        }
+    }
+}

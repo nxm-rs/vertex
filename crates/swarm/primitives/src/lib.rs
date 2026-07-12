@@ -36,6 +36,8 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls;
 mod signer;
 mod stamped;
 mod validated;

@@ -316,6 +316,86 @@ impl SwarmPeer {
     }
 }
 
+/// The network id [`SwarmPeer`]'s `Arbitrary` impl signs under. The wire
+/// record does not carry a network id, so a decode boundary consuming
+/// generated records must validate against this value.
+#[cfg(any(test, feature = "arbitrary"))]
+pub const ARBITRARY_NETWORK_ID: NetworkId = NetworkId::new(1_234_567_890);
+
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impl {
+    use alloy_primitives::{Address, B256, ChainId, Signature};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+
+    use super::*;
+
+    /// A drawn signing identity, so [`SwarmPeer::sign`] mints the record.
+    struct DrawnIdentity {
+        signer: PrivateKeySigner,
+        network_id: NetworkId,
+        nonce: Nonce,
+    }
+
+    impl SignerSync for DrawnIdentity {
+        fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<Signature> {
+            self.signer.sign_hash_sync(hash)
+        }
+
+        fn chain_id_sync(&self) -> Option<ChainId> {
+            self.signer.chain_id_sync()
+        }
+    }
+
+    impl OverlaySigner for DrawnIdentity {
+        fn address(&self) -> Address {
+            self.signer.address()
+        }
+
+        fn network_id(&self) -> NetworkId {
+            self.network_id
+        }
+
+        fn nonce(&self) -> Nonce {
+            self.nonce
+        }
+    }
+
+    impl SwarmPeer {
+        /// A validly signed peer record under `network_id`: a real key drawn
+        /// from `u`, a real EIP-191 signature, one to three multiaddrs, and a
+        /// strictly positive timestamp.
+        pub fn arbitrary_signed(
+            u: &mut arbitrary::Unstructured<'_>,
+            network_id: NetworkId,
+        ) -> arbitrary::Result<Self> {
+            let signer = nectar_primitives::generators::signer(u)?;
+            let nonce = arbitrary::Arbitrary::arbitrary(u)?;
+            let multiaddrs = (0..u.int_in_range(1..=3u8)?)
+                .map(|_| crate::arbitrary_multiaddr(u))
+                .collect::<arbitrary::Result<Vec<_>>>()?;
+            let timestamp = Timestamp::from_seconds(u.int_in_range(1..=4_000_000_000i64)?);
+            let chequebook = u
+                .arbitrary::<Option<[u8; 20]>>()?
+                .map(Address::from)
+                .filter(|a| !a.is_zero());
+            let identity = DrawnIdentity {
+                signer,
+                network_id,
+                nonce,
+            };
+            Self::sign(&identity, multiaddrs, timestamp, chequebook)
+                .map_err(|_| arbitrary::Error::IncorrectFormat)
+        }
+    }
+
+    impl<'a> arbitrary::Arbitrary<'a> for SwarmPeer {
+        fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+            Self::arbitrary_signed(u, ARBITRARY_NETWORK_ID)
+        }
+    }
+}
+
 fn scope_rank(scope: &AddressScope) -> u8 {
     match scope {
         AddressScope::Public => 3,
@@ -339,6 +419,38 @@ fn parse_chequebook(bytes: &[u8]) -> Result<Option<Address>, SwarmPeerError> {
             Ok(Some(Address::from(buf)))
         }
         _ => Err(SwarmPeerError::InvalidChequebook),
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn generated_record_round_trips_the_wire(peer in arb::<SwarmPeer>()) {
+            let multiaddrs_bytes = peer.serialize_multiaddrs();
+            let chequebook_bytes = peer
+                .chequebook()
+                .map(|a| a.as_slice().to_vec())
+                .unwrap_or_default();
+            let wire = SwarmPeerWire {
+                multiaddrs_bytes: &multiaddrs_bytes,
+                signature: *peer.signature(),
+                overlay: *peer.overlay(),
+                nonce: *peer.nonce(),
+                timestamp: peer.timestamp(),
+                chequebook_bytes: &chequebook_bytes,
+            };
+            let parsed = SwarmPeer::parse(wire, ARBITRARY_NETWORK_ID, None)
+                .expect("a validly signed record parses");
+            prop_assert_eq!(parsed, peer);
+        }
     }
 }
 

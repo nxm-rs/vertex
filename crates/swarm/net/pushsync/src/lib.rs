@@ -1,5 +1,7 @@
 //! Pushsync protocol for Swarm chunk push and storage receipt.
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls;
 mod codec;
 pub use codec::{Delivery, ReceiptResponse, WireReceipt};
 

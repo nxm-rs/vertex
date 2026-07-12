@@ -17,6 +17,8 @@ pub mod timestamp_policy;
 
 pub use error::SwarmPeerError;
 pub use serde_multiaddr::{MAX_MULTIADDRS_PER_PEER, deserialize_multiaddrs, serialize_multiaddrs};
+#[cfg(any(test, feature = "arbitrary"))]
+pub use swarm_peer::ARBITRARY_NETWORK_ID;
 pub use swarm_peer::{Nonce, SwarmPeer, SwarmPeerWire, Timestamp};
 pub use timestamp_policy::{
     MAX_CLOCK_SKEW, MIN_UPDATE_INTERVAL, TimestampRejection, check_timestamp,
@@ -28,7 +30,7 @@ pub use vertex_net_local::AddressScope;
 pub use vertex_swarm_primitives::SwarmNodeType;
 
 /// Generate a random valid multiaddr for property testing.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "arbitrary"))]
 pub fn arbitrary_multiaddr(
     u: &mut arbitrary::Unstructured<'_>,
 ) -> arbitrary::Result<libp2p::Multiaddr> {

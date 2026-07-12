@@ -137,3 +137,29 @@ mod tests {
         assert!(ack.timestamp > 0);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+
+    use super::*;
+
+    fn amount() -> impl Strategy<Value = U256> {
+        any::<[u8; 32]>().prop_map(U256::from_be_bytes)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn payment_roundtrips(amount in amount()) {
+            prop_assert_proto_roundtrip!(Payment::new(amount));
+        }
+
+        #[test]
+        fn payment_ack_roundtrips(amount in amount(), timestamp in any::<i64>()) {
+            prop_assert_proto_roundtrip!(PaymentAck::new(amount, timestamp));
+        }
+    }
+}

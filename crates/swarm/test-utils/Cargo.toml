@@ -63,6 +63,8 @@ proptest = [
     "dep:proptest",
     "dep:proptest-arbitrary-interop",
     "nectar-primitives/arbitrary",
+    "vertex-swarm-peer/arbitrary",
+    "vertex-swarm-primitives/arbitrary",
 ]
 # In-process multi-node cluster harness. Pulls in `vertex-swarm-node` and a
 # tokio runtime, so it's gated to keep crate-local tests of leaf primitives

@@ -311,3 +311,26 @@ mod tests {
         assert!(decoded.is_error());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
+    use vertex_net_codec::prop_assert_proto_roundtrip;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn delivery_roundtrips(msg in arb::<Delivery>()) {
+            prop_assert_proto_roundtrip!(msg);
+        }
+
+        #[test]
+        fn receipt_roundtrips(msg in arb::<ReceiptResponse>()) {
+            prop_assert_proto_roundtrip!(msg);
+        }
+    }
+}
