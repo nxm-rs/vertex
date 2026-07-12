@@ -9041,6 +9041,7 @@ dependencies = [
 name = "vertex-swarm-net-headers"
 version = "0.1.0"
 dependencies = [
+ "arbitrary",
  "asynchronous-codec",
  "bytes",
  "futures",
@@ -9048,6 +9049,7 @@ dependencies = [
  "metrics",
  "opentelemetry",
  "proptest",
+ "proptest-arbitrary-interop",
  "quick-protobuf",
  "quick-protobuf-codec",
  "strum 0.28.0",

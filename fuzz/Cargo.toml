@@ -35,6 +35,12 @@ vertex-swarm-net-identify = { path = "../crates/swarm/net/identify", features = 
 vertex-swarm-net-pullsync = { path = "../crates/swarm/net/pullsync", features = [
 	"arbitrary",
 ] }
+vertex-swarm-net-retrieval = { path = "../crates/swarm/net/retrieval", features = [
+	"arbitrary",
+] }
+vertex-swarm-net-headers = { path = "../crates/swarm/net/headers", features = [
+	"arbitrary",
+] }
 
 [[bin]]
 name = "pushsync_decode"
@@ -116,6 +122,34 @@ bench = false
 [[bin]]
 name = "pullsync_roundtrip"
 path = "fuzz_targets/pullsync_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retrieval_decode"
+path = "fuzz_targets/retrieval_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retrieval_roundtrip"
+path = "fuzz_targets/retrieval_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "headers_decode"
+path = "fuzz_targets/headers_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "headers_roundtrip"
+path = "fuzz_targets/headers_roundtrip.rs"
 test = false
 doc = false
 bench = false

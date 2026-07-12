@@ -57,7 +57,7 @@ const PROTOBUF_FRAMING: usize = 64;
 /// adversarial peer cannot force a transient allocation larger than this. The
 /// bound is exact so a conformant peer never trips it and an adversarial frame
 /// is capped tightly. Tightening the accept limit is not wire-visible.
-const MAX_DELIVERY_SIZE: usize = MAX_CHUNK_DATA_SIZE + STAMP_SIZE + PROTOBUF_FRAMING;
+pub(crate) const MAX_DELIVERY_SIZE: usize = MAX_CHUNK_DATA_SIZE + STAMP_SIZE + PROTOBUF_FRAMING;
 
 /// Retrieval inbound: receives a chunk request from remote.
 #[derive(Debug, Clone)]

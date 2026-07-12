@@ -38,6 +38,9 @@ thiserror.workspace = true
 ## tracing
 tracing.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
 ## telemetry (native only)
 # W3C trace-context propagation is native-only: the browser client has no OTLP
 # backend to propagate to, so the wasm sibling (`tracing_wasm.rs`) provides no-op
@@ -48,4 +51,13 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 
 [dev-dependencies]
+arbitrary = { workspace = true }
 proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+
+[features]
+# Valid-by-construction `Arbitrary` impl for the headers envelope plus the
+# fuzz-facing surface (the raw decode entry point, the adversarial wire
+# generator, and the envelope invariant check), shared by the proptest suite
+# and the fuzz targets. Dev-only: never enabled by a shipped artefact cone.
+arbitrary = ["dep:arbitrary"]
