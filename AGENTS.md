@@ -70,6 +70,7 @@ Vertex ships three artefacts: a bare client (the default), a storer (`--features
 - `cargo fmt --all` formats. `cargo clippy --all-targets --all-features -- -D warnings` lints. Both required pre-commit.
 - The `justfile` at repo root collects common workflows. When in doubt, read it.
 - Missing tooling on this NixOS host: use `nix-shell -p <pkg> --run "..."`. The project shell is in `flake.nix`.
+- Fuzzing: `fuzz/` is an independent nightly-only cargo workspace driven by cargo-fuzz. `nix develop .#fuzz` then `cargo fuzz run <target>`; runbook and seed policy in `fuzz/README.md`. Committed seeds replay on stable through each owning crate's `seed_replay_*` tests, so the normal test gate proves seed panic-freedom without the fuzzer.
 
 ## Where rules live
 

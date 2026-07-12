@@ -1,0 +1,54 @@
+[package]
+name = "vertex-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# `default-features = false` matches the parent workspace; the crate is
+# already in the graph transitively, this only names it for `Signature`.
+alloy-primitives = { version = "1.6", default-features = false }
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+# Same git rev as the parent workspace pin, so the fuzz lock resolves one
+# copy of the nectar types. The `arbitrary` feature carries the raw-tier
+# impls and the valid-tier `generators` modules.
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef", features = [
+	"arbitrary",
+] }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef", features = [
+	"arbitrary",
+] }
+quick-protobuf = "0.8"
+vertex-net-codec = { path = "../crates/net/codec" }
+vertex-swarm-net-proto = { path = "../crates/swarm/net/proto" }
+vertex-swarm-net-pushsync = { path = "../crates/swarm/net/pushsync" }
+vertex-swarm-primitives = { path = "../crates/swarm/primitives" }
+
+[[bin]]
+name = "pushsync_decode"
+path = "fuzz_targets/pushsync_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pushsync_roundtrip"
+path = "fuzz_targets/pushsync_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+# Make arithmetic overflow and debug_assert! act as fuzz oracles even in the
+# optimized builds cargo-fuzz produces.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
+
+# Self-contained workspace root: keeps the parent workspace from ever trying
+# to build the nightly-only fuzz crate.
+[workspace]
+resolver = "2"

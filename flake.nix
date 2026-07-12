@@ -21,6 +21,13 @@
           targets = [ "wasm32-unknown-unknown" ];
         };
 
+        # Nightly toolchain for fuzzing (cargo-fuzz needs -Zsanitizer et al).
+        # llvm-tools supplies the llvm-profdata/llvm-cov binaries that
+        # `cargo fuzz coverage` looks up via the rustc sysroot.
+        rustFuzz = pkgs.rust-bin.nightly.latest.default.override {
+          extensions = [ "rust-src" "clippy" "rustfmt" "llvm-tools-preview" ];
+        };
+
         # Get the rust-analyzer binary path for Zed configuration
         rustAnalyzerPath = "${rustToolchain}/bin/rust-analyzer";
       in
@@ -28,7 +35,7 @@
         devShells.default = pkgs.mkShell {
           name = "vertex-dev";
 
-          # Disable fortify hardening — jemalloc's configure runs test
+          # Disable fortify hardening - jemalloc's configure runs test
           # compiles with -O0 which conflicts with _FORTIFY_SOURCE.
           hardeningDisable = [ "fortify" ];
 
@@ -104,6 +111,27 @@ EOF
 
           # Rust flags for better error messages
           RUST_BACKTRACE = "1";
+        };
+
+        # Dedicated shell for fuzzing (see fuzz/README.md). Nightly is the
+        # default cargo here so `cargo fuzz run <target>` just works.
+        devShells.fuzz = pkgs.mkShell {
+          name = "vertex-fuzz";
+
+          buildInputs = with pkgs; [
+            rustFuzz
+            cargo-fuzz
+            # libfuzzer-sys compiles the libFuzzer C++ runtime via the `cc`
+            # crate, which needs a working clang/clang++.
+            clang
+            pkg-config
+            openssl
+            openssl.dev
+          ];
+
+          OPENSSL_DIR = "${pkgs.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
 
         # Provide rust-analyzer as a package for tools that need it
