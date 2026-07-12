@@ -22,6 +22,10 @@ default = []
 # builder's chain feature; off by default so the FFI client stays chain-free
 # unless the host opts in.
 chain = ["vertex-swarm-builder/chain"]
+# Fuzz-facing surface (`crate::fuzz`): the entry-boundary driver shared by the
+# ffi_entry fuzz target and the stable seed-replay test. Dev-only: never
+# enabled by the shipped cdylib cone (the cone guard asserts this).
+arbitrary = ["dep:arbitrary", "nectar-postage/arbitrary"]
 
 [dependencies]
 # vertex - node infrastructure and the client builder
@@ -55,6 +59,9 @@ flutter_rust_bridge = "=2.12.0"
 thiserror.workspace = true
 strum.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
 # Stream combinators (`StreamExt`) for pumping the bounded download/upload
 # pipelines into the host's StreamSink at the boundary.
 futures.workspace = true
@@ -79,3 +86,8 @@ metrics.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
 metrics-util = { version = "0.20", default-features = false, features = ["registry"] }
+
+[dev-dependencies]
+arbitrary.workspace = true
+proptest.workspace = true
+nectar-postage = { workspace = true, features = ["arbitrary"] }

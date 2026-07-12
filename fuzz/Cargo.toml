@@ -52,6 +52,9 @@ vertex-swarm-net-pseudosettle = { path = "../crates/swarm/net/pseudosettle", fea
 vertex-swarm-net-swap = { path = "../crates/swarm/net/swap", features = [
 	"arbitrary",
 ] }
+# The embedded-client boundary crate, linked here as a plain rlib; its
+# `arbitrary` surface is dev-facing and never enters the shipped cdylib cone.
+vertex-ffi = { path = "../crates/ffi", features = ["arbitrary"] }
 
 [[bin]]
 name = "pushsync_decode"
@@ -217,6 +220,13 @@ bench = false
 [[bin]]
 name = "framing_decode"
 path = "fuzz_targets/framing_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffi_entry"
+path = "fuzz_targets/ffi_entry.rs"
 test = false
 doc = false
 bench = false

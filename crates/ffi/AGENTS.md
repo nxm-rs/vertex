@@ -61,3 +61,4 @@ Keep the codegen and the `flutter_rust_bridge` runtime crate on the same version
 ## Tests
 
 - `cargo test -p vertex-ffi`. Unit tests cover boundary reconstruction and identity-building helpers, log event extraction, and metrics snapshot extraction, without standing up a network.
+- The entry boundary carries the `ffi_entry` fuzz target under `fuzz/` at the repo root. `src/fuzz.rs` (behind the `arbitrary` feature, outside `src/api` so the binding codegen never sees it) holds `check_entry`, the driver shared by the target, the stable `seed_replay_ffi_entry` test, and an in-crate whole-driver proptest; further proptests in `api/client.rs` and `api/logging.rs` pin totality over the `api::types` input structs, the stream-config clamp, and the filter-directive parse. The `arbitrary` and `proptest` dependencies stay dev-only and never enter the shipped cdylib cone (the cone guard asserts this). Read `fuzz/README.md` before extending.

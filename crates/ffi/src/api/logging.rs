@@ -187,9 +187,7 @@ where
 /// chosen level.
 #[frb]
 pub fn init_logging(level: String, sink: StreamSink<LogLine>) -> Result<(), FfiError> {
-    let filter = EnvFilter::try_new(&level).map_err(|e| FfiError::Logging {
-        reason: format!("invalid log filter {level:?}: {e}"),
-    })?;
+    let filter = parse_filter(&level)?;
 
     // Reserve the init slot first so a racing second caller loses cleanly
     // before it ever tries to install a subscriber.
@@ -206,6 +204,14 @@ pub fn init_logging(level: String, sink: StreamSink<LogLine>) -> Result<(), FfiE
         .map_err(|e| FfiError::Logging {
             reason: format!("install subscriber: {e}"),
         })
+}
+
+/// Parse an `EnvFilter` directive; an unparseable directive is a typed error,
+/// never a panic across the boundary.
+pub(crate) fn parse_filter(level: &str) -> Result<EnvFilter, FfiError> {
+    EnvFilter::try_new(level).map_err(|e| FfiError::Logging {
+        reason: format!("invalid log filter {level:?}: {e}"),
+    })
 }
 
 #[cfg(test)]
@@ -259,11 +265,38 @@ mod tests {
         assert!(guard.set(()).is_err());
     }
 
+    #[test]
+    fn filter_parse_maps_to_logging_error() {
+        assert!(parse_filter("info,vertex_topology=debug").is_ok());
+        assert!(matches!(
+            parse_filter("not a [ directive"),
+            Err(FfiError::Logging { .. })
+        ));
+    }
+
     /// Minimal subscriber that runs the extraction over one event and stores the
     /// resulting [`LogLine`], so the logic is testable without a global
     /// subscriber or a real `StreamSink`.
     struct CaptureSubscriber {
         out: std::sync::Arc<std::sync::Mutex<Option<LogLine>>>,
+    }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn filter_parse_is_total(directive in "\\PC{0,64}") {
+                match parse_filter(&directive) {
+                    Ok(_) | Err(FfiError::Logging { .. }) => {}
+                    Err(e) => {
+                        return Err(TestCaseError::fail(format!("unexpected error: {e}")));
+                    }
+                }
+            }
+        }
     }
 
     impl tracing::Subscriber for CaptureSubscriber {
