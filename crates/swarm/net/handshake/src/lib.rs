@@ -53,6 +53,9 @@ mod protocol;
 mod error;
 pub use error::HandshakeError;
 
+#[cfg(feature = "arbitrary")]
+pub mod fuzz;
+
 pub mod metrics;
 pub use metrics::HandshakeStage;
 

@@ -13,10 +13,10 @@ use crate::MAX_HANDSHAKE_BUFFER_SIZE;
 /// chequebook (20) and timestamp fields, the network id and node type, the
 /// echoed observed multiaddr in a synack, and protobuf tag/length overhead,
 /// rounded up for margin.
-const FRAME_FIXED_BUDGET: usize = 384;
+pub(crate) const FRAME_FIXED_BUDGET: usize = 384;
 
 /// Encoded size of one uvarint.
-fn uvarint_len(mut value: u64) -> usize {
+pub(crate) fn uvarint_len(mut value: u64) -> usize {
     let mut len = 1;
     while value >= 0x80 {
         value >>= 7;
@@ -27,7 +27,7 @@ fn uvarint_len(mut value: u64) -> usize {
 
 /// Serialized size of one entry in the multiaddr list block: the address bytes
 /// plus their uvarint length prefix.
-fn entry_len(addr: &Multiaddr) -> usize {
+pub(crate) fn entry_len(addr: &Multiaddr) -> usize {
     let len = addr.to_vec().len();
     len + uvarint_len(len as u64)
 }
