@@ -142,12 +142,12 @@ impl TryFrom<u8> for CommittedDepth {
 ///
 /// ```
 /// use vertex_swarm_redistribution::{CommittedDepth, canonical_neighbourhood};
-/// use nectar_primitives::OverlayAddress;
+/// use nectar_primitives::{ChunkAddress, OverlayAddress};
 /// use alloy_primitives::B256;
 ///
 /// let anchor = OverlayAddress::zero();
-/// let near = OverlayAddress::from(B256::ZERO);
-/// let far = OverlayAddress::from(B256::repeat_byte(0xff));
+/// let near = ChunkAddress::from(B256::ZERO);
+/// let far = ChunkAddress::from(B256::repeat_byte(0xff));
 /// let depth = CommittedDepth::try_from(1).unwrap();
 /// let hood = canonical_neighbourhood(&anchor, depth, [near, far]);
 /// assert_eq!(hood, vec![near]);
