@@ -54,13 +54,16 @@ invariant is *no panic, no OOM, no hang*:
 | `swarm_peer_parse` | `deserialize_multiaddrs` on raw bytes, `SwarmPeer::parse` and the gossip `check_timestamp` policy on adversarial content | the hand-rolled list/uvarint decoder and its count cap, EIP-191 recovery, overlay validation, the chequebook length check, the timestamp and clock-skew checks, and the timestamp policy's accept bounds never panic |
 | `hive_decode` | the hive `Peers` batch through `validate_batch` (length checks, the two-tier cache, EIP-191 recovery, the /p2p/ requirement) | validation classifies every raw record exactly once, full-validation successes stay proportional to wire bytes (so a frame-capped message bounds per-message ECDSA work), and re-validating survivors through the cache reproduces them |
 | `identify_decode` | the identify message conversions (`Info`/`PushInfo`) over the vendored generated struct | public-key decode, multiaddr and protocol filtering, and the signed-peer-record consistency gate never panic; the push conversion is total |
+| `pullsync_decode` | the pullsync message set (`Syn`/`Ack`/`Get`/`Offer`/`Want`/`Delivery`) deserialize + `from_proto` | the bin range on `Get`, the 32-byte descriptor field checks, the implicit bitvector sizing on `Want`, and the stamp parsing plus chunk reconstruction on `Delivery` never panic |
+| `pullsync_bitvector` | `check_bitvector` over `BitVector::from_wire_bytes` and `BitVector::from_bytes` | `from_bytes` accepts exactly `len / 8 + 1` bytes, trailing pad bits never surface through `get`/`count_ones`, `set` past `len` is a no-op, and accepted bytes round-trip unchanged |
 
-The flat `Syn` frame is fed raw `&[u8]` straight through the generated
-reader; the nested `Ack`/`SynAck` frames go through the real write then read
-then decode path with adversarial field content, so the domain decode sees
-hostile input while the reader stays on writer-produced bytes. The generated
-protobuf reader on raw bytes is upstream code and a separate nested-length
-soundness issue in `quick-protobuf` is tracked out of band.
+The flat frames are fed raw `&[u8]` straight through the generated reader;
+the nested frames (the handshake `Ack`/`SynAck`, the pullsync `Offer`) go
+through the real write then read then decode path with adversarial field
+content, so the domain decode sees hostile input while the reader stays on
+writer-produced bytes. The generated protobuf reader on raw bytes is
+upstream code and a separate nested-length soundness issue in
+`quick-protobuf` is tracked out of band.
 
 `handshake_uvarint_differential` is not a decode target: it checks the
 hand-rolled frame-sizing arithmetic (`uvarint_len`, `entry_len`,
@@ -83,6 +86,7 @@ encode must decode back to an equal value.
 | `pushsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for deliveries and receipts |
 | `handshake_roundtrip` | encode then wire then decode reproduces the syn/ack/synack, signature recovery included |
 | `swarm_peer_roundtrip` | a signed record's wire fields parse back to an equal record, and the clock-skew window holds exactly at its inclusive boundaries |
+| `pullsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` across the whole pullsync message set |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
@@ -94,6 +98,8 @@ nightly or libFuzzer:
 - `seed_replay_swarm_peer_parse` in `crates/swarm/peers/peer/src/serde_multiaddr.rs`
 - `seed_replay_hive_decode` in `crates/swarm/net/hive/src/protocol.rs`
 - `seed_replay_identify_decode` in `crates/swarm/net/identify/src/protocol.rs`
+- `seed_replay_pullsync_decode` in `crates/swarm/net/pullsync/src/codec.rs`
+- `seed_replay_pullsync_bitvector` in `crates/swarm/net/pullsync/src/bitvector.rs` (the `pullsync_bitvector` seeds: a two-byte little-endian declared length then the packed bytes, covering truncated and padding-abuse vectors)
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.

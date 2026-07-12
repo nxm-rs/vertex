@@ -32,6 +32,9 @@ vertex-swarm-net-hive = { path = "../crates/swarm/net/hive", features = [
 vertex-swarm-net-identify = { path = "../crates/swarm/net/identify", features = [
 	"arbitrary",
 ] }
+vertex-swarm-net-pullsync = { path = "../crates/swarm/net/pullsync", features = [
+	"arbitrary",
+] }
 
 [[bin]]
 name = "pushsync_decode"
@@ -92,6 +95,27 @@ bench = false
 [[bin]]
 name = "identify_decode"
 path = "fuzz_targets/identify_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pullsync_decode"
+path = "fuzz_targets/pullsync_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pullsync_bitvector"
+path = "fuzz_targets/pullsync_bitvector.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pullsync_roundtrip"
+path = "fuzz_targets/pullsync_roundtrip.rs"
 test = false
 doc = false
 bench = false

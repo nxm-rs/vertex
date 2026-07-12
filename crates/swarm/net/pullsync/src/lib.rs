@@ -7,6 +7,9 @@
 //! preceding `Offer` (LSB-first), answered by one `Delivery` per set bit in offer
 //! order. An empty `Offer` ends the exchange with no `Want`.
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls;
+
 mod bitvector;
 pub use bitvector::{BitVector, BitVectorError};
 
@@ -15,6 +18,9 @@ pub use codec::{Ack, ChunkDescriptor, Delivery, Get, Offer, Syn, Want};
 
 mod error;
 pub use error::PullsyncError;
+
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
 
 pub mod metrics;
 
