@@ -56,12 +56,14 @@ invariant is *no panic, no OOM, no hang*:
 | `identify_decode` | the identify message conversions (`Info`/`PushInfo`) over the vendored generated struct | public-key decode, multiaddr and protocol filtering, and the signed-peer-record consistency gate never panic; the push conversion is total |
 | `pullsync_decode` | the pullsync message set (`Syn`/`Ack`/`Get`/`Offer`/`Want`/`Delivery`) deserialize + `from_proto` | the bin range on `Get`, the 32-byte descriptor field checks, the implicit bitvector sizing on `Want`, and the stamp parsing plus chunk reconstruction on `Delivery` never panic |
 | `pullsync_bitvector` | `check_bitvector` over `BitVector::from_wire_bytes` and `BitVector::from_bytes` | `from_bytes` accepts exactly `len / 8 + 1` bytes, trailing pad bits never surface through `get`/`count_ones`, `set` past `len` is a no-op, and accepted bytes round-trip unchanged |
+| `retrieval_decode` | the retrieval `Request` and the address-parameterized `Delivery` decode; a delivery input's first 32 bytes are the requested address, the rest the raw frame, so the fuzzer controls both sides of the chunk reconstruction | the 32-byte address check on `Request`, the empty-data failure sentinel, the optional stamp parse, and the chunk reconstruction against the requested address never panic; a decoded success carries the requested address |
+| `headers_decode` | the stream-headers envelope (the exchange every headered protocol negotiation runs) through `check_headers` on writer-produced frames with adversarial entries, plus the flat `Header` entry on raw bytes | the map never exceeds the wire entry count, a duplicate key collapses to its last occurrence (proto3 last-field-wins), and re-encoding the decoded envelope decodes back equal |
 
 The flat frames are fed raw `&[u8]` straight through the generated reader;
-the nested frames (the handshake `Ack`/`SynAck`, the pullsync `Offer`) go
-through the real write then read then decode path with adversarial field
-content, so the domain decode sees hostile input while the reader stays on
-writer-produced bytes. The generated protobuf reader on raw bytes is
+the nested frames (the handshake `Ack`/`SynAck`, the pullsync `Offer`, the
+headers envelope) go through the real write then read then decode path with
+adversarial field content, so the domain decode sees hostile input while the
+reader stays on writer-produced bytes. The generated protobuf reader on raw bytes is
 upstream code and a separate nested-length soundness issue in
 `quick-protobuf` is tracked out of band.
 
@@ -87,6 +89,8 @@ encode must decode back to an equal value.
 | `handshake_roundtrip` | encode then wire then decode reproduces the syn/ack/synack, signature recovery included |
 | `swarm_peer_roundtrip` | a signed record's wire fields parse back to an equal record, and the clock-skew window holds exactly at its inclusive boundaries |
 | `pullsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` across the whole pullsync message set |
+| `retrieval_roundtrip` | a request reproduces itself through the wire; a delivery decodes back to its stampless projection (the serve path ships chunk data only) through the address-parameterized codec pair |
+| `headers_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for envelopes, whose keys are unique by map construction |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
@@ -100,6 +104,8 @@ nightly or libFuzzer:
 - `seed_replay_identify_decode` in `crates/swarm/net/identify/src/protocol.rs`
 - `seed_replay_pullsync_decode` in `crates/swarm/net/pullsync/src/codec.rs`
 - `seed_replay_pullsync_bitvector` in `crates/swarm/net/pullsync/src/bitvector.rs` (the `pullsync_bitvector` seeds: a two-byte little-endian declared length then the packed bytes, covering truncated and padding-abuse vectors)
+- `seed_replay_retrieval_decode` in `crates/swarm/net/retrieval/src/codec.rs` (a delivery seed is the 32-byte requested address followed by the raw wire frame)
+- `seed_replay_headers_decode` in `crates/swarm/net/headers/src/codec.rs`
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.

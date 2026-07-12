@@ -1,7 +1,14 @@
 //! Protocol headers for Swarm P2P communication with distributed tracing.
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls;
+
 mod codec;
 mod error;
+
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
+
 pub mod metrics;
 mod stream;
 // Trace-context propagation has a native implementation over OpenTelemetry and a

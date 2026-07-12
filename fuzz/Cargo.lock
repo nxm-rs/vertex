@@ -5805,11 +5805,13 @@ dependencies = [
  "quick-protobuf",
  "vertex-net-codec",
  "vertex-swarm-net-handshake",
+ "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
  "vertex-swarm-net-identify",
  "vertex-swarm-net-proto",
  "vertex-swarm-net-pullsync",
  "vertex-swarm-net-pushsync",
+ "vertex-swarm-net-retrieval",
  "vertex-swarm-peer",
 ]
 
@@ -5995,6 +5997,7 @@ dependencies = [
 name = "vertex-swarm-net-headers"
 version = "0.1.0"
 dependencies = [
+ "arbitrary",
  "asynchronous-codec",
  "bytes",
  "futures",
@@ -6110,6 +6113,28 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "arbitrary",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "nectar-postage",
+ "nectar-primitives",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
+ "vertex-swarm-primitives",
+]
+
+[[package]]
+name = "vertex-swarm-net-retrieval"
+version = "0.1.0"
+dependencies = [
  "arbitrary",
  "asynchronous-codec",
  "bytes",

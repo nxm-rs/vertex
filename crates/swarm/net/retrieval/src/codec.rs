@@ -115,7 +115,7 @@ impl Delivery {
     /// signature for single-owner), which is independent of the stamp, so a
     /// data-only delivery is fully verifiable. A failure is encoded as empty
     /// `data`/`stamp`; we emit nothing on the (omitted) error field.
-    fn into_proto(self) -> vertex_swarm_net_proto::retrieval::Delivery {
+    pub(crate) fn into_proto(self) -> vertex_swarm_net_proto::retrieval::Delivery {
         match self {
             Self::Chunk { chunk, stamp: _ } => vertex_swarm_net_proto::retrieval::Delivery {
                 data: (*chunk).into_bytes().to_vec(),
@@ -149,7 +149,7 @@ impl Delivery {
     /// non-empty but malformed stamp still surfaces as an invalid-stamp error.
     /// Address integrity does not depend on the stamp, so a stampless delivery
     /// is a fully validated success.
-    fn from_proto(
+    pub(crate) fn from_proto(
         proto: vertex_swarm_net_proto::retrieval::Delivery,
         expected: ChunkAddress,
     ) -> Result<Self, RetrievalError> {
@@ -394,53 +394,78 @@ mod tests {
         let err = Delivery::from_proto(proto, address).expect_err("malformed stamp must fail");
         assert!(matches!(err, RetrievalError::InvalidStamp(_)));
     }
+
+    /// Replays the committed fuzz seeds through the exact decode path the
+    /// `retrieval_decode` fuzz target drives, so the stable test gate proves
+    /// the seeds stay panic-free without the fuzzer. A delivery seed is the
+    /// 32-byte requested address followed by the raw wire frame.
+    #[test]
+    fn seed_replay_retrieval_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/retrieval_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let request = crate::fuzz::decode_request(&data);
+            let delivery = crate::fuzz::decode_delivery(&data);
+
+            if name.starts_with("valid-request-") {
+                assert!(request.is_some(), "seed {name} must decode as a request");
+            } else if name.starts_with("invalid-request-") {
+                assert!(request.is_none(), "seed {name} must stay a request Err");
+            } else if name.starts_with("valid-delivery-error") {
+                assert!(
+                    matches!(delivery, Some(Delivery::Error)),
+                    "seed {name} must decode as the failure sentinel"
+                );
+            } else if name.starts_with("valid-delivery-") {
+                assert!(
+                    matches!(delivery, Some(Delivery::Chunk { .. })),
+                    "seed {name} must decode as a chunk delivery"
+                );
+            } else if name.starts_with("invalid-delivery-") {
+                assert!(delivery.is_none(), "seed {name} must stay a delivery Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 9,
+            "expected at least the 9 curated seeds, found {replayed}"
+        );
+    }
 }
 
+// Stable pins of the round-trip invariant, drawing both messages through the
+// shared `Arbitrary` impls so the proptest suite and the fuzz round-trip
+// target drive one construction path.
 #[cfg(test)]
 mod proptests {
-    use arbitrary::Unstructured;
-    use nectar_primitives::generators;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
     use vertex_net_codec::prop_assert_proto_roundtrip;
 
     use super::*;
 
-    // A valid chunk of either kind, drawn through nectar's valid-tier
-    // generators (a single-owner chunk is really signed).
-    fn valid_chunk() -> impl Strategy<Value = AnyChunk> {
-        prop::collection::vec(any::<u8>(), 128..2048).prop_filter_map(
-            "a byte pool the generator can draw a chunk from",
-            |bytes| {
-                let mut u = Unstructured::new(&bytes);
-                generators::any_chunk(&mut u).ok()
-            },
-        )
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn request_roundtrips(address in arb::<ChunkAddress>()) {
-            prop_assert_proto_roundtrip!(Request::new(address));
+        fn request_roundtrips(request in arb::<Request>()) {
+            prop_assert_proto_roundtrip!(request);
         }
 
         // The delivery codec is address-parameterized, so it round-trips
-        // through the codec pair rather than the `ProtoMessage` macro. The
-        // serve path ships data only, so the decoded success is stampless.
+        // through the codec pair (via the shared fuzz check) rather than the
+        // `ProtoMessage` macro. The serve path ships data only, so the
+        // decoded success is compared stampless.
         #[test]
-        fn delivery_roundtrips(chunk in valid_chunk()) {
-            let address = *chunk.address();
-            let original = Delivery::chunk(chunk, None);
-
-            let mut enc = DeliveryCodec::new(1024 * 1024, address);
-            let mut buf = BytesMut::new();
-            enc.encode(original.clone(), &mut buf).expect("encodes");
-
-            let mut dec = DeliveryCodec::new(1024 * 1024, address);
-            let decoded = dec.decode(&mut buf).expect("decodes").expect("one frame");
-            prop_assert_eq!(decoded, original);
+        fn delivery_roundtrips(delivery in arb::<Delivery>()) {
+            crate::fuzz::check_delivery_roundtrip(delivery);
         }
     }
 }

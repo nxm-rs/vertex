@@ -34,14 +34,29 @@ strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
 [dev-dependencies]
 alloy-primitives = { workspace = true }
 alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-postage = { workspace = true, features = ["arbitrary"] }
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+# Valid-by-construction `Arbitrary` impls for the wire types plus the
+# fuzz-facing surface (the raw decode entry points and the delivery
+# round-trip check), shared by the proptest suite and the fuzz targets.
+# Dev-only: never enabled by a shipped artefact cone.
+arbitrary = [
+    "dep:arbitrary",
+    "nectar-primitives/arbitrary",
+    "nectar-postage/arbitrary",
+]
 
 [lints]
 workspace = true
