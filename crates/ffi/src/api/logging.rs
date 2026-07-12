@@ -209,7 +209,15 @@ pub fn init_logging(level: String, sink: StreamSink<LogLine>) -> Result<(), FfiE
 /// Parse an `EnvFilter` directive; an unparseable directive is a typed error,
 /// never a panic across the boundary.
 pub(crate) fn parse_filter(level: &str) -> Result<EnvFilter, FfiError> {
-    EnvFilter::try_new(level).map_err(|e| FfiError::Logging {
+    // The upstream directive parser slices the untrimmed directive with
+    // offsets from its trimmed form, which panics on leading whitespace
+    // before a multibyte character; trim each directive up front.
+    let trimmed = level
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(",");
+    EnvFilter::try_new(trimmed).map_err(|e| FfiError::Logging {
         reason: format!("invalid log filter {level:?}: {e}"),
     })
 }
@@ -279,6 +287,14 @@ mod tests {
     /// subscriber or a real `StreamSink`.
     struct CaptureSubscriber {
         out: std::sync::Arc<std::sync::Mutex<Option<LogLine>>>,
+    }
+
+    /// Leading whitespace before a multibyte character used to panic inside
+    /// the upstream directive parser; the pre-trim keeps the parse total.
+    #[test]
+    fn filter_parse_survives_whitespace_before_multibyte() {
+        let _ = parse_filter("\u{2000}\u{a13}=");
+        let _ = parse_filter("info, \u{a13}=debug");
     }
 
     mod proptests {
