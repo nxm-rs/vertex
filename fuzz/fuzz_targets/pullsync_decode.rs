@@ -8,7 +8,9 @@
 //! reconstruction on `Delivery`. The nested `Offer` frame goes through the
 //! real write then read path with adversarial descriptor field content, so
 //! the domain decode (the 32-byte descriptor field checks) sees hostile
-//! input while the reader stays on writer-produced bytes. Any returned `Err`
+//! input while the reader stays on writer-produced bytes. The `Offer` is not
+//! raw-fed pending the reported nested-length soundness issue in the upstream
+//! `quick-protobuf` reader (as in the handshake target). Any returned `Err`
 //! is success; the oracle is "no panic, no OOM, no hang".
 //!
 //! Seeds live in `fuzz/seeds/pullsync_decode/` and are replayed on stable by

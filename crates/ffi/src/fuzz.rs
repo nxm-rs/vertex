@@ -119,6 +119,8 @@ fn check_valid_upload(u: &mut Unstructured<'_>) {
         if let Some(byte) = tampered.get_mut(idx) {
             *byte ^= 1 << bit;
         }
+        // Panic-freedom probe only: the flipped bit may land in any field of
+        // the fixed layout, so the parse outcome is unspecified either way.
         let _ = parse_stamp(&tampered);
     }
 
