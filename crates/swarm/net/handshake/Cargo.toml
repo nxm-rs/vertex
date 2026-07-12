@@ -49,6 +49,15 @@ metrics.workspace = true
 vertex-metrics.workspace = true
 strum.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+# The fuzz-facing surface (`fuzz` module): raw decode entry points, the
+# frame-sizing arithmetic, and valid-by-construction generators shared with
+# the fuzz targets. Dev-only: never enabled by a shipped artefact cone.
+arbitrary = ["dep:arbitrary", "vertex-swarm-peer/arbitrary"]
+
 [lints]
 workspace = true
 

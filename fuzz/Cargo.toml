@@ -20,6 +20,9 @@ vertex-swarm-net-proto = { path = "../crates/swarm/net/proto" }
 vertex-swarm-net-pushsync = { path = "../crates/swarm/net/pushsync", features = [
 	"arbitrary",
 ] }
+vertex-swarm-net-handshake = { path = "../crates/swarm/net/handshake", features = [
+	"arbitrary",
+] }
 
 [[bin]]
 name = "pushsync_decode"
@@ -31,6 +34,27 @@ bench = false
 [[bin]]
 name = "pushsync_roundtrip"
 path = "fuzz_targets/pushsync_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_decode"
+path = "fuzz_targets/handshake_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_uvarint_differential"
+path = "fuzz_targets/handshake_uvarint_differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_roundtrip"
+path = "fuzz_targets/handshake_roundtrip.rs"
 test = false
 doc = false
 bench = false

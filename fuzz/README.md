@@ -50,6 +50,25 @@ invariant is *no panic, no OOM, no hang*:
 | Target | Entry point | Invariant |
 |---|---|---|
 | `pushsync_decode` | `pushsync::{Delivery, Receipt}` deserialize + `from_proto` | address/nonce length checks, stamp parsing, chunk reconstruction, signature parsing, and the storage radius range never panic |
+| `handshake_decode` | `decode_syn`/`decode_ack`/`decode_synack` on adversarial field content | the multiaddr block decode and its count cap, overlay/nonce/signature length checks, EIP-191 signature recovery, the network-id gate, the welcome cap, and the admission checks reachable from decode never panic |
+
+The flat `Syn` frame is fed raw `&[u8]` straight through the generated
+reader; the nested `Ack`/`SynAck` frames go through the real write then read
+then decode path with adversarial field content, so the domain decode sees
+hostile input while the reader stays on writer-produced bytes. The generated
+protobuf reader on raw bytes is upstream code and a separate nested-length
+soundness issue in `quick-protobuf` is tracked out of band.
+
+`handshake_uvarint_differential` is not a decode target: it checks the
+hand-rolled frame-sizing arithmetic (`uvarint_len`, `entry_len`,
+`bound_advertised` in the handshake crate's `address.rs`) against the codec's
+actual encoded length, asserts `bound_advertised` never busts the frame budget
+(`MAX_HANDSHAKE_BUFFER_SIZE`), and relies on release `overflow-checks` so no
+input overflows the budget math.
+
+| Target | Invariant |
+|---|---|
+| `handshake_uvarint_differential` | predicted block size equals the encoded length, the bound never exceeds the frame budget, and the budget math never overflows |
 
 Round-trip targets take a structured value via the valid-by-construction
 `Arbitrary` impls behind each owning crate's `arbitrary` feature (the same
@@ -59,6 +78,7 @@ encode must decode back to an equal value.
 | Target | Invariant |
 |---|---|
 | `pushsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for deliveries and receipts |
+| `handshake_roundtrip` | encode then wire then decode reproduces the syn/ack/synack, signature recovery included |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
@@ -66,6 +86,7 @@ path, so plain `cargo nextest run` proves the seeds stay panic-free without
 nightly or libFuzzer:
 
 - `seed_replay_pushsync_decode` in `crates/swarm/net/pushsync/src/codec.rs`
+- `seed_replay_handshake_decode` in `crates/swarm/net/handshake/src/codec/mod.rs`
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.
