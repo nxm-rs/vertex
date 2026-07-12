@@ -12,8 +12,14 @@ building the parent workspace never touches the nightly-only fuzz crate.
 nix develop .#fuzz        # nightly cargo + cargo-fuzz + clang on PATH
 cargo fuzz list           # run from the repo root; cargo-fuzz finds fuzz/
 
-# Run a target, growing fuzz/corpus/<target> and merging the committed seeds:
+# Run a target, growing fuzz/corpus/<target> and merging the committed seeds.
+# libFuzzer requires the writable corpus dir (first positional) to exist, and
+# it is gitignored, so create it once on a fresh checkout:
+mkdir -p fuzz/corpus/pushsync_decode
 cargo fuzz run pushsync_decode fuzz/corpus/pushsync_decode fuzz/seeds/pushsync_decode
+
+# Or let cargo-fuzz manage the corpus dir for you (no explicit paths):
+cargo fuzz run pushsync_decode -- -max_total_time=60
 
 # Housekeeping:
 cargo fuzz cmin pushsync_decode                                   # minimize corpus
