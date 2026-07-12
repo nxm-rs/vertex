@@ -5368,16 +5368,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vertex-fuzz"
 version = "0.0.0"
 dependencies = [
- "alloy-primitives",
  "arbitrary",
  "libfuzzer-sys",
- "nectar-postage",
- "nectar-primitives",
  "quick-protobuf",
  "vertex-net-codec",
  "vertex-swarm-net-proto",
  "vertex-swarm-net-pushsync",
- "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -5443,6 +5439,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "arbitrary",
  "asynchronous-codec",
  "bytes",
  "futures",
@@ -5466,6 +5463,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "arbitrary",
  "auto_impl",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
