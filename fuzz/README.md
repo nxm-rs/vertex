@@ -63,8 +63,8 @@ invariant is *no panic, no OOM, no hang*:
 | `swap_decode` | the swap `EmitCheque` (the JSON cheque payload path: addresses, the bare-decimal payout across the full 256-bit range, the fixed 65-byte base64 signature) and `Handshake` deserialize + `from_proto` | the cheque JSON parse and the 20-byte beneficiary check never panic, and a decoded cheque stays stable across re-encode (the JSON is value-preserving, not byte-canonical) |
 
 The flat frames are fed raw `&[u8]` straight through the generated reader;
-the nested frames (the handshake `Ack`/`SynAck`, the pullsync `Offer`, the
-headers envelope) go through the real write then read then decode path with
+the nested frames (the handshake `Ack`/`SynAck`, the hive `Peers` batch, the
+pullsync `Offer`, the headers envelope) go through the real write then read then decode path with
 adversarial field content, so the domain decode sees hostile input while the
 reader stays on writer-produced bytes. The generated protobuf reader on raw bytes is
 upstream code and a separate nested-length soundness issue in

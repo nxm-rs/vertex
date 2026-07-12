@@ -131,6 +131,8 @@ mod tests {
                     decode_u256_be(&data).is_err(),
                     "seed {name} must stay an Err"
                 );
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

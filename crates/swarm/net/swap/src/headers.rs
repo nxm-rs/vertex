@@ -78,6 +78,10 @@ impl SettlementHeaders {
 }
 
 /// Parse a U256 from big-endian bytes (with trimmed leading zeros).
+///
+/// Deliberately laxer than the canonical decode in `vertex-net-codec`:
+/// settlement headers tolerate leading-zero padding (which never changes the
+/// recovered value); only oversize input is refused.
 pub(crate) fn parse_u256_bytes(bytes: &Bytes) -> Option<U256> {
     if bytes.is_empty() {
         return Some(U256::ZERO);

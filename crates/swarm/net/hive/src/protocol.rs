@@ -364,6 +364,8 @@ mod seed_replay {
                 assert!(raw_count > 0, "seed {name}");
             } else if name.starts_with("edge-peers-empty") {
                 assert_eq!(raw_count, 0, "seed {name}");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

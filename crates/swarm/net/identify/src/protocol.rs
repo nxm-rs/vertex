@@ -261,6 +261,8 @@ mod seed_replay {
                 assert!(info.is_ok(), "seed {name} must convert");
             } else if name.starts_with("invalid-") {
                 assert!(info.is_err(), "seed {name} must stay an Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

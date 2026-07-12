@@ -6,7 +6,9 @@
 //! The flat record is fed raw bytes straight through the generated reader;
 //! the nested `Peers` batch goes through the real write then read path with
 //! adversarial field content, so the domain conversion sees hostile input
-//! while the reader stays on writer-produced bytes. The oracle adds the
+//! while the reader stays on writer-produced bytes. The batch is not raw-fed
+//! pending the reported nested-length soundness issue in the upstream
+//! `quick-protobuf` reader (as in the handshake target). The oracle adds the
 //! amplification bound: full-validation successes are proportional to wire
 //! bytes (a surviving record carries at least signature, overlay, and nonce),
 //! so one frame-capped message cannot amplify into unbounded work.

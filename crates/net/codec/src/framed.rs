@@ -106,6 +106,13 @@ mod tests {
                         "seed {name} must stay an error at cap {cap}"
                     );
                 }
+            } else {
+                // Edge seeds are boundary probes asserted by `check_framing`
+                // alone; anything else is a misnamed seed.
+                assert!(
+                    name.starts_with("edge-"),
+                    "seed {name} matches no known prefix"
+                );
             }
             replayed += 1;
         }

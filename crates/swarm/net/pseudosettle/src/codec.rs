@@ -185,6 +185,13 @@ mod tests {
             } else if name.starts_with("invalid-") || name.starts_with("crash-") {
                 assert!(payment.is_none(), "seed {name} must stay a payment Err");
                 assert!(ack.is_none(), "seed {name} must stay an ack Err");
+            } else {
+                // Edge seeds are boundary probes asserted for panic-freedom
+                // alone; anything else is a misnamed seed.
+                assert!(
+                    name.starts_with("edge-"),
+                    "seed {name} matches no known prefix"
+                );
             }
             replayed += 1;
         }

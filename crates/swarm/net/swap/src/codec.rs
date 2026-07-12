@@ -145,6 +145,8 @@ mod tests {
                 assert!(cheque.is_none(), "seed {name} must stay a cheque Err");
             } else if name.starts_with("invalid-handshake-") {
                 assert!(handshake.is_none(), "seed {name} must stay a handshake Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

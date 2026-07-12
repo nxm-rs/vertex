@@ -7,7 +7,9 @@
 //! envelope goes through the real write then read path with adversarial
 //! entries (arbitrary keys and values, deliberately repeated keys), so the
 //! domain conversion sees hostile input while the reader stays on
-//! writer-produced bytes. The oracle pins the envelope semantics: the map
+//! writer-produced bytes. The envelope is not raw-fed pending the reported
+//! nested-length soundness issue in the upstream `quick-protobuf` reader
+//! (as in the handshake target). The oracle pins the envelope semantics: the map
 //! never exceeds the wire entry count, a duplicate key collapses to its
 //! last occurrence, and re-encoding the decoded value decodes back equal.
 //!

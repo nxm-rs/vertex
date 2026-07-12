@@ -87,6 +87,8 @@ mod tests {
                 fuzz::check_headers(wire);
             } else if name.starts_with("invalid-") {
                 assert!(headers.is_none(), "seed {name} must stay an Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }
