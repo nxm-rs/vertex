@@ -127,6 +127,8 @@ mod tests {
                 assert!(announce.is_some(), "seed {name} must decode");
             } else if name.starts_with("invalid-") || name.starts_with("crash-") {
                 assert!(announce.is_none(), "seed {name} must stay an Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

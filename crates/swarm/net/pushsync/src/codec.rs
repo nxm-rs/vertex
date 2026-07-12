@@ -291,6 +291,13 @@ mod tests {
                 assert!(receipt.is_some(), "seed {name} must decode as a receipt");
             } else if name.starts_with("invalid-receipt-") {
                 assert!(receipt.is_none(), "seed {name} must stay a receipt Err");
+            } else {
+                // Edge seeds are boundary probes asserted for panic-freedom
+                // alone; anything else is a misnamed seed.
+                assert!(
+                    name.starts_with("edge-"),
+                    "seed {name} matches no known prefix"
+                );
             }
             replayed += 1;
         }

@@ -12,7 +12,10 @@ use libp2p::Multiaddr;
 use std::io::{Cursor, Read};
 
 /// Magic byte prefix for lists of multiple multiaddrs.
-/// Chosen because 0x99 is not a valid multiaddr protocol code.
+/// A conformant single multiaddr starts with an address protocol whose varint
+/// never begins with 0x99; the one collision (a lone /webrtc component, whose
+/// code varint-encodes as 0x99 0x02) is handled by the ambiguity guard the
+/// round-trip oracle consults.
 ///
 /// BEE-COMPAT(SWIP-148): see module docs.
 pub(crate) const MULTIADDR_LIST_PREFIX: u8 = 0x99;
@@ -232,6 +235,8 @@ mod tests {
                 }
             } else if name.starts_with("invalid-") {
                 assert!(decoded.is_err(), "seed {name} must stay an Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

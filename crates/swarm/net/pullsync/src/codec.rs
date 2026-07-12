@@ -454,6 +454,8 @@ mod tests {
                 assert!(delivery.is_some(), "seed {name} must decode as a delivery");
             } else if name.starts_with("invalid-delivery-") {
                 assert!(delivery.is_none(), "seed {name} must stay a delivery Err");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
             replayed += 1;
         }

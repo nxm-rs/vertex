@@ -79,6 +79,8 @@ mod seed_replay {
                 assert!(ack.is_none(), "seed {name} must stay an ack Err");
             } else if name.starts_with("valid-synack-") {
                 assert!(synack.is_some(), "seed {name} must decode as a synack");
+            } else {
+                panic!("seed {name} matches no known prefix");
             }
 
             // The boundary seeds carry their frame size in the name; pin it

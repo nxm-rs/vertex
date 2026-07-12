@@ -211,6 +211,13 @@ mod tests {
                     matches!(outcome, Some(Err(_))),
                     "seed {name} must stay rejected"
                 );
+            } else {
+                // Edge seeds are boundary probes asserted for panic-freedom
+                // alone; anything else is a misnamed seed.
+                assert!(
+                    name.starts_with("edge-"),
+                    "seed {name} matches no known prefix"
+                );
             }
             replayed += 1;
         }
