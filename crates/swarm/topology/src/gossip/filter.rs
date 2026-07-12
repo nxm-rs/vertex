@@ -68,7 +68,7 @@ pub(crate) fn filter_peers_for_recipient<'a, I: SwarmIdentity>(
     peers
         .iter()
         .filter(|peer| {
-            let peer_overlay = OverlayAddress::from(*peer.overlay());
+            let peer_overlay = *peer.overlay();
             let cap = peer_capability(peer_manager, &peer_overlay);
             recipient.capability.can_reach(&cap)
                 && scope_eligible_for_recipient(peer, recipient.scope)
@@ -89,7 +89,7 @@ pub(crate) fn select_peers_for_distant<I: SwarmIdentity>(
     candidates
         .into_iter()
         .filter(|(peer, _bin)| {
-            let peer_overlay = OverlayAddress::from(*peer.overlay());
+            let peer_overlay = *peer.overlay();
             let cap = peer_capability(peer_manager, &peer_overlay);
             recipient.capability.can_reach(&cap)
                 && scope_eligible_for_recipient(peer, recipient.scope)

@@ -88,7 +88,7 @@ fn overlay_derivation_matches_swarm_spec() {
         let eth = Address::from(hex_array::<20>(v.eth_address_hex));
         let nonce = Nonce::from(hex_array::<32>(v.nonce_hex));
         let got = compute_overlay(&eth, NetworkId::new(v.network_id), &nonce);
-        cx.assert_bytes_eq_hex("overlay", got.as_slice(), v.expected_overlay_hex);
+        cx.assert_bytes_eq_hex("overlay", got.as_bytes(), v.expected_overlay_hex);
     });
 }
 
@@ -181,7 +181,7 @@ fn handshake_15_sign_produces_pinned_signature_and_overlay() {
         );
 
         let overlay = compute_overlay(&signer.address(), network_id, &nonce);
-        cx.assert_bytes_eq_hex("overlay", overlay.as_slice(), v.expected_overlay_hex);
+        cx.assert_bytes_eq_hex("overlay", overlay.as_bytes(), v.expected_overlay_hex);
 
         let identity = vector_identity(signer, network_id, nonce);
         let peer = SwarmPeer::sign(&identity, vec![multiaddr], timestamp, chequebook)

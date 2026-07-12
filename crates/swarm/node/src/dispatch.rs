@@ -24,7 +24,7 @@ use std::pin::pin;
 use futures::future::{Either, select};
 use futures_timer::Delay;
 use metrics::{counter, histogram};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::XorMetric;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
@@ -701,7 +701,7 @@ where
     async fn race_attempts(
         &self,
         candidates: Vec<OverlayAddress>,
-        chunk_address: SwarmAddress,
+        chunk_address: ChunkAddress,
         bounds: RaceBounds,
         enforce_cap: bool,
         attempts: &AtomicUsize,
@@ -742,7 +742,7 @@ where
     /// [`SwarmError::RetrievalExhausted`]; the attempt count and last error stay
     /// in the metrics and debug log, never the error variant.
     pub async fn retrieve(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
-        let chunk_address = SwarmAddress::new(address.0.into());
+        let chunk_address = *address;
         let attempts = AtomicUsize::new(0);
 
         // PRIMARY: bin-bucket proximity route. Route the chunk to its Kademlia
@@ -1006,14 +1006,14 @@ where
 /// entry point. Within every bin the peers are ordered closest-to-chunk first.
 /// `peers_in_bin` returns connected peers only; retrieval never dials.
 pub(crate) fn bin_routed_order(
-    chunk: &SwarmAddress,
-    local: &SwarmAddress,
+    chunk: &ChunkAddress,
+    local: &OverlayAddress,
     max_bin: u8,
     width: usize,
-    peers_in_bin: impl Fn(Bin) -> Vec<SwarmAddress>,
-) -> Vec<SwarmAddress> {
+    peers_in_bin: impl Fn(Bin) -> Vec<OverlayAddress>,
+) -> Vec<OverlayAddress> {
     let b = chunk.proximity(local).get().min(max_bin);
-    let mut order: Vec<SwarmAddress> = Vec::with_capacity(width);
+    let mut order: Vec<OverlayAddress> = Vec::with_capacity(width);
     for bin_index in spill_bins(b, max_bin) {
         if order.len() >= width {
             break;
@@ -1213,7 +1213,7 @@ impl RelayOp for PushRelay {
 ///   caller treats the push as unconfirmed.
 fn accept_origin_receipt(
     receipt: &Receipt,
-    peer: SwarmAddress,
+    peer: OverlayAddress,
     local_depth: NeighborhoodDepth,
     neighbourhood_credible: bool,
     reporter: &dyn PeerReporter,
@@ -1248,13 +1248,13 @@ mod tests {
 
         #[derive(Default)]
         struct RecordingReporter {
-            reports: Mutex<Vec<(SwarmAddress, SwarmScoringEvent, ReportSource)>>,
+            reports: Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
         }
 
         impl PeerReporter for RecordingReporter {
             fn report_peer(
                 &self,
-                overlay: &SwarmAddress,
+                overlay: &OverlayAddress,
                 event: SwarmScoringEvent,
                 source: ReportSource,
             ) {
@@ -1264,7 +1264,7 @@ mod tests {
 
         impl RecordingReporter {
             /// Return the single recorded report, asserting exactly one exists.
-            fn single(&self) -> (SwarmAddress, SwarmScoringEvent, ReportSource) {
+            fn single(&self) -> (OverlayAddress, SwarmScoringEvent, ReportSource) {
                 let reports = self.reports.lock().unwrap();
                 assert_eq!(reports.len(), 1, "expected exactly one report");
                 *reports.first().expect("one report")
@@ -1329,7 +1329,7 @@ mod tests {
             let addr = address(0xff);
             let receipt = signed_receipt(&signer, &addr, 8, radius(8));
             let reporter = RecordingReporter::default();
-            let peer = SwarmAddress::from([0x11; 32]);
+            let peer = OverlayAddress::from([0x11; 32]);
 
             assert_eq!(
                 accept_origin_receipt(&receipt, peer, depth(8), true, &reporter),
@@ -1347,7 +1347,7 @@ mod tests {
             // rejects it regardless of the claimed radius.
             let receipt = signed_receipt(&signer, &addr, 0, radius(8));
             let reporter = RecordingReporter::default();
-            let peer = SwarmAddress::from([0x22; 32]);
+            let peer = OverlayAddress::from([0x22; 32]);
 
             let DepthVerdict::Shallow(_) =
                 accept_origin_receipt(&receipt, peer, depth(12), true, &reporter)
@@ -1370,7 +1370,7 @@ mod tests {
             let addr = address(0xff);
             let receipt = signed_receipt(&signer, &addr, 0, radius(0));
             let reporter = RecordingReporter::default();
-            let peer = SwarmAddress::from([0x55; 32]);
+            let peer = OverlayAddress::from([0x55; 32]);
 
             assert!(
                 matches!(
@@ -1392,7 +1392,7 @@ mod tests {
             let addr = address(0xff);
             let receipt = signed_receipt(&signer, &addr, 0, radius(0));
             let reporter = RecordingReporter::default();
-            let peer = SwarmAddress::from([0x66; 32]);
+            let peer = OverlayAddress::from([0x66; 32]);
 
             assert_eq!(
                 accept_origin_receipt(&receipt, peer, depth(0), false, &reporter),
@@ -1411,15 +1411,22 @@ mod tests {
         use std::collections::HashMap;
 
         use super::super::{bin_routed_order, spill_bins};
-        use nectar_primitives::SwarmAddress;
+        use nectar_primitives::{ChunkAddress, OverlayAddress, XorMetric};
         use vertex_swarm_api::Bin;
 
         /// An address with `byte0` set, the rest zero, so its proximity to the
         /// zero local overlay is controllable.
-        fn addr(byte0: u8) -> SwarmAddress {
+        fn addr(byte0: u8) -> OverlayAddress {
             let mut bytes = [0u8; 32];
             bytes[0] = byte0;
-            SwarmAddress::from(bytes)
+            OverlayAddress::from(bytes)
+        }
+
+        /// A chunk address with `byte0` set, the rest zero.
+        fn chunk_addr(byte0: u8) -> ChunkAddress {
+            let mut bytes = [0u8; 32];
+            bytes[0] = byte0;
+            ChunkAddress::from(bytes)
         }
 
         #[test]
@@ -1441,13 +1448,13 @@ mod tests {
             // local is the zero overlay; chunk 0x08 (0000_1000) shares its first
             // four bits with local, so the forwarding bin is 4.
             let local = addr(0x00);
-            let chunk = addr(0x08);
+            let chunk = chunk_addr(0x08);
             // One sentinel peer per bin, encoding the bin index in byte 1.
             let peers = |bin: Bin| {
                 let mut bytes = [0u8; 32];
                 bytes[1] = bin.get();
                 bytes[2] = 0x01; // distinguish from local/chunk
-                vec![SwarmAddress::from(bytes)]
+                vec![OverlayAddress::from(bytes)]
             };
 
             let order = bin_routed_order(&chunk, &local, 8, 32, peers);
@@ -1465,7 +1472,7 @@ mod tests {
         #[test]
         fn orders_within_a_bin_by_closeness_to_the_chunk() {
             let local = addr(0x00);
-            let chunk = addr(0x08);
+            let chunk = chunk_addr(0x08);
             let near = addr(0x08); // shares the chunk's prefix: high proximity
             let far = addr(0xff); // diverges at the first bit: proximity 0
             let b = chunk.proximity(&local).get();
@@ -1489,7 +1496,7 @@ mod tests {
         #[test]
         fn respects_the_width_cap() {
             let local = addr(0x00);
-            let chunk = addr(0x08);
+            let chunk = chunk_addr(0x08);
             // Three peers in every bin; a width of 5 takes only the first five.
             let peers = |bin: Bin| {
                 (0u8..3)
@@ -1497,7 +1504,7 @@ mod tests {
                         let mut bytes = [0u8; 32];
                         bytes[1] = bin.get();
                         bytes[2] = i + 1;
-                        SwarmAddress::from(bytes)
+                        OverlayAddress::from(bytes)
                     })
                     .collect::<Vec<_>>()
             };
@@ -1508,8 +1515,8 @@ mod tests {
         #[test]
         fn empty_bins_yield_no_candidates() {
             let local = addr(0x00);
-            let chunk = addr(0x08);
-            let empty: HashMap<u8, Vec<SwarmAddress>> = HashMap::new();
+            let chunk = chunk_addr(0x08);
+            let empty: HashMap<u8, Vec<OverlayAddress>> = HashMap::new();
             let order = bin_routed_order(&chunk, &local, 8, 32, |bin| {
                 empty.get(&bin.get()).cloned().unwrap_or_default()
             });
@@ -1518,14 +1525,14 @@ mod tests {
     }
 
     mod null_objects {
-        use nectar_primitives::SwarmAddress;
+        use nectar_primitives::OverlayAddress;
         use vertex_swarm_api::ChunkAddress;
         use vertex_tasks::time::Duration;
 
         use super::super::{CandidateOrdering, LatencyHint, NoLatencyHint, ProximityOnly};
 
-        fn overlay(n: u8) -> SwarmAddress {
-            SwarmAddress::from([n; 32])
+        fn overlay(n: u8) -> OverlayAddress {
+            OverlayAddress::from([n; 32])
         }
 
         #[test]
@@ -1559,7 +1566,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        use nectar_primitives::SwarmAddress;
+        use nectar_primitives::OverlayAddress;
 
         use super::super::{
             InflightLimit, RETRIEVE_ATTEMPT_BUDGET, RETRIEVE_DEADLINE, RETRIEVE_MAX_IN_FLIGHT,
@@ -1572,8 +1579,8 @@ mod tests {
             None => unreachable!(),
         };
 
-        fn overlay(n: u8) -> SwarmAddress {
-            SwarmAddress::from([n; 32])
+        fn overlay(n: u8) -> OverlayAddress {
+            OverlayAddress::from([n; 32])
         }
 
         #[test]
@@ -1651,7 +1658,7 @@ mod tests {
                     deadline: RETRIEVE_SPILL_DEADLINE,
                     stagger: RETRIEVAL_STAGGER,
                 },
-                |peer: SwarmAddress| {
+                |peer: OverlayAddress| {
                     counted.fetch_add(1, Ordering::SeqCst);
                     // Best-effort dispatch: the busy holder has no free permit, but
                     // the enforce-off race still contacts it.
@@ -1847,7 +1854,7 @@ mod tests {
         /// An overlay sharing exactly `leading_bits` leading bits with `address`
         /// (the next bit is flipped), placing a peer at a controlled proximity.
         fn overlay_at_proximity(address: &ChunkAddress, leading_bits: usize) -> OverlayAddress {
-            let mut bytes = address.0.0;
+            let mut bytes = <[u8; 32]>::from(*address);
             let byte = leading_bits / 8;
             let bit = 7 - (leading_bits % 8);
             if let Some(b) = bytes.get_mut(byte) {

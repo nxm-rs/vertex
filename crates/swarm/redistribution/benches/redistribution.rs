@@ -16,7 +16,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 
 use nectar_primitives::{
     ChunkAddress, DEFAULT_BODY_SIZE, DefaultAnyChunk, DefaultContentChunk, DefaultSingleOwnerChunk,
-    SwarmAddress,
+    OverlayAddress,
 };
 
 use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
@@ -54,7 +54,7 @@ fn next_b256(state: &mut u64) -> B256 {
 fn address_pool(count: usize) -> Vec<ChunkAddress> {
     let mut state = 0x0DDB_1A5E_5EED_0042u64;
     (0..count)
-        .map(|_| SwarmAddress::from(next_b256(&mut state)))
+        .map(|_| ChunkAddress::from(next_b256(&mut state)))
         .collect()
 }
 
@@ -88,7 +88,7 @@ fn soc_chunk(n: u64) -> DefaultAnyChunk {
         .expect("deterministic signer key is valid");
     let mut id_state = n ^ 0xABCD_EF12;
     let id = next_b256(&mut id_state);
-    DefaultSingleOwnerChunk::new(id, cac_body(n), &signer)
+    DefaultSingleOwnerChunk::new(id.into(), cac_body(n), &signer)
         .map(DefaultAnyChunk::from)
         .expect("SOC chunk builds")
 }
@@ -100,7 +100,7 @@ fn soc_chunk(n: u64) -> DefaultAnyChunk {
 fn fixture_stamp(n: u64) -> Stamp {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&n.wrapping_mul(0x9E37_79B9_7F4A_7C15).to_le_bytes());
-    let batch: BatchId = B256::from(bytes);
+    let batch: BatchId = BatchId::from(bytes);
     let index = StampIndex::new(n as u32, n as u32);
     let sig = alloy_primitives::Signature::test_signature();
     Stamp::with_index(batch, index, 1, sig)
@@ -148,7 +148,7 @@ fn bench_transformed_address(c: &mut Criterion) {
                     .iter()
                     .map(|ch| ch.transformed_address(ANCHOR_BYTES))
                     .collect();
-                addrs.sort_unstable_by(|a, c| a.as_slice().cmp(c.as_slice()));
+                addrs.sort_unstable_by(|a, c| a.as_bytes().cmp(c.as_bytes()));
                 black_box(&addrs);
             });
         });
@@ -209,7 +209,7 @@ fn bench_make_inclusion_proofs(c: &mut Criterion) {
 /// The committed-depth membership filter. `depth_0_all` admits every address;
 /// `depth_1_half` keeps roughly half the keyspace.
 fn bench_canonical_neighbourhood(c: &mut Criterion) {
-    let anchor = SwarmAddress::zero();
+    let anchor = OverlayAddress::zero();
     let depth_0 = CommittedDepth::ZERO;
     let depth_1 = CommittedDepth::try_from(1).expect("depth 1 is in range");
     let mut group = c.benchmark_group("canonical_neighbourhood");

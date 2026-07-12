@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, ChainId, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
@@ -30,7 +30,7 @@ use vertex_swarm_spec::{Spec, SwarmSpec};
 /// ```
 #[derive(Clone)]
 pub struct MockIdentity {
-    overlay: SwarmAddress,
+    overlay: OverlayAddress,
     signer: Arc<LocalSigner<alloy_signer::k256::ecdsa::SigningKey>>,
     spec: Arc<Spec>,
     node_type: SwarmNodeType,
@@ -48,7 +48,7 @@ impl std::fmt::Debug for MockIdentity {
 
 impl MockIdentity {
     /// Create a mock identity with the given overlay address.
-    pub fn with_overlay(overlay: SwarmAddress) -> Self {
+    pub fn with_overlay(overlay: OverlayAddress) -> Self {
         let signer = LocalSigner::random();
         Self {
             overlay,
@@ -64,7 +64,7 @@ impl MockIdentity {
     /// Useful for testing Kademlia distance calculations where you need
     /// to control XOR distances between peers.
     pub fn with_first_byte(byte: u8) -> Self {
-        Self::with_overlay(SwarmAddress::with_first_byte(byte))
+        Self::with_overlay(OverlayAddress::with_first_byte(byte))
     }
 
     /// Set the node type for this mock identity.
@@ -113,7 +113,7 @@ impl OverlaySigner for MockIdentity {
     }
 
     /// Returns the test-controlled overlay, which need not match the signer.
-    fn overlay(&self) -> SwarmAddress {
+    fn overlay(&self) -> OverlayAddress {
         self.overlay
     }
 }
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_mock_identity_with_overlay() {
-        let overlay = SwarmAddress::with_first_byte(0x42);
+        let overlay = OverlayAddress::with_first_byte(0x42);
         let mock = MockIdentity::with_overlay(overlay);
 
         assert_eq!(mock.overlay_address(), overlay);

@@ -214,7 +214,7 @@ impl SwarmClient {
 /// Build an immutable [`Batch`] from the default geometry (discovery fallback).
 fn default_batch(batch_id: alloy_primitives::B256, owner: alloy_primitives::Address) -> Batch {
     Batch::new(
-        batch_id,
+        batch_id.into(),
         0,
         0,
         owner,

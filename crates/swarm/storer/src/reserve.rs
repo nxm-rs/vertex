@@ -3,7 +3,7 @@
 //! The [`Reserve`] tracks storage capacity and handles eviction
 //! when the store is full.
 
-use nectar_primitives::{ChunkAddress, ProximityOrder};
+use nectar_primitives::{ChunkAddress, ProximityOrder, XorMetric};
 use parking_lot::RwLock;
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmIdentity;

@@ -16,7 +16,7 @@ use super::{
     slot_of,
 };
 use crate::metrics::{phase, record_phase_transition, record_topology_phase_change};
-use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
+use nectar_primitives::{ChunkAddress, XorMetric, recompute_neighborhood_depth};
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace, warn};
 use vertex_net_peer_registry::ConnectionDirection;
@@ -1235,7 +1235,7 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
 mod tests {
     #![allow(clippy::indexing_slicing)]
     use super::*;
-    use nectar_primitives::SwarmAddress;
+    use nectar_primitives::OverlayAddress;
     use vertex_swarm_peer_manager::PeerManagerConfig;
     use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};
 
@@ -1262,7 +1262,7 @@ mod tests {
 
     #[test]
     fn test_routing_creation() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default();
         let (routing, _pm) = make_routing(base, config);
 
@@ -1272,12 +1272,12 @@ mod tests {
 
     #[test]
     fn test_add_and_connect_peers() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default();
         let (routing, pm) = make_routing(base, config);
 
-        let peer1 = SwarmAddress::with_first_byte(0x80);
-        let peer2 = SwarmAddress::with_first_byte(0x40);
+        let peer1 = OverlayAddress::with_first_byte(0x80);
+        let peer2 = OverlayAddress::with_first_byte(0x40);
 
         // Add peers via PeerManager (not routing.add_peers which is now no-op)
         pm.store_discovered_peer(make_swarm_peer_minimal(0x80));
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_capacity_reserve_and_release() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Pin the depth-0 bootstrap target to 2 so the capacity mechanism is
         // exercised with small numbers (default bootstrap fill is generous).
         // Pin oversaturation to the target too, so the retention floor equals
@@ -1307,9 +1307,9 @@ mod tests {
             .with_oversaturation_peers(2);
         let (routing, _pm) = make_routing(base, config);
 
-        let peer1 = SwarmAddress::with_first_byte(0x80); // bin=0
-        let peer2 = SwarmAddress::with_first_byte(0xc0); // bin=0
-        let peer3 = SwarmAddress::with_first_byte(0xa0); // bin=0
+        let peer1 = OverlayAddress::with_first_byte(0x80); // bin=0
+        let peer2 = OverlayAddress::with_first_byte(0xc0); // bin=0
+        let peer3 = OverlayAddress::with_first_byte(0xa0); // bin=0
 
         // First reserve succeeds (effective=0 < target=2)
         assert!(routing.try_reserve_dial(&peer1, SwarmNodeType::Storer));
@@ -1329,11 +1329,11 @@ mod tests {
 
     #[test]
     fn test_capacity_state_transitions() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_nominal(2);
         let (routing, _pm) = make_routing(base, config);
 
-        let peer = SwarmAddress::with_first_byte(0x80); // bin=0
+        let peer = OverlayAddress::with_first_byte(0x80); // bin=0
 
         // Reserve dial
         assert!(routing.try_reserve_dial(&peer, SwarmNodeType::Storer));
@@ -1355,11 +1355,11 @@ mod tests {
 
     #[test]
     fn test_disconnect_and_reconnect() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default();
         let (routing, pm) = make_routing(base, config);
 
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
 
         // Add peer to PeerManager
         pm.store_discovered_peer(make_swarm_peer_minimal(0x80));
@@ -1387,7 +1387,7 @@ mod tests {
         // depth frontier is the shallowest unsaturated bin (0), so depth stays
         // 0 - the corrected algorithm does not jump to the deepest populated
         // bin the way the old deepest-bin scan did.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         assert_eq!(routing.depth().get(), 0);
@@ -1403,7 +1403,7 @@ mod tests {
         // empty, and bin 8 holds several peers. The old scan reported depth 8;
         // the corrected algorithm caps depth at the shallowest unsaturated bin
         // (bin 1, just past the saturated frontier at bin 0).
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         for idx in 0..8 {
@@ -1424,7 +1424,7 @@ mod tests {
     fn test_depth_climbs_with_saturated_bins() {
         // Bins 0,1,2 saturated (>= 8) with bin 3 holding the low-watermark (3)
         // anchors the neighborhood at bin 3.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         for bin in 0..3 {
@@ -1456,7 +1456,7 @@ mod tests {
 
     #[test]
     fn test_neighborhood_stability_tracks_saturation() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         assert!(
@@ -1484,7 +1484,7 @@ mod tests {
         // remove_peer (the ban path) bypasses the disconnect bookkeeping but
         // still shrinks the neighborhood; the clock must observe it. Three
         // removals (9 -> 6) exceed the dip tolerance and clear immediately.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         saturate_to_depth_one(&routing);
@@ -1502,7 +1502,7 @@ mod tests {
     /// restarting the anchor.
     #[test]
     fn test_stability_clock_survives_boundary_peer_flap() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
         saturate_to_depth_one(&routing);
 
@@ -1540,7 +1540,7 @@ mod tests {
     /// clock: the damping is a delay, not a mask.
     #[test]
     fn test_marginal_dip_clears_after_window_expiry() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
         saturate_to_depth_one(&routing);
         SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
@@ -1563,7 +1563,7 @@ mod tests {
     /// clock, and the anchor keeps its original start.
     #[test]
     fn test_resaturation_cancels_pending_dip() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
         saturate_to_depth_one(&routing);
         let peer = addr_in_bin(1, 0);
@@ -1589,7 +1589,7 @@ mod tests {
         // bin0=8, bin1=5, bin2=3, bin3=1: depth anchors at 1 and the
         // neighborhood (bins >= 1, holding 9) is saturated, so the stability
         // clock is anchored at depth 1.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
         saturate_to_depth_one(&routing);
         assert_eq!(routing.depth().get(), 1);
@@ -1636,7 +1636,7 @@ mod tests {
     /// Depth-3 fixture: bins 0..=2 saturated (8 peers each, the default
     /// saturation), bin 3 holding the low watermark (3 peers).
     fn routing_at_depth_3() -> Arc<KademliaRouting<MockIdentity>> {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
         for bin in 0..3 {
             for idx in 0..8 {
@@ -1760,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_phase_starts_bootstrap_and_converges_on_depth_climb() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         assert_eq!(routing.phase_status().0, TopologyPhase::Bootstrap);
@@ -1797,7 +1797,7 @@ mod tests {
         // A zero stability window makes the time gate pass immediately, so
         // the saturation condition alone drives Converging vs Stable and
         // the lifecycle is testable without simulated clocks.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_phase_stability_window(Duration::ZERO);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1838,13 +1838,13 @@ mod tests {
 
     #[test]
     fn test_closest_to() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default();
         let (routing, _pm) = make_routing(base, config);
 
-        let peer_po0 = SwarmAddress::with_first_byte(0x80);
-        let peer_po1 = SwarmAddress::with_first_byte(0x40);
-        let peer_po2 = SwarmAddress::with_first_byte(0x20);
+        let peer_po0 = OverlayAddress::with_first_byte(0x80);
+        let peer_po1 = OverlayAddress::with_first_byte(0x40);
+        let peer_po2 = OverlayAddress::with_first_byte(0x20);
 
         SwarmRouting::connected(&*routing, peer_po0);
         SwarmRouting::connected(&*routing, peer_po1);
@@ -1861,12 +1861,12 @@ mod tests {
 
     #[test]
     fn test_neighbors() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_nominal(1);
         let (routing, _pm) = make_routing(base, config);
 
-        let peer_po0 = SwarmAddress::with_first_byte(0x80);
-        let peer_po1 = SwarmAddress::with_first_byte(0x40);
+        let peer_po0 = OverlayAddress::with_first_byte(0x80);
+        let peer_po1 = OverlayAddress::with_first_byte(0x40);
         let peer_po5 = {
             let mut bytes = [0x00u8; 32];
             bytes[0] = 0x04;
@@ -1887,7 +1887,7 @@ mod tests {
 
     #[test]
     fn test_inbound_capacity() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // With bootstrap and oversaturation pinned to 2 and headroom 0, the
         // depth-0 inbound ceiling = 2
         let config = KademliaConfig::default()
@@ -1898,9 +1898,9 @@ mod tests {
             .with_saturation(2);
         let (routing, _pm) = make_routing(base, config);
 
-        let peer1 = SwarmAddress::with_first_byte(0x80);
-        let peer2 = SwarmAddress::with_first_byte(0xc0);
-        let peer3 = SwarmAddress::with_first_byte(0xa0);
+        let peer1 = OverlayAddress::with_first_byte(0x80);
+        let peer2 = OverlayAddress::with_first_byte(0xc0);
+        let peer3 = OverlayAddress::with_first_byte(0xa0);
 
         // Can accept first inbound
         assert!(routing.should_accept_inbound(&peer1, SwarmNodeType::Storer));
@@ -1928,7 +1928,7 @@ mod tests {
 
     #[test]
     fn test_depth_aware_targets() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default();
         let (routing, _pm) = make_routing(base, config);
 
@@ -1947,7 +1947,7 @@ mod tests {
 
     #[test]
     fn test_eviction_candidates_no_surplus() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_nominal(3);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1956,7 +1956,7 @@ mod tests {
         assert!(candidates.is_empty());
 
         // Add peers below nominal - still no surplus
-        let peer1 = SwarmAddress::with_first_byte(0x80); // bin=0
+        let peer1 = OverlayAddress::with_first_byte(0x80); // bin=0
         SwarmRouting::connected(&*routing, peer1);
         let candidates = routing.eviction_candidates(|_| 1);
         assert!(candidates.is_empty());
@@ -1987,7 +1987,7 @@ mod tests {
 
     #[test]
     fn wrong_phase_release_leaves_counters_consistent() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_nominal(2);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1995,7 +1995,7 @@ mod tests {
 
         // Case 1: a handshaking peer wrongly released as a dial stays put; the
         // matching release_handshake then drains it.
-        let peer_a = SwarmAddress::with_first_byte(0x80); // bin 0
+        let peer_a = OverlayAddress::with_first_byte(0x80); // bin 0
         let bin_a = routing.bin_for(&peer_a);
         force_handshaking(&routing, peer_a);
         routing.release_dial(&peer_a);
@@ -2009,7 +2009,7 @@ mod tests {
 
         // Case 2: an active peer is untouched by either release; only the
         // authoritative disconnected() drains it.
-        let peer_b = SwarmAddress::with_first_byte(0x40); // bin 1
+        let peer_b = OverlayAddress::with_first_byte(0x40); // bin 1
         let bin_b = routing.bin_for(&peer_b);
         force_active(&routing, peer_b);
         routing.release_dial(&peer_b);
@@ -2024,7 +2024,7 @@ mod tests {
 
         // Case 3: a dialing peer wrongly released as a handshake stays put; the
         // matching release_dial then drains it.
-        let peer_c = SwarmAddress::with_first_byte(0x20); // bin 2
+        let peer_c = OverlayAddress::with_first_byte(0x20); // bin 2
         let bin_c = routing.bin_for(&peer_c);
         assert!(routing.try_reserve_dial(&peer_c, SwarmNodeType::Storer));
         routing.release_handshake(&peer_c);
@@ -2039,7 +2039,7 @@ mod tests {
         // Case 4: an inbound handshaking peer (no outbound tally) wrongly
         // released as a dial stays put; release_handshake drains handshaking
         // only, leaving the outbound count at zero throughout.
-        let peer_d = SwarmAddress::with_first_byte(0x10); // bin 3
+        let peer_d = OverlayAddress::with_first_byte(0x10); // bin 3
         let bin_d = routing.bin_for(&peer_d);
         routing.reserve_inbound(&peer_d);
         routing.release_dial(&peer_d);
@@ -2054,7 +2054,7 @@ mod tests {
 
     #[test]
     fn test_eviction_candidates_handshaking_first() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Pin the trim floor (oversaturation_peers) and saturation to 4 so
         // a small bin-0 population yields a surplus and the depth-8 bin-0
         // target stays at 4 as the original scenario assumed.
@@ -2102,7 +2102,7 @@ mod tests {
 
     #[test]
     fn test_eviction_candidates_active_lowest_score() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let config = KademliaConfig::default()
             .with_bootstrap_target(4)
@@ -2135,7 +2135,7 @@ mod tests {
 
     #[test]
     fn test_eviction_ignores_in_flight_dials() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let config = KademliaConfig::default()
             .with_bootstrap_target(4)
@@ -2177,7 +2177,7 @@ mod tests {
 
     #[test]
     fn test_eviction_prefers_least_reachable() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let (routing, _pm) = make_routing(
             base,
@@ -2221,7 +2221,7 @@ mod tests {
     fn test_eviction_local_tiebreak_keeps_local_over_equal_remote() {
         use crate::PeerReachability;
 
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let (routing, _pm) = make_routing(
             base,
@@ -2265,7 +2265,7 @@ mod tests {
     fn test_eviction_remote_reachable_outranks_local_unreachable() {
         use crate::PeerReachability;
 
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let (routing, _pm) = make_routing(
             base,
@@ -2314,11 +2314,12 @@ mod tests {
         // (0xC0 and 0xE0, mutual proximity 2). With every (rank, score) equal,
         // both victims must come from the tight cluster so the kept set still
         // covers both sub-tries.
-        let cluster: Vec<OverlayAddress> =
-            (0x80..=0x83u8).map(SwarmAddress::with_first_byte).collect();
+        let cluster: Vec<OverlayAddress> = (0x80..=0x83u8)
+            .map(OverlayAddress::with_first_byte)
+            .collect();
         let spread = [
-            SwarmAddress::with_first_byte(0xc0),
-            SwarmAddress::with_first_byte(0xe0),
+            OverlayAddress::with_first_byte(0xc0),
+            OverlayAddress::with_first_byte(0xe0),
         ];
 
         let pool: Vec<(OverlayAddress, u8, f64)> = cluster
@@ -2342,9 +2343,9 @@ mod tests {
         // The diversity tie-break never overrides the primary order: a
         // prefix-diverse peer with the worst rank (or, at equal rank, the
         // lowest score) is still evicted first.
-        let clustered_a = SwarmAddress::with_first_byte(0x80);
-        let clustered_b = SwarmAddress::with_first_byte(0x81);
-        let diverse = SwarmAddress::with_first_byte(0xc0);
+        let clustered_a = OverlayAddress::with_first_byte(0x80);
+        let clustered_b = OverlayAddress::with_first_byte(0x81);
+        let diverse = OverlayAddress::with_first_byte(0xc0);
 
         // Worst rank loses despite being the diversity-preferred keep.
         let pool = vec![
@@ -2368,10 +2369,12 @@ mod tests {
         // Two equally tight clusters and one victim slot per round: the
         // incremental recompute alternates clusters instead of draining one,
         // keeping the survivors spread.
-        let cluster_a: Vec<OverlayAddress> =
-            (0x80..=0x81u8).map(SwarmAddress::with_first_byte).collect();
-        let cluster_b: Vec<OverlayAddress> =
-            (0xc0..=0xc1u8).map(SwarmAddress::with_first_byte).collect();
+        let cluster_a: Vec<OverlayAddress> = (0x80..=0x81u8)
+            .map(OverlayAddress::with_first_byte)
+            .collect();
+        let cluster_b: Vec<OverlayAddress> = (0xc0..=0xc1u8)
+            .map(OverlayAddress::with_first_byte)
+            .collect();
 
         let pool: Vec<(OverlayAddress, u8, f64)> = cluster_a
             .iter()
@@ -2390,7 +2393,7 @@ mod tests {
 
     #[test]
     fn test_eviction_tiebreak_keeps_bin_prefix_spread() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let (routing, _pm) = make_routing(
             base,
@@ -2404,11 +2407,12 @@ mod tests {
         // spread peers (0xC0, 0xE0). At depth 8 the target is 4, so surplus is
         // 2. All ranks and scores are equal, so prefix diversity decides: both
         // victims come from the cluster and the kept set covers both sub-tries.
-        let cluster: Vec<OverlayAddress> =
-            (0x80..=0x83u8).map(SwarmAddress::with_first_byte).collect();
+        let cluster: Vec<OverlayAddress> = (0x80..=0x83u8)
+            .map(OverlayAddress::with_first_byte)
+            .collect();
         let spread = [
-            SwarmAddress::with_first_byte(0xc0),
-            SwarmAddress::with_first_byte(0xe0),
+            OverlayAddress::with_first_byte(0xc0),
+            OverlayAddress::with_first_byte(0xe0),
         ];
         for peer in cluster.iter().chain(spread.iter()) {
             force_active(&routing, *peer);
@@ -2430,7 +2434,7 @@ mod tests {
 
     #[test]
     fn test_eviction_candidates_neighborhood_never_evicted() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         // Trim floor pinned to the saturation default (8); dialing alone can
         // never exceed it, so the overflow that yields eviction candidates
         // must arrive through the inbound headroom band.

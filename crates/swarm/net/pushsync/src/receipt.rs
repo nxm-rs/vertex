@@ -16,7 +16,7 @@
 //! credible local floor it returns [`DepthVerdict::Unverifiable`] rather than
 //! trusting the radius alone.
 
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, XorMetric};
 use vertex_swarm_primitives::{
     NeighborhoodDepth, NetworkId, Nonce, OverlayAddress, OverlaySigner, StorageRadius,
     compute_overlay,

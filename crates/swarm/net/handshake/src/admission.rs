@@ -31,7 +31,7 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_peer::{SwarmAddress, SwarmNodeType};
+use vertex_swarm_peer::{OverlayAddress, SwarmNodeType};
 
 pub use vertex_net_peer_registry::ConnectionDirection;
 
@@ -72,7 +72,7 @@ pub trait HandshakeAdmissionControl: Send + Sync + 'static {
     /// Evaluate a peer that just identified itself during the handshake.
     fn evaluate(
         &self,
-        peer_overlay: &SwarmAddress,
+        peer_overlay: &OverlayAddress,
         node_type: SwarmNodeType,
         direction: ConnectionDirection,
     ) -> AdmissionDecision;
@@ -85,7 +85,7 @@ pub struct AlwaysAccept;
 impl HandshakeAdmissionControl for AlwaysAccept {
     fn evaluate(
         &self,
-        _peer_overlay: &SwarmAddress,
+        _peer_overlay: &OverlayAddress,
         _node_type: SwarmNodeType,
         _direction: ConnectionDirection,
     ) -> AdmissionDecision {
@@ -96,7 +96,7 @@ impl HandshakeAdmissionControl for AlwaysAccept {
 impl<T: HandshakeAdmissionControl + ?Sized> HandshakeAdmissionControl for Arc<T> {
     fn evaluate(
         &self,
-        peer_overlay: &SwarmAddress,
+        peer_overlay: &OverlayAddress,
         node_type: SwarmNodeType,
         direction: ConnectionDirection,
     ) -> AdmissionDecision {
@@ -121,7 +121,7 @@ mod tests {
     fn always_accept_returns_accept() {
         let ac = AlwaysAccept;
         let decision = ac.evaluate(
-            &SwarmAddress::with_first_byte(0xaa),
+            &OverlayAddress::with_first_byte(0xaa),
             SwarmNodeType::Storer,
             ConnectionDirection::Inbound,
         );
@@ -132,7 +132,7 @@ mod tests {
     fn arc_delegates() {
         let ac: SharedAdmissionControl = default_admission_control();
         let decision = ac.evaluate(
-            &SwarmAddress::with_first_byte(0x01),
+            &OverlayAddress::with_first_byte(0x01),
             SwarmNodeType::Client,
             ConnectionDirection::Outbound,
         );

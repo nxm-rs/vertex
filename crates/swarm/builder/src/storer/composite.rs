@@ -75,7 +75,7 @@ mod tests {
 
     fn stamp_at(timestamp: u64) -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, timestamp, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, timestamp, sig)
     }
 
     fn content(payload: &'static [u8]) -> CachedChunk {
@@ -87,7 +87,7 @@ mod tests {
 
     fn soc(id: u8, payload: &'static [u8], stamp_ns: u64) -> CachedChunk {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("signer");
-        let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(id), payload, &signer)
+        let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(id).into(), payload, &signer)
             .expect("valid soc")
             .into();
         CachedChunk::new(chunk, Some(stamp_at(stamp_ns)))

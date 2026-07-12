@@ -18,7 +18,7 @@ use crate::serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 use alloy_primitives::{Address, Signature};
 use libp2p::Multiaddr;
 use nectar_primitives::signing::sign_data;
-use nectar_primitives::{NetworkId, SwarmAddress, compute_overlay};
+use nectar_primitives::{NetworkId, OverlayAddress, compute_overlay};
 pub use nectar_primitives::{Nonce, Timestamp};
 use std::time::Duration;
 use vertex_net_local::{AddressScope, IpCapability, classify_multiaddr};
@@ -38,7 +38,7 @@ pub struct SwarmPeerWire<'a> {
     /// 65-byte secp256k1 signature over the EIP-191 sign-data.
     pub signature: Signature,
     /// Claimed overlay address; validated against the recovered signer.
-    pub overlay: SwarmAddress,
+    pub overlay: OverlayAddress,
     /// Handshake nonce.
     pub nonce: Nonce,
     /// Wall-clock timestamp in seconds since the Unix epoch.
@@ -63,7 +63,7 @@ pub struct SwarmPeerWire<'a> {
 pub struct SwarmPeer {
     multiaddrs: Vec<Multiaddr>,
     signature: Signature,
-    overlay: SwarmAddress,
+    overlay: OverlayAddress,
     nonce: Nonce,
     timestamp: Timestamp,
     chequebook: Option<Address>,
@@ -221,7 +221,7 @@ impl SwarmPeer {
 
     /// Overlay address.
     #[inline]
-    pub fn overlay(&self) -> &SwarmAddress {
+    pub fn overlay(&self) -> &OverlayAddress {
         &self.overlay
     }
 
@@ -269,7 +269,7 @@ impl SwarmPeer {
     pub fn from_parts(
         multiaddrs: Vec<Multiaddr>,
         signature: Signature,
-        overlay: SwarmAddress,
+        overlay: OverlayAddress,
         nonce: Nonce,
         timestamp: Timestamp,
         chequebook: Option<Address>,
@@ -641,7 +641,7 @@ mod tests {
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
         let signer = PrivateKeySigner::random();
-        let bogus_overlay = SwarmAddress::new([0xFF; 32]);
+        let bogus_overlay = OverlayAddress::new([0xFF; 32]);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
         let timestamp = Timestamp::from_seconds(now_secs());
 

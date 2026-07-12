@@ -39,7 +39,7 @@ where
 fn descriptor(addr: u8, batch: u8, hash: u8) -> ChunkDescriptor {
     ChunkDescriptor::new(
         ChunkAddress::new([addr; 32]),
-        B256::repeat_byte(batch),
+        B256::repeat_byte(batch).into(),
         B256::repeat_byte(hash),
     )
 }
@@ -148,7 +148,7 @@ fn want_bitvector_is_lsb_first_fixed_bytes() {
 #[test]
 fn delivery_fixed_bytes_and_roundtrip() {
     let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-    let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+    let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
     let chunk: AnyChunk = ContentChunk::new(&b"pullsync payload"[..])
         .expect("valid content chunk")
         .into();
@@ -173,7 +173,7 @@ fn delivery_fixed_bytes_and_roundtrip() {
 
     // Reconstructs to the requested address.
     let proto = vertex_swarm_net_proto::pullsync::Delivery {
-        address: address.to_vec(),
+        address: address.as_bytes().to_vec(),
         data: wire_data.to_vec(),
         stamp: stamp.to_bytes().to_vec(),
     };

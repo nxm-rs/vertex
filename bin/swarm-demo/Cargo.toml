@@ -60,18 +60,18 @@ async-trait = "0.1"
 # `parallel`/`wasm-threads`, keeping the single-threaded wasm profile (the demo
 # never calls `initThreadPool`, so there is no rayon worker pool and no shared
 # memory).
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
 # `local-signer` brings the alloy-signer-local re-export for the in-browser key.
-nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
 # `issuer` + `seal` give signed content stamps (SnapshotIssuer) and the
 # usage-persistence seal path; default `std` is implied.
-nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9", features = [
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef", features = [
     "issuer",
     "seal",
     "client",
 ] }
-nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
 
 # Chequebook address parsing for the optional SWAP config input and chain
 # types/signing for the browser. alloy-sol-types decodes the BatchCreated log

@@ -46,7 +46,7 @@ impl ProtoMessage for Delivery {
         let address = *self.chunk.address();
         let (chunk, stamp) = (*self.chunk).into_parts();
         Ok(vertex_swarm_net_proto::pushsync::Delivery {
-            address: address.to_vec(),
+            address: address.as_bytes().to_vec(),
             data: chunk.into_bytes().to_vec(),
             stamp: stamp.to_bytes().to_vec(),
         })
@@ -144,7 +144,7 @@ impl ProtoMessage for ReceiptResponse {
             // symmetry with the decode path and carries no meaningful payload.
             Self::Failed => Ok(vertex_swarm_net_proto::pushsync::Receipt::default()),
             Self::Stored(receipt) => Ok(vertex_swarm_net_proto::pushsync::Receipt {
-                address: receipt.address.to_vec(),
+                address: receipt.address.as_bytes().to_vec(),
                 signature: receipt.signature.as_bytes().to_vec(),
                 nonce: receipt.nonce.as_slice().to_vec(),
                 storage_radius: u32::from(receipt.storage_radius.get()),
@@ -196,7 +196,7 @@ mod tests {
     /// A stamp with a deterministic, well-formed signature for roundtrip tests.
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig)
     }
 
     fn test_stamped_chunk() -> StampedChunk {

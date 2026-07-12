@@ -63,7 +63,7 @@ use std::time::Duration;
 use alloy_signer::k256::ecdsa::SigningKey;
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use tokio::task::JoinHandle;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
@@ -107,7 +107,7 @@ pub struct ClusterNodeHandle {
     /// Role this node was constructed with.
     pub role: NodeRole,
     /// Overlay address (stable for the lifetime of the cluster).
-    pub overlay: SwarmAddress,
+    pub overlay: OverlayAddress,
     /// libp2p peer id (stable for the lifetime of the cluster).
     pub peer_id: PeerId,
     /// Listen multiaddr including `/p2p/<peer_id>`.

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, XorMetric};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
@@ -1528,7 +1528,7 @@ mod tests {
         raw[..64].fill(1);
         raw[64] = 27;
         let sig = Signature::try_from(&raw[..]).expect("valid signature bytes");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig)
     }
 
     #[test]

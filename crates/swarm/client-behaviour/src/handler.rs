@@ -1142,7 +1142,7 @@ mod tests {
 
     fn stamped(payload: &'static [u8]) -> StampedChunk {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
         let chunk: AnyChunk = ContentChunk::new(payload)
             .expect("valid content chunk")
             .into();

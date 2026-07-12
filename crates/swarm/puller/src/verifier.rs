@@ -115,7 +115,7 @@ mod tests {
         let mut raw = [0u8; 65];
         raw[64] = 27;
         let sig = alloy_primitives::Signature::try_from(&raw[..]).unwrap();
-        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
         StampedChunk::new(chunk.into(), stamp)
     }
 
@@ -192,7 +192,15 @@ mod tests {
 
     /// Batch owned by `owner`, depth 18 / bucket depth 16, with `value` funding.
     fn batch_for(owner: Address, value: u128) -> Batch {
-        Batch::new(B256::repeat_byte(0x11), value, 0, owner, 18, 16, false)
+        Batch::new(
+            B256::repeat_byte(0x11).into(),
+            value,
+            0,
+            owner,
+            18,
+            16,
+            false,
+        )
     }
 
     /// Build a stamped chunk whose stamp is signed for `chunk` under `batch`,

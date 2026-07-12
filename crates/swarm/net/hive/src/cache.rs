@@ -19,7 +19,7 @@
 use alloy_primitives::Signature;
 use hashlink::LruCache;
 use parking_lot::Mutex;
-use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
+use vertex_swarm_peer::{OverlayAddress, SwarmPeer};
 
 /// Maximum validated peers to cache across all shards (bounds memory).
 pub(crate) const PEER_CACHE_CAPACITY: usize = 256;
@@ -45,7 +45,7 @@ const _: () = {
 /// an equal slice of it and ages its entries with its own LRU list, so
 /// eviction is approximate global LRU.
 pub(crate) struct PeerCache {
-    shards: [Mutex<LruCache<SwarmAddress, SwarmPeer>>; SHARD_COUNT],
+    shards: [Mutex<LruCache<OverlayAddress, SwarmPeer>>; SHARD_COUNT],
 }
 
 impl Default for PeerCache {
@@ -61,8 +61,8 @@ impl Default for PeerCache {
 impl PeerCache {
     /// Shard owning the given overlay address.
     #[allow(clippy::indexing_slicing)] // byte 31 of a 32-byte address; index masked below SHARD_COUNT
-    fn shard(&self, overlay: &SwarmAddress) -> &Mutex<LruCache<SwarmAddress, SwarmPeer>> {
-        let index = usize::from(overlay.0[31]) & (SHARD_COUNT - 1);
+    fn shard(&self, overlay: &OverlayAddress) -> &Mutex<LruCache<OverlayAddress, SwarmPeer>> {
+        let index = usize::from(<[u8; 32]>::from(*overlay)[31]) & (SHARD_COUNT - 1);
         &self.shards[index]
     }
 
@@ -72,7 +72,7 @@ impl PeerCache {
     /// A hit refreshes the entry's LRU position within its shard. A cached
     /// record with a different signature is treated as a miss; the caller
     /// re-validates and overwrites via [`Self::insert`].
-    pub(crate) fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer> {
+    pub(crate) fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer> {
         let mut shard = self.shard(overlay).lock();
         shard
             .get(overlay)
@@ -82,7 +82,7 @@ impl PeerCache {
 
     /// Store a validated record, evicting the least recently used entry of
     /// its shard when the shard is full.
-    pub(crate) fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer) {
+    pub(crate) fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer) {
         self.shard(&overlay).lock().insert(overlay, peer);
     }
 
@@ -106,12 +106,12 @@ mod tests {
         Signature::from_raw(&raw).unwrap()
     }
 
-    fn overlay(index: usize) -> SwarmAddress {
+    fn overlay(index: usize) -> OverlayAddress {
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
         // Spread the low byte so shards fill evenly.
         bytes[31] = (index % 251) as u8;
-        SwarmAddress::from(B256::from(bytes))
+        OverlayAddress::from(B256::from(bytes))
     }
 
     fn peer(index: usize, sig: Signature) -> SwarmPeer {
@@ -157,7 +157,7 @@ mod tests {
 
         // Insert a hot set, then keep it warm while flooding with three times
         // the total capacity of one-shot entries.
-        let hot: Vec<SwarmAddress> = (0..16).map(overlay).collect();
+        let hot: Vec<OverlayAddress> = (0..16).map(overlay).collect();
         for (i, key) in hot.iter().enumerate() {
             cache.insert(*key, peer(i, sig));
         }

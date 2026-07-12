@@ -26,7 +26,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use dashmap::DashMap;
 use hashlink::LruCache;
 use parking_lot::{Mutex, RwLock};
-use vertex_swarm_peer::{Nonce, SwarmAddress, SwarmPeer, Timestamp};
+use vertex_swarm_peer::{Nonce, OverlayAddress, SwarmPeer, Timestamp};
 
 /// Mirrors the capacity documented in `src/cache.rs`.
 const CAPACITY: usize = 256;
@@ -39,12 +39,12 @@ const BATCHES_PER_THREAD: usize = 100;
 
 /// The cache operations the validation path needs.
 trait Cache: Sync {
-    fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer>;
-    fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer);
+    fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer>;
+    fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer);
 }
 
 /// One mutex around the whole LRU cache.
-struct SingleMutex(Mutex<LruCache<SwarmAddress, SwarmPeer>>);
+struct SingleMutex(Mutex<LruCache<OverlayAddress, SwarmPeer>>);
 
 impl SingleMutex {
     fn new() -> Self {
@@ -53,7 +53,7 @@ impl SingleMutex {
 }
 
 impl Cache for SingleMutex {
-    fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer> {
+    fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer> {
         let mut guard = self.0.lock();
         guard
             .get(overlay)
@@ -61,13 +61,13 @@ impl Cache for SingleMutex {
             .cloned()
     }
 
-    fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer) {
+    fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer) {
         self.0.lock().insert(overlay, peer);
     }
 }
 
 /// Read-write lock; the read path peeks without refreshing LRU order.
-struct RwLockPeek(RwLock<LruCache<SwarmAddress, SwarmPeer>>);
+struct RwLockPeek(RwLock<LruCache<OverlayAddress, SwarmPeer>>);
 
 impl RwLockPeek {
     fn new() -> Self {
@@ -76,7 +76,7 @@ impl RwLockPeek {
 }
 
 impl Cache for RwLockPeek {
-    fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer> {
+    fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer> {
         self.0
             .read()
             .peek(overlay)
@@ -84,7 +84,7 @@ impl Cache for RwLockPeek {
             .cloned()
     }
 
-    fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer) {
+    fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer) {
         self.0.write().insert(overlay, peer);
     }
 }
@@ -92,7 +92,7 @@ impl Cache for RwLockPeek {
 /// Per-shard mutexes selected by the last overlay byte (the `src/cache.rs`
 /// layout, generalized over shard count).
 struct ShardedMutex {
-    shards: Vec<Mutex<LruCache<SwarmAddress, SwarmPeer>>>,
+    shards: Vec<Mutex<LruCache<OverlayAddress, SwarmPeer>>>,
     mask: usize,
 }
 
@@ -107,13 +107,13 @@ impl ShardedMutex {
         }
     }
 
-    fn shard(&self, overlay: &SwarmAddress) -> &Mutex<LruCache<SwarmAddress, SwarmPeer>> {
-        &self.shards[usize::from(overlay.0[31]) & self.mask]
+    fn shard(&self, overlay: &OverlayAddress) -> &Mutex<LruCache<OverlayAddress, SwarmPeer>> {
+        &self.shards[usize::from(<[u8; 32]>::from(*overlay)[31]) & self.mask]
     }
 }
 
 impl Cache for ShardedMutex {
-    fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer> {
+    fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer> {
         let mut shard = self.shard(overlay).lock();
         shard
             .get(overlay)
@@ -121,7 +121,7 @@ impl Cache for ShardedMutex {
             .cloned()
     }
 
-    fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer) {
+    fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer) {
         self.shard(&overlay).lock().insert(overlay, peer);
     }
 }
@@ -133,7 +133,7 @@ struct AgedEntry {
 
 /// Concurrent sharded map with timestamp aging and scan-eviction.
 struct DashMapAged {
-    map: DashMap<SwarmAddress, AgedEntry>,
+    map: DashMap<OverlayAddress, AgedEntry>,
     clock: AtomicU64,
 }
 
@@ -147,7 +147,7 @@ impl DashMapAged {
 }
 
 impl Cache for DashMapAged {
-    fn get(&self, overlay: &SwarmAddress, signature: &Signature) -> Option<SwarmPeer> {
+    fn get(&self, overlay: &OverlayAddress, signature: &Signature) -> Option<SwarmPeer> {
         let entry = self.map.get(overlay)?;
         if entry.peer.signature() != signature {
             return None;
@@ -159,7 +159,7 @@ impl Cache for DashMapAged {
         Some(entry.peer.clone())
     }
 
-    fn insert(&self, overlay: SwarmAddress, peer: SwarmPeer) {
+    fn insert(&self, overlay: OverlayAddress, peer: SwarmPeer) {
         let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
         self.map.insert(
             overlay,
@@ -169,7 +169,7 @@ impl Cache for DashMapAged {
             },
         );
         while self.map.len() > CAPACITY {
-            let mut oldest: Option<(SwarmAddress, u64)> = None;
+            let mut oldest: Option<(OverlayAddress, u64)> = None;
             for entry in self.map.iter() {
                 let used = entry.value().last_used.load(Ordering::Relaxed);
                 if oldest.is_none_or(|(_, o)| used < o) {
@@ -184,11 +184,11 @@ impl Cache for DashMapAged {
 
 /// Deterministic overlay; the last byte spreads keys evenly across shards,
 /// matching the uniform distribution of real (hash-output) overlays.
-fn overlay(i: u64) -> SwarmAddress {
+fn overlay(i: u64) -> OverlayAddress {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&i.to_le_bytes());
     bytes[31] = i as u8;
-    SwarmAddress::from(B256::from(bytes))
+    OverlayAddress::from(B256::from(bytes))
 }
 
 fn signature() -> Signature {

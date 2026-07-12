@@ -57,7 +57,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         connection_id: ConnectionId,
         info: vertex_swarm_net_handshake::HandshakeInfo,
     ) {
-        let overlay = OverlayAddress::from(*info.swarm_peer.overlay());
+        let overlay = *info.swarm_peer.overlay();
         let node_type = info.node_type;
 
         debug!(

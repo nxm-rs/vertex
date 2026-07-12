@@ -471,7 +471,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// unverified and dialable; candidate selection may dial them, and the
     /// first completed handshake verifies the record in the same round trip.
     pub fn store_discovered_peer(&self, swarm_peer: SwarmPeer) -> OverlayAddress {
-        let overlay = OverlayAddress::from(*swarm_peer.overlay());
+        let overlay = *swarm_peer.overlay();
         if let Some(entry) = self.peers.get(&overlay) {
             // Known peer - resolve the gossip timestamp against the stored
             // record before overwriting, then update addresses.
@@ -557,7 +557,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         direction: ConnectionDirection,
         trust: TrustLevel,
     ) {
-        let overlay = OverlayAddress::from(*swarm_peer.overlay());
+        let overlay = *swarm_peer.overlay();
         debug!(?overlay, ?node_type, %direction, %trust, "peer connected");
 
         let Some(entry) = self.insert_peer(overlay, swarm_peer, node_type) else {
@@ -842,6 +842,7 @@ mod tests {
     use super::*;
     use vertex_net_peer_store::MemoryPeerStore;
     use vertex_swarm_api::DisconnectReason;
+    use vertex_swarm_primitives::XorMetric;
     use vertex_swarm_test_utils::{
         MockIdentity, make_swarm_peer_minimal, test_overlay, test_swarm_peer,
         test_swarm_peer_with_timestamp,
@@ -1284,7 +1285,7 @@ mod tests {
             pm.store_discovered_peer(make_swarm_peer_minimal(byte));
         }
 
-        let p1 = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
+        let p1 = *make_swarm_peer_minimal(0x80).overlay();
         pm.ban(&p1, BanCause::Requested, None);
 
         let dialable: Vec<_> = pm.dialable_overlays_in_bin(Bin::new(0).unwrap()).collect();
@@ -1377,10 +1378,10 @@ mod tests {
 
         // The two freshest (0xc0 @ 4000, 0xb0 @ 3000) survive the per-bin cap,
         // ordered freshest-first so the dial queue biases toward them.
-        let freshest = OverlayAddress::from(*make_swarm_peer_minimal(0xc0).overlay());
-        let next = OverlayAddress::from(*make_swarm_peer_minimal(0xb0).overlay());
-        let stale = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
-        let stalest = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
+        let freshest = *make_swarm_peer_minimal(0xc0).overlay();
+        let next = *make_swarm_peer_minimal(0xb0).overlay();
+        let stale = *make_swarm_peer_minimal(0xa0).overlay();
+        let stalest = *make_swarm_peer_minimal(0x80).overlay();
 
         assert_eq!(
             pm.index().peers_in_bin(bin0),
@@ -1487,8 +1488,8 @@ mod tests {
         // Two disconnected bin-0 peers.
         pm.store_discovered_peer(make_swarm_peer_minimal(0x80));
         pm.store_discovered_peer(make_swarm_peer_minimal(0xc0));
-        let low = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
-        let high = OverlayAddress::from(*make_swarm_peer_minimal(0xc0).overlay());
+        let low = *make_swarm_peer_minimal(0x80).overlay();
+        let high = *make_swarm_peer_minimal(0xc0).overlay();
 
         // Drive one peer's score down.
         for _ in 0..2 {
@@ -1501,7 +1502,7 @@ mod tests {
 
         // Newcomer must displace the lowest-score disconnected peer.
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
-        let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
+        let newcomer = *make_swarm_peer_minimal(0xa0).overlay();
 
         assert!(pm.swarm_peer(&newcomer).is_some());
         assert!(pm.swarm_peer(&high).is_some());
@@ -1521,8 +1522,8 @@ mod tests {
 
         pm.store_discovered_peer(make_swarm_peer_minimal(0x80));
         pm.store_discovered_peer(make_swarm_peer_minimal(0xc0));
-        let stale = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
-        let low_score = OverlayAddress::from(*make_swarm_peer_minimal(0xc0).overlay());
+        let stale = *make_swarm_peer_minimal(0x80).overlay();
+        let low_score = *make_swarm_peer_minimal(0xc0).overlay();
 
         // `stale` accumulates 48 dial failures (stale, but each failure is
         // score-neutral); `low_score` has a worse score but stays fresh.
@@ -1538,7 +1539,7 @@ mod tests {
         }
 
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
-        let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
+        let newcomer = *make_swarm_peer_minimal(0xa0).overlay();
 
         assert!(pm.swarm_peer(&newcomer).is_some());
         assert!(pm.swarm_peer(&stale).is_none(), "stale replaced first");
@@ -1567,12 +1568,12 @@ mod tests {
 
         // Newcomer is rejected: every slot is connected.
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
-        let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
+        let newcomer = *make_swarm_peer_minimal(0xa0).overlay();
 
         assert!(pm.swarm_peer(&newcomer).is_none());
         assert!(!pm.index().exists(&newcomer));
         for byte in [0x80, 0xc0] {
-            let overlay = OverlayAddress::from(*make_swarm_peer_minimal(byte).overlay());
+            let overlay = *make_swarm_peer_minimal(byte).overlay();
             assert!(pm.swarm_peer(&overlay).is_some());
         }
     }
@@ -1596,11 +1597,11 @@ mod tests {
             TrustLevel::Normal,
         );
         pm.store_discovered_peer(make_swarm_peer_minimal(0xc0));
-        let connected = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
-        let disconnected = OverlayAddress::from(*make_swarm_peer_minimal(0xc0).overlay());
+        let connected = *make_swarm_peer_minimal(0x80).overlay();
+        let disconnected = *make_swarm_peer_minimal(0xc0).overlay();
 
         pm.store_discovered_peer(make_swarm_peer_minimal(0xa0));
-        let newcomer = OverlayAddress::from(*make_swarm_peer_minimal(0xa0).overlay());
+        let newcomer = *make_swarm_peer_minimal(0xa0).overlay();
 
         assert!(pm.swarm_peer(&connected).is_some(), "connected kept");
         assert!(pm.swarm_peer(&newcomer).is_some());

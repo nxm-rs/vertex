@@ -110,8 +110,8 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
 }
 
 pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {
-    // OverlayAddress is B256 (32 bytes); first 8 bytes always exist.
-    let b = &overlay.0;
+    // OverlayAddress is 32 bytes; first 8 bytes always exist.
+    let b = <[u8; 32]>::from(*overlay);
     u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
@@ -296,7 +296,7 @@ impl PeerEntry {
     /// handshake completes (its addresses may have gone stale while the
     /// node was down).
     pub(crate) fn from_snapshot(snapshot: PeerSnapshot, config: Arc<SwarmScoringConfig>) -> Self {
-        let overlay = OverlayAddress::from(*snapshot.peer.overlay());
+        let overlay = *snapshot.peer.overlay();
         Self {
             node_type: NodeTypeCell::provisional(snapshot.node_type),
             peer: RwLock::new(snapshot.peer),
@@ -605,7 +605,7 @@ mod tests {
 
     fn test_entry(n: u8, node_type: SwarmNodeType) -> PeerEntry {
         let peer = test_swarm_peer(n);
-        let overlay = OverlayAddress::from(*peer.overlay());
+        let overlay = *peer.overlay();
         PeerEntry::with_config(
             peer,
             node_type,

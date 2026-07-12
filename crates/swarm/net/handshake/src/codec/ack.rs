@@ -1,6 +1,6 @@
 //! Ack message encoding/decoding for handshake protocol (15.0.0).
 
-use nectar_primitives::{NetworkId, Nonce, SwarmAddress, Timestamp};
+use nectar_primitives::{NetworkId, Nonce, OverlayAddress, Timestamp};
 use tracing::debug;
 use vertex_swarm_peer::{SwarmNodeType, SwarmPeer, SwarmPeerWire};
 
@@ -56,7 +56,7 @@ pub(crate) fn encode_swarm_peer(peer: &SwarmPeer) -> vertex_swarm_net_proto::han
     vertex_swarm_net_proto::handshake::SwarmPeer {
         multiaddrs: peer.serialize_multiaddrs(),
         signature: peer.signature().as_bytes().to_vec(),
-        overlay: peer.overlay().to_vec(),
+        overlay: peer.overlay().as_bytes().to_vec(),
         nonce: peer.nonce().as_slice().to_vec(),
         timestamp: peer.timestamp().get(),
         chequebook_address: peer
@@ -74,7 +74,7 @@ pub(crate) fn swarm_peer_from_proto(
 ) -> Result<SwarmPeer, HandshakeError> {
     let proto = proto.ok_or(HandshakeError::MissingField("address"))?;
 
-    let overlay = SwarmAddress::from_slice(proto.overlay.as_slice())
+    let overlay = OverlayAddress::from_slice(proto.overlay.as_slice())
         .inspect_err(|e| debug!(error = ?e, "invalid overlay in handshake address"))
         .map_err(|_| HandshakeError::InvalidOverlay)?;
 

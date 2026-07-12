@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::B256;
-use nectar_primitives::{Bin, ChunkAddress, ProximityOrder};
+use nectar_primitives::{Bin, ChunkAddress, ProximityOrder, XorMetric};
 use tracing::debug;
 use vertex_storage::{Database, DatabaseError, DbCursorRO, DbTx, DbTxMut, Table};
 use vertex_swarm_api::{

@@ -7,7 +7,7 @@ use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::Batch;
 use nectar_postage_usage::{
-    PublishedSequence, RootInfo, SealedChunk, Snapshot, SnapshotSink, SnapshotSource, SwarmAddress,
+    ChunkAddress, PublishedSequence, RootInfo, SealedChunk, Snapshot, SnapshotSink, SnapshotSource,
     seal_plan, usage_chunk_address,
 };
 use nectar_primitives::AnyChunk;
@@ -50,7 +50,7 @@ impl BrowserUsageSource {
 impl SnapshotSource for BrowserUsageSource {
     type Error = UsageAdapterError;
 
-    async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
+    async fn fetch(&self, address: &ChunkAddress) -> Result<Option<Bytes>, Self::Error> {
         match self.provider.retrieve_chunk(address).await {
             // A retrieved chunk is already address-validated (owner + signature
             // for a single-owner chunk). Its data payload is the snapshot payload

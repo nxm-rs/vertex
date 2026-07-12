@@ -12,7 +12,7 @@ use alloy_primitives::{Address, B256, ChainId, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmIdentityConfig, SwarmNodeType};
 use vertex_swarm_primitives::{NetworkId, Nonce, OverlaySigner, compute_overlay};
@@ -50,7 +50,7 @@ pub struct Identity {
     signer: Arc<LocalSigner<SigningKey>>,
     nonce: Nonce,
     /// Cached at construction time.
-    overlay: SwarmAddress,
+    overlay: OverlayAddress,
     node_type: SwarmNodeType,
     welcome_message: Option<String>,
     /// True if this identity was created from a random ephemeral signer rather
@@ -148,7 +148,7 @@ impl OverlaySigner for Identity {
     }
 
     /// Returns the overlay cached at construction rather than recomputing it.
-    fn overlay(&self) -> SwarmAddress {
+    fn overlay(&self) -> OverlayAddress {
         self.overlay
     }
 }

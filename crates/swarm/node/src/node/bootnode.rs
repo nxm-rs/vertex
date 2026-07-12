@@ -14,7 +14,7 @@ use eyre::Result;
 use futures::StreamExt;
 use libp2p::connection_limits;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use tracing::{info, warn};
 use vertex_swarm_api::{
     SwarmIdentity, SwarmIdentityConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
@@ -168,7 +168,7 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
         self.base.local_peer_id()
     }
 
-    pub fn overlay_address(&self) -> SwarmAddress {
+    pub fn overlay_address(&self) -> OverlayAddress {
         self.base.overlay_address()
     }
 

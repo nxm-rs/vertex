@@ -395,12 +395,12 @@ pub async fn walk(
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
     let getter = NetworkChunkGet::new(provider.clone(), cache.snapshot_map());
-    let mut manifest: PlainManifest<RetryGetter> =
-        PlainManifest::open(root, retrying(getter.clone()));
-    let result = manifest.lookup(path).await;
+    let manifest: PlainManifest<RetryGetter> = PlainManifest::open(root, retrying(getter.clone()));
+    let result = manifest.get(path).await;
     publish(&getter, cache);
-    let entry: Entry =
-        result.map_err(|e| JsValue::from_str(&format!("manifest lookup '{path}': {e}")))?;
+    let entry: Entry = result
+        .map_err(|e| JsValue::from_str(&format!("manifest lookup '{path}': {e}")))?
+        .ok_or_else(|| JsValue::from_str(&format!("manifest lookup '{path}': not found")))?;
 
     let file_root = entry
         .address()

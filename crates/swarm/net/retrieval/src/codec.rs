@@ -40,7 +40,7 @@ impl ProtoMessage for Request {
 
     fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
         Ok(vertex_swarm_net_proto::retrieval::Request {
-            addr: self.address.to_vec(),
+            addr: self.address.as_bytes().to_vec(),
         })
     }
 
@@ -221,7 +221,7 @@ mod tests {
     /// A stamp with a deterministic, well-formed signature for roundtrip tests.
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig)
     }
 
     fn content_stamped() -> StampedChunk {
@@ -235,7 +235,7 @@ mod tests {
         use alloy_signer_local::PrivateKeySigner;
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("valid signer");
         let chunk: AnyChunk =
-            SingleOwnerChunk::new(B256::repeat_byte(0x22), &b"soc payload"[..], &signer)
+            SingleOwnerChunk::new(B256::repeat_byte(0x22).into(), &b"soc payload"[..], &signer)
                 .expect("valid soc")
                 .into();
         StampedChunk::new(chunk, test_stamp())

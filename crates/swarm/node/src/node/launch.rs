@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use eyre::Result;
 use libp2p::{Multiaddr, PeerId};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_accounting::DefaultAccountingConfig;
 use vertex_swarm_api::{SwarmLocalStore, SwarmNodeType};
@@ -323,7 +323,7 @@ impl ClientLauncher {
             })
         });
 
-        let parts: ClientNodeParts<(SwarmAddress, PeerId)> = tail.finish(
+        let parts: ClientNodeParts<(OverlayAddress, PeerId)> = tail.finish(
             &executor,
             NodeRunParts {
                 topology,
@@ -390,7 +390,7 @@ pub struct LaunchedClient {
     accounting: SharedAccounting,
     chunks: NativeChunkProvider,
     store: Arc<dyn SwarmLocalStore>,
-    overlay: SwarmAddress,
+    overlay: OverlayAddress,
     peer_id: PeerId,
 }
 
@@ -432,7 +432,7 @@ impl LaunchedClient {
     }
 
     /// The node's overlay address.
-    pub fn overlay_address(&self) -> SwarmAddress {
+    pub fn overlay_address(&self) -> OverlayAddress {
         self.overlay
     }
 

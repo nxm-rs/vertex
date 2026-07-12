@@ -123,15 +123,15 @@ impl ChunkDescriptor {
 
     fn into_proto(self) -> vertex_swarm_net_proto::pullsync::Chunk {
         vertex_swarm_net_proto::pullsync::Chunk {
-            address: self.address.to_vec(),
-            batch_id: self.batch_id.to_vec(),
+            address: self.address.as_bytes().to_vec(),
+            batch_id: self.batch_id.as_slice().to_vec(),
             stamp_hash: self.stamp_hash.to_vec(),
         }
     }
 
     fn from_proto(proto: vertex_swarm_net_proto::pullsync::Chunk) -> Result<Self, PullsyncError> {
         let address = ChunkAddress::from_slice(&proto.address)?;
-        let batch_id = b256_from_slice(&proto.batch_id, "batch_id")?;
+        let batch_id = BatchId::from(b256_from_slice(&proto.batch_id, "batch_id")?);
         let stamp_hash = b256_from_slice(&proto.stamp_hash, "stamp_hash")?;
         Ok(Self {
             address,
@@ -256,7 +256,7 @@ impl ProtoMessage for Delivery {
         let address = *self.chunk.address();
         let (chunk, stamp) = (*self.chunk).into_parts();
         Ok(vertex_swarm_net_proto::pullsync::Delivery {
-            address: address.to_vec(),
+            address: address.as_bytes().to_vec(),
             data: chunk.into_bytes().to_vec(),
             stamp: stamp.to_bytes().to_vec(),
         })
@@ -287,7 +287,7 @@ mod tests {
 
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig)
     }
 
     fn test_stamped_chunk() -> StampedChunk {
@@ -300,7 +300,7 @@ mod tests {
     fn descriptor() -> ChunkDescriptor {
         ChunkDescriptor::new(
             ChunkAddress::new([0x11; 32]),
-            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x22).into(),
             B256::repeat_byte(0x33),
         )
     }
@@ -425,7 +425,9 @@ mod proptests {
 
     fn chunk_descriptor() -> impl Strategy<Value = ChunkDescriptor> {
         (arb::<ChunkAddress>(), any::<B256>(), any::<B256>()).prop_map(
-            |(address, batch_id, stamp_hash)| ChunkDescriptor::new(address, batch_id, stamp_hash),
+            |(address, batch_id, stamp_hash)| {
+                ChunkDescriptor::new(address, batch_id.into(), stamp_hash)
+            },
         )
     }
 

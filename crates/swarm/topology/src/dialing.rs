@@ -28,7 +28,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     ///
     /// Checks routing capacity and filters before dialing.
     pub fn dial_swarm_peer(&mut self, swarm_peer: SwarmPeer) -> bool {
-        let overlay = vertex_swarm_primitives::OverlayAddress::from(*swarm_peer.overlay());
+        let overlay = *swarm_peer.overlay();
 
         // Check if banned or in backoff
         if self.peer_manager.is_banned(&overlay) || self.peer_manager.peer_is_in_backoff(&overlay) {

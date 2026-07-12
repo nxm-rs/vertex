@@ -44,7 +44,7 @@ impl Encode for PeerBinKey {
 
     fn encode(self) -> Self::Encoded {
         let mut out = [0u8; 33];
-        out[..32].copy_from_slice(self.peer.as_slice());
+        out[..32].copy_from_slice(self.peer.as_bytes());
         out[32] = self.bin;
         out
     }

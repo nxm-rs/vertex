@@ -3,7 +3,7 @@
 use eyre::Result;
 use libp2p::connection_limits::{self, ConnectionLimits};
 use libp2p::{Multiaddr, PeerId, Swarm, swarm::NetworkBehaviour, swarm::SwarmEvent};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_net_identify as identify;
@@ -83,7 +83,7 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
         self.swarm.local_peer_id()
     }
 
-    pub fn overlay_address(&self) -> SwarmAddress {
+    pub fn overlay_address(&self) -> OverlayAddress {
         self.identity.overlay_address()
     }
 
