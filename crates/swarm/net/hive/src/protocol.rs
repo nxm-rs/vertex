@@ -31,7 +31,7 @@ use crate::peer_handler::{HivePeerHandler, InboundPolicy};
 use vertex_net_ratelimiter::KeyedRateLimiter;
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
-const MAX_MESSAGE_SIZE: usize = 32 * 1024;
+pub(crate) const MAX_MESSAGE_SIZE: usize = 32 * 1024;
 
 type Framed = FramedProto<MAX_MESSAGE_SIZE>;
 
@@ -165,7 +165,7 @@ async fn validate_batch_blocking(
 /// Validate a batch of proto peers (CPU-bound).
 ///
 /// Returns (valid_peers, valid_count, invalid_count).
-fn validate_batch(
+pub(crate) fn validate_batch(
     raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
     local_overlay: &OverlayAddress,
@@ -311,3 +311,65 @@ impl HeaderedOutbound for HiveOutboundInner {
 
 /// Outbound protocol upgrade with header exchange.
 pub(crate) type HiveOutboundProtocol = Outbound<HiveOutboundInner>;
+
+#[cfg(test)]
+mod seed_replay {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use quick_protobuf::{BytesReader, MessageRead};
+    use vertex_swarm_peer::ARBITRARY_NETWORK_ID;
+
+    use super::*;
+    use crate::cache::PeerCache;
+
+    /// Replays the committed fuzz seeds through the exact decode-then-validate
+    /// path the `hive_decode` fuzz target drives, so the stable test gate
+    /// proves the seeds stay panic-free without the fuzzer. Seeds are
+    /// writer-produced frames, so the generated nested reader is sound on them.
+    #[test]
+    fn seed_replay_hive_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/hive_decode");
+        let local_overlay = OverlayAddress::new([0u8; 32]);
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+            assert!(
+                data.len() <= MAX_MESSAGE_SIZE,
+                "seed {name} busts the frame cap"
+            );
+
+            let mut reader = BytesReader::from_bytes(&data);
+            let batch = vertex_swarm_net_proto::hive::Peers::from_reader(&mut reader, &data)
+                .unwrap_or_else(|e| panic!("seed {name} must deserialize: {e}"));
+            let raw_count = batch.peers.len();
+
+            let cache = PeerCache::default();
+            let (peers, valid_count, invalid_count) =
+                validate_batch(batch.peers, ARBITRARY_NETWORK_ID, &local_overlay, &cache);
+            assert_eq!(peers.len(), valid_count, "seed {name}");
+            assert_eq!(valid_count + invalid_count, raw_count, "seed {name}");
+            // A record surviving full validation carries at least its
+            // signature, overlay, and nonce bytes on the wire.
+            assert!(valid_count.saturating_mul(129) <= data.len(), "seed {name}");
+
+            if name.starts_with("valid-") {
+                assert_eq!(valid_count, raw_count, "seed {name} must fully validate");
+                assert!(raw_count > 0, "seed {name}");
+            } else if name.starts_with("invalid-") {
+                assert_eq!(valid_count, 0, "seed {name} must stay rejected");
+                assert!(raw_count > 0, "seed {name}");
+            } else if name.starts_with("edge-peers-empty") {
+                assert_eq!(raw_count, 0, "seed {name}");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 6,
+            "expected at least the 6 curated seeds, found {replayed}"
+        );
+    }
+}

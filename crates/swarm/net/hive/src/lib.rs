@@ -53,6 +53,8 @@ mod behaviour;
 mod cache;
 mod codec;
 mod error;
+#[cfg(feature = "arbitrary")]
+pub mod fuzz;
 mod handler;
 pub mod metrics;
 mod peer_handler;

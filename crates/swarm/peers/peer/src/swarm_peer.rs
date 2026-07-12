@@ -369,11 +369,23 @@ mod arbitrary_impl {
             u: &mut arbitrary::Unstructured<'_>,
             network_id: NetworkId,
         ) -> arbitrary::Result<Self> {
-            let signer = nectar_primitives::generators::signer(u)?;
-            let nonce = arbitrary::Arbitrary::arbitrary(u)?;
             let multiaddrs = (0..u.int_in_range(1..=3u8)?)
                 .map(|_| crate::arbitrary_multiaddr(u))
                 .collect::<arbitrary::Result<Vec<_>>>()?;
+            Self::arbitrary_signed_with_addrs(u, network_id, multiaddrs)
+        }
+
+        /// A validly signed peer record under `network_id` over the given
+        /// multiaddrs, so callers control the address shape (routable `/p2p/`
+        /// sets, over-cap sets) while the key, nonce, timestamp and chequebook
+        /// are drawn from `u`.
+        pub fn arbitrary_signed_with_addrs(
+            u: &mut arbitrary::Unstructured<'_>,
+            network_id: NetworkId,
+            multiaddrs: Vec<Multiaddr>,
+        ) -> arbitrary::Result<Self> {
+            let signer = nectar_primitives::generators::signer(u)?;
+            let nonce = arbitrary::Arbitrary::arbitrary(u)?;
             let timestamp = Timestamp::from_seconds(u.int_in_range(1..=4_000_000_000i64)?);
             let chequebook = u
                 .arbitrary::<Option<[u8; 20]>>()?

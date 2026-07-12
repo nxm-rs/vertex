@@ -23,6 +23,15 @@ vertex-swarm-net-pushsync = { path = "../crates/swarm/net/pushsync", features = 
 vertex-swarm-net-handshake = { path = "../crates/swarm/net/handshake", features = [
 	"arbitrary",
 ] }
+vertex-swarm-peer = { path = "../crates/swarm/peers/peer", features = [
+	"arbitrary",
+] }
+vertex-swarm-net-hive = { path = "../crates/swarm/net/hive", features = [
+	"arbitrary",
+] }
+vertex-swarm-net-identify = { path = "../crates/swarm/net/identify", features = [
+	"arbitrary",
+] }
 
 [[bin]]
 name = "pushsync_decode"
@@ -55,6 +64,34 @@ bench = false
 [[bin]]
 name = "handshake_roundtrip"
 path = "fuzz_targets/handshake_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swarm_peer_parse"
+path = "fuzz_targets/swarm_peer_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swarm_peer_roundtrip"
+path = "fuzz_targets/swarm_peer_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hive_decode"
+path = "fuzz_targets/hive_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identify_decode"
+path = "fuzz_targets/identify_decode.rs"
 test = false
 doc = false
 bench = false

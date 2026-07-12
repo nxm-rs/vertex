@@ -6,6 +6,8 @@
 mod behaviour;
 mod config;
 pub mod error;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
 mod generated;
 mod handler;
 pub mod metrics;
