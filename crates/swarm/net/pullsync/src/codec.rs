@@ -402,88 +402,104 @@ mod tests {
         let decoded = Delivery::from_proto(proto).unwrap();
         assert_eq!(*decoded.chunk.address(), address);
     }
+
+    /// Raw-bytes decode: generated reader, then the domain conversion.
+    /// Mirrors the `pullsync_decode` fuzz target's per-message arm.
+    fn decode_seed<M: ProtoMessage>(data: &[u8]) -> Option<M> {
+        use quick_protobuf::{BytesReader, MessageRead};
+        let mut reader = BytesReader::from_bytes(data);
+        let wire = M::Proto::from_reader(&mut reader, data).ok()?;
+        M::from_proto(wire).ok()
+    }
+
+    /// Replays the committed fuzz seeds through the exact decode path the
+    /// `pullsync_decode` fuzz target drives, so the stable test gate proves
+    /// the seeds stay panic-free without the fuzzer. Every seed is
+    /// writer-produced protobuf, so the raw generated reader is safe on the
+    /// nested `Offer` frame too.
+    #[test]
+    fn seed_replay_pullsync_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/pullsync_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let syn = decode_seed::<Syn>(&data);
+            let ack = decode_seed::<Ack>(&data);
+            let get = decode_seed::<Get>(&data);
+            let offer = decode_seed::<Offer>(&data);
+            let want = decode_seed::<Want>(&data);
+            let delivery = decode_seed::<Delivery>(&data);
+
+            if name.starts_with("valid-syn-") {
+                assert!(syn.is_some(), "seed {name} must decode as a syn");
+            } else if name.starts_with("valid-ack-") {
+                assert!(ack.is_some(), "seed {name} must decode as an ack");
+            } else if name.starts_with("valid-get-") {
+                assert!(get.is_some(), "seed {name} must decode as a get");
+            } else if name.starts_with("invalid-get-") {
+                assert!(get.is_none(), "seed {name} must stay a get Err");
+            } else if name.starts_with("valid-offer-") {
+                assert!(offer.is_some(), "seed {name} must decode as an offer");
+            } else if name.starts_with("invalid-offer-") {
+                assert!(offer.is_none(), "seed {name} must stay an offer Err");
+            } else if name.starts_with("valid-want-") {
+                assert!(want.is_some(), "seed {name} must decode as a want");
+            } else if name.starts_with("valid-delivery-") {
+                assert!(delivery.is_some(), "seed {name} must decode as a delivery");
+            } else if name.starts_with("invalid-delivery-") {
+                assert!(delivery.is_none(), "seed {name} must stay a delivery Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 12,
+            "expected at least the 12 curated seeds, found {replayed}"
+        );
+    }
 }
 
+// Stable pins of the round-trip invariant, drawing every message through the
+// shared `Arbitrary` impls so the proptest suite and the fuzz round-trip
+// target drive one construction path.
 #[cfg(test)]
 mod proptests {
-    use arbitrary::Unstructured;
-    use nectar_postage::generators::signed_stamped_chunk;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
     use vertex_net_codec::prop_assert_proto_roundtrip;
 
     use super::*;
 
-    fn ack() -> impl Strategy<Value = Ack> {
-        (prop::collection::vec(any::<u64>(), 0..=32), any::<u64>())
-            .prop_map(|(cursors, epoch)| Ack { cursors, epoch })
-    }
-
-    fn get() -> impl Strategy<Value = Get> {
-        (arb::<Bin>(), any::<u64>()).prop_map(|(bin, start)| Get::new(bin, start))
-    }
-
-    fn chunk_descriptor() -> impl Strategy<Value = ChunkDescriptor> {
-        (arb::<ChunkAddress>(), any::<B256>(), any::<B256>()).prop_map(
-            |(address, batch_id, stamp_hash)| {
-                ChunkDescriptor::new(address, batch_id.into(), stamp_hash)
-            },
-        )
-    }
-
-    fn offer() -> impl Strategy<Value = Offer> {
-        (
-            any::<u64>(),
-            prop::collection::vec(chunk_descriptor(), 0..=8),
-        )
-            .prop_map(|(topmost, chunks)| Offer::new(topmost, chunks))
-    }
-
-    // The wire carries only whole bytes, so a byte-aligned bit vector is the one
-    // whose selection and length both survive the round-trip.
-    fn want() -> impl Strategy<Value = Want> {
-        prop::collection::vec(any::<u8>(), 0..=8)
-            .prop_map(|bytes| Want::new(BitVector::from_wire_bytes(bytes)))
-    }
-
-    // A valid-by-construction stamped chunk: the stamp verifies against the
-    // chunk address and batch owner, drawn through nectar's generator.
-    fn delivery() -> impl Strategy<Value = Delivery> {
-        prop::collection::vec(any::<u8>(), 128..2048).prop_filter_map(
-            "a byte pool the generator can draw a signed stamped chunk from",
-            |bytes| {
-                let mut u = Unstructured::new(&bytes);
-                let (chunk, _batch) = signed_stamped_chunk(&mut u).ok()?;
-                Some(Delivery::new(chunk))
-            },
-        )
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn ack_roundtrips(msg in ack()) {
+        fn ack_roundtrips(msg in arb::<Ack>()) {
             prop_assert_proto_roundtrip!(msg);
         }
 
         #[test]
-        fn get_roundtrips(msg in get()) {
+        fn get_roundtrips(msg in arb::<Get>()) {
             prop_assert_proto_roundtrip!(msg);
         }
 
         #[test]
-        fn offer_roundtrips(msg in offer()) {
+        fn offer_roundtrips(msg in arb::<Offer>()) {
             prop_assert_proto_roundtrip!(msg);
         }
 
         #[test]
-        fn want_roundtrips(msg in want()) {
+        fn want_roundtrips(msg in arb::<Want>()) {
             prop_assert_proto_roundtrip!(msg);
         }
 
         #[test]
-        fn delivery_roundtrips(msg in delivery()) {
+        fn delivery_roundtrips(msg in arb::<Delivery>()) {
             prop_assert_proto_roundtrip!(msg);
         }
     }

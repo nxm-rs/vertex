@@ -182,4 +182,41 @@ mod tests {
         let restored = BitVector::from_bytes(bv.clone().into_bytes(), len).expect("valid bytes");
         assert_eq!(restored, bv);
     }
+
+    /// Replays the committed fuzz seeds through the exact invariant check the
+    /// `pullsync_bitvector` fuzz target drives (`crate::fuzz::check_bitvector`),
+    /// so the stable test gate proves the seeds stay panic-free without the
+    /// fuzzer. A seed is a two-byte little-endian declared length followed by
+    /// the packed bytes; `valid-`/`invalid-` classify the `from_bytes` outcome.
+    #[test]
+    fn seed_replay_pullsync_bitvector() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/pullsync_bitvector");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let outcome = crate::fuzz::check_bitvector(&data);
+            if name.starts_with("valid-") || name.starts_with("edge-padding-") {
+                assert!(
+                    matches!(outcome, Some(Ok(_))),
+                    "seed {name} must pass from_bytes"
+                );
+            } else if name.starts_with("invalid-") {
+                assert!(
+                    matches!(outcome, Some(Err(_))),
+                    "seed {name} must stay rejected"
+                );
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 7,
+            "expected at least the 7 curated seeds, found {replayed}"
+        );
+    }
 }
