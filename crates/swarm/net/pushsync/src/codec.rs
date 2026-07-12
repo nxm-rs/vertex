@@ -248,6 +248,58 @@ mod tests {
         assert!(!decoded.is_error());
     }
 
+    /// Raw-bytes delivery decode: generated reader, then the domain
+    /// conversion. Mirrors the `pushsync_decode` fuzz target exactly.
+    fn decode_seed_delivery(data: &[u8]) -> Option<Delivery> {
+        use quick_protobuf::{BytesReader, MessageRead};
+        let mut reader = BytesReader::from_bytes(data);
+        let wire = vertex_swarm_net_proto::pushsync::Delivery::from_reader(&mut reader, data);
+        Delivery::from_proto(wire.ok()?).ok()
+    }
+
+    /// Raw-bytes receipt decode, the sibling of [`decode_seed_delivery`].
+    fn decode_seed_receipt(data: &[u8]) -> Option<ReceiptResponse> {
+        use quick_protobuf::{BytesReader, MessageRead};
+        let mut reader = BytesReader::from_bytes(data);
+        let wire = vertex_swarm_net_proto::pushsync::Receipt::from_reader(&mut reader, data);
+        ReceiptResponse::from_proto(wire.ok()?).ok()
+    }
+
+    /// Replays the committed fuzz seeds through the exact decode path the
+    /// `pushsync_decode` fuzz target drives, so the stable test gate proves
+    /// the seeds stay panic-free without the fuzzer.
+    #[test]
+    fn seed_replay_pushsync_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/pushsync_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let delivery = decode_seed_delivery(&data);
+            let receipt = decode_seed_receipt(&data);
+
+            if name.starts_with("valid-delivery-") {
+                assert!(delivery.is_some(), "seed {name} must decode as a delivery");
+            } else if name.starts_with("invalid-delivery-") {
+                assert!(delivery.is_none(), "seed {name} must stay a delivery Err");
+            } else if name.starts_with("valid-receipt-") {
+                assert!(receipt.is_some(), "seed {name} must decode as a receipt");
+            } else if name.starts_with("invalid-receipt-") {
+                assert!(receipt.is_none(), "seed {name} must stay a receipt Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 9,
+            "expected at least the 9 curated seeds, found {replayed}"
+        );
+    }
+
     #[test]
     fn test_receipt_error_roundtrip() {
         let original = ReceiptResponse::Failed;

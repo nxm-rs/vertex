@@ -44,3 +44,4 @@ Pair every wire-visible change with a conformance vector update under the protoc
 - `cargo test -p vertex-swarm-net-<name>` for unit tests.
 - `handshake` carries cross-implementation wire-conformance vectors. Run `cargo test -p vertex-swarm-net-handshake` after any wire change and update the vector files if the change is intentional.
 - `libp2p-swarm-test` is the harness for behaviour-level tests.
+- The pushsync codec has libFuzzer targets under `fuzz/` at the repo root; its committed seeds replay on stable via `seed_replay_pushsync_decode` in the codec tests. Read `fuzz/README.md` before adding a target for another protocol crate.

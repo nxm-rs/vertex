@@ -123,8 +123,9 @@ members = [
 # its deps, not the ffi cdylib or wasm-only crates. CI passes --workspace.
 default-members = ["bin/vertex"]
 
-# swarm-demo is a browser cdylib that never compiles for native.
-exclude = ["bin/swarm-demo"]
+# swarm-demo is a browser cdylib that never compiles for native; fuzz is the
+# nightly-only cargo-fuzz workspace (its own root, see fuzz/README.md).
+exclude = ["bin/swarm-demo", "fuzz"]
 
 resolver = "2"
 
