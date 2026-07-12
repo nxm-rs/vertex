@@ -22,7 +22,7 @@ thiserror.workspace = true
 vertex-util-runtime.workspace = true
 
 [features]
-# The fuzz-facing surface (the u256 wire invariant sweep), shared by the
-# fuzz workspace and the stable seed-replay test. Dev-only: never enabled by
-# a shipped artefact cone.
+# The fuzz-facing surface (the u256 wire and frame-layer invariant sweeps),
+# shared by the fuzz workspace and the stable seed-replay tests. Dev-only:
+# never enabled by a shipped artefact cone.
 arbitrary = []

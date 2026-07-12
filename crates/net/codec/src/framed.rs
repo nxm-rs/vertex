@@ -68,3 +68,50 @@ impl<const BUF: usize> FramedProto<BUF> {
         Ok((msg, framed.into_inner()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::fuzz::{FRAME_CAPS, check_framing, decode_all};
+
+    /// Replays the committed `framing_decode` fuzz seeds through the exact
+    /// sweep the fuzz target runs, so the stable test gate proves the seeds
+    /// stay panic-free without nightly or libFuzzer.
+    #[test]
+    fn seed_replay_framing_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fuzz/seeds/framing_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            check_framing(&data);
+
+            // The first seed byte is the chunk-size control; the stream
+            // classified below is the remainder.
+            let stream = data.get(1..).unwrap_or_default();
+            if name.starts_with("valid-") {
+                let (frames, errored) = decode_all(stream, *FRAME_CAPS.last().unwrap());
+                assert!(
+                    !errored && !frames.is_empty(),
+                    "seed {name} must decode cleanly"
+                );
+            } else if name.starts_with("invalid-") {
+                for cap in FRAME_CAPS {
+                    assert!(
+                        decode_all(stream, cap).1,
+                        "seed {name} must stay an error at cap {cap}"
+                    );
+                }
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 10,
+            "expected at least the 10 curated seeds, found {replayed}"
+        );
+    }
+}

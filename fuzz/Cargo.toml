@@ -214,6 +214,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "framing_decode"
+path = "fuzz_targets/framing_decode.rs"
+test = false
+doc = false
+bench = false
+
 # Make arithmetic overflow and debug_assert! act as fuzz oracles even in the
 # optimized builds cargo-fuzz produces.
 [profile.release]
