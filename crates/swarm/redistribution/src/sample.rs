@@ -92,7 +92,7 @@ fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
     // First slot not strictly smaller than `key`: a tie or the insertion point.
     let Some(pos) = sample
         .iter()
-        .position(|s| s.transformed_address.as_slice() >= key.as_slice())
+        .position(|s| s.transformed_address.as_bytes() >= key.as_bytes())
     else {
         // Larger than every incumbent: append only while not yet full.
         if sample.len() < SAMPLE_SIZE {
@@ -125,8 +125,8 @@ fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
 pub fn reserve_commitment_content(items: &[SampleItem]) -> Vec<u8> {
     let mut content = Vec::with_capacity(items.len() * 64);
     for it in items {
-        content.extend_from_slice(it.chunk_address().as_slice());
-        content.extend_from_slice(it.transformed_address.as_slice());
+        content.extend_from_slice(it.chunk_address().as_bytes());
+        content.extend_from_slice(it.transformed_address.as_bytes());
     }
     content
 }
@@ -155,7 +155,7 @@ mod tests {
         use nectar_primitives::DefaultSingleOwnerChunk;
         let signer = alloy_signer_local::PrivateKeySigner::from_slice(&[0x42u8; 32]).unwrap();
         let soc = DefaultSingleOwnerChunk::new(
-            alloy_primitives::B256::ZERO,
+            alloy_primitives::B256::ZERO.into(),
             b"single owner payload".to_vec(),
             &signer,
         )
@@ -177,7 +177,7 @@ mod tests {
         // Ascending transformed-address order.
         for w in sample.windows(2) {
             assert!(
-                w[0].transformed_address.as_slice() < w[1].transformed_address.as_slice(),
+                w[0].transformed_address.as_bytes() < w[1].transformed_address.as_bytes(),
                 "sample must be strictly ascending by transformed address"
             );
         }
@@ -187,7 +187,7 @@ mod tests {
             .iter()
             .map(|i| i.transformed_address)
             .collect::<Vec<_>>();
-        all.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        all.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         let want: Vec<_> = all.into_iter().take(SAMPLE_SIZE).collect();
         let got: Vec<_> = sample.iter().map(|i| i.transformed_address).collect();
         assert_eq!(got, want);

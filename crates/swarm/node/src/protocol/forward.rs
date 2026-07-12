@@ -121,7 +121,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use nectar_postage::Stamp;
-    use nectar_primitives::{AnyChunk, ContentChunk, NetworkId, Nonce, compute_overlay};
+    use nectar_primitives::{AnyChunk, ContentChunk, NetworkId, Nonce, XorMetric, compute_overlay};
     use tokio::sync::mpsc;
     use vertex_swarm_accounting::{
         Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer,
@@ -245,7 +245,7 @@ mod tests {
     /// A stamped content chunk and its content-derived address.
     fn stamped() -> StampedChunk {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
         let chunk: AnyChunk = ContentChunk::new(&b"forwarded payload"[..])
             .expect("valid content chunk")
             .into();
@@ -256,7 +256,7 @@ mod tests {
     /// its proximity to the address is exactly `leading_bits` (the next bit is
     /// flipped). Used to place a peer at a controlled distance from the target.
     fn overlay_at_proximity(address: &ChunkAddress, leading_bits: usize) -> OverlayAddress {
-        let mut bytes = address.0.0;
+        let mut bytes = <[u8; 32]>::from(*address);
         // Flip the bit immediately after the shared prefix so the proximity is
         // exactly `leading_bits`: the first differing bit caps proximity.
         let byte = leading_bits / 8;

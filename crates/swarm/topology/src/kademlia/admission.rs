@@ -13,7 +13,7 @@ use vertex_swarm_net_handshake::{
     AdmissionDecision, AdmissionRejection, ConnectionDirection, HandshakeAdmissionControl,
     SharedAdmissionControl,
 };
-use vertex_swarm_peer::{SwarmAddress, SwarmNodeType};
+use vertex_swarm_peer::{OverlayAddress, SwarmNodeType};
 
 use super::KademliaRouting;
 
@@ -34,7 +34,7 @@ impl<I: SwarmIdentity> KademliaAdmissionControl<I> {
 impl<I: SwarmIdentity> HandshakeAdmissionControl for KademliaAdmissionControl<I> {
     fn evaluate(
         &self,
-        peer_overlay: &SwarmAddress,
+        peer_overlay: &OverlayAddress,
         _node_type: SwarmNodeType,
         direction: ConnectionDirection,
     ) -> AdmissionDecision {
@@ -71,7 +71,7 @@ mod tests {
     use vertex_swarm_test_utils::MockIdentity;
 
     fn make_routing(
-        base: SwarmAddress,
+        base: OverlayAddress,
         config: KademliaConfig,
     ) -> Arc<KademliaRouting<MockIdentity>> {
         let identity = MockIdentity::with_overlay(base);
@@ -81,12 +81,12 @@ mod tests {
 
     #[test]
     fn accepts_when_routing_has_capacity() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let routing = make_routing(base, KademliaConfig::default());
         let ac = KademliaAdmissionControl::new(routing);
 
         let decision = ac.evaluate(
-            &SwarmAddress::with_first_byte(0x80),
+            &OverlayAddress::with_first_byte(0x80),
             SwarmNodeType::Storer,
             ConnectionDirection::Inbound,
         );
@@ -97,7 +97,7 @@ mod tests {
     fn inbound_accepts_at_ceiling_minus_one() {
         // Capacity 1 (nominal=1, headroom=0). With zero peers reserved
         // the in-flight inbound peer fills the only slot exactly.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
@@ -107,7 +107,7 @@ mod tests {
         let routing = make_routing(base, config);
 
         let ac = KademliaAdmissionControl::new(routing);
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
         let decision = ac.evaluate(&peer, SwarmNodeType::Storer, ConnectionDirection::Inbound);
         assert!(matches!(decision, AdmissionDecision::Accept));
     }
@@ -117,7 +117,7 @@ mod tests {
         // Capacity 1 and one peer already reserved into po=0. The
         // in-flight inbound peer (also po=0) would push the bin over
         // ceiling.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
@@ -126,11 +126,11 @@ mod tests {
             .with_saturation(1);
         let routing = make_routing(base, config);
 
-        let occupied = SwarmAddress::with_first_byte(0xc0);
+        let occupied = OverlayAddress::with_first_byte(0xc0);
         RoutingCapacity::reserve_inbound(&*routing, &occupied);
 
         let ac = KademliaAdmissionControl::new(routing);
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
         let decision = ac.evaluate(&peer, SwarmNodeType::Storer, ConnectionDirection::Inbound);
         assert!(matches!(
             decision,
@@ -143,7 +143,7 @@ mod tests {
         // Capacity 1. The outbound peer reserved its slot via
         // `try_reserve_dial`, so `effective_count` already includes it.
         // Admission must accept because the slot it occupies is its own.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
@@ -152,7 +152,7 @@ mod tests {
             .with_saturation(1);
         let routing = make_routing(base, config);
 
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
         assert!(RoutingCapacity::try_reserve_dial(
             &*routing,
             &peer,
@@ -170,7 +170,7 @@ mod tests {
         // ceiling=1. The second peer should have been rejected by
         // `try_reserve_dial` already, but if a stale caller passes it
         // to the gate we still want a clean reject.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
@@ -179,8 +179,8 @@ mod tests {
             .with_saturation(1);
         let routing = make_routing(base, config);
 
-        let peer1 = SwarmAddress::with_first_byte(0x80);
-        let peer2 = SwarmAddress::with_first_byte(0xc0);
+        let peer1 = OverlayAddress::with_first_byte(0x80);
+        let peer2 = OverlayAddress::with_first_byte(0xc0);
         assert!(RoutingCapacity::try_reserve_dial(
             &*routing,
             &peer1,
@@ -202,21 +202,21 @@ mod tests {
     fn neighborhood_bin_always_accepts() {
         // Bins inside the neighborhood (ceiling = usize::MAX) accept
         // unconditionally; oversaturation there is a separate concern.
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let config = KademliaConfig::default().with_nominal(1);
         let routing = make_routing(base, config);
 
         for i in 0..3 {
             let mut bytes = [0u8; 32];
             bytes[0] = 0x01 + i;
-            RoutingCapacity::reserve_inbound(&*routing, &SwarmAddress::from(bytes));
+            RoutingCapacity::reserve_inbound(&*routing, &OverlayAddress::from(bytes));
         }
 
         let ac = KademliaAdmissionControl::new(routing);
         let mut bytes = [0u8; 32];
         bytes[0] = 0x01;
         let decision = ac.evaluate(
-            &SwarmAddress::from(bytes),
+            &OverlayAddress::from(bytes),
             SwarmNodeType::Storer,
             ConnectionDirection::Inbound,
         );
@@ -225,11 +225,11 @@ mod tests {
 
     #[test]
     fn shared_handle_dispatches() {
-        let base = SwarmAddress::with_first_byte(0x00);
+        let base = OverlayAddress::with_first_byte(0x00);
         let routing = make_routing(base, KademliaConfig::default());
         let handle = kademlia_admission_control(routing);
         let decision = handle.evaluate(
-            &SwarmAddress::with_first_byte(0x42),
+            &OverlayAddress::with_first_byte(0x42),
             SwarmNodeType::Client,
             ConnectionDirection::Outbound,
         );

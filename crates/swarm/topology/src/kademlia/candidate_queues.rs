@@ -109,12 +109,12 @@ mod tests {
     fn b(n: u8) -> Bin {
         Bin::new(n).expect("valid bin")
     }
-    use nectar_primitives::SwarmAddress;
+    use nectar_primitives::OverlayAddress;
 
     #[test]
     fn test_push_and_drain() {
         let queues = CandidateQueues::new(32, 16);
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
 
         assert!(queues.push(b(0), peer));
         // Dedup: second push returns false
@@ -131,8 +131,8 @@ mod tests {
     #[test]
     fn test_drain_highest_first() {
         let queues = CandidateQueues::new(32, 16);
-        let lo = SwarmAddress::with_first_byte(0x80);
-        let hi = SwarmAddress::with_first_byte(0x40);
+        let lo = OverlayAddress::with_first_byte(0x80);
+        let hi = OverlayAddress::with_first_byte(0x40);
 
         queues.push(b(0), lo);
         queues.push(b(1), hi);
@@ -148,9 +148,9 @@ mod tests {
     fn test_per_bin_cap() {
         let queues = CandidateQueues::new(32, 2);
 
-        let p1 = SwarmAddress::with_first_byte(0x80);
-        let p2 = SwarmAddress::with_first_byte(0x81);
-        let p3 = SwarmAddress::with_first_byte(0x82);
+        let p1 = OverlayAddress::with_first_byte(0x80);
+        let p2 = OverlayAddress::with_first_byte(0x81);
+        let p3 = OverlayAddress::with_first_byte(0x82);
 
         assert!(queues.push(b(0), p1));
         assert!(queues.push(b(0), p2));
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_invalid_bin() {
         let queues = CandidateQueues::new(4, 16);
-        let peer = SwarmAddress::with_first_byte(0x80);
+        let peer = OverlayAddress::with_first_byte(0x80);
 
         // Bin 5 doesn't exist (only 0-3)
         assert!(!queues.push(b(5), peer));
@@ -177,8 +177,8 @@ mod tests {
     #[test]
     fn test_pop_next_highest_bin_first() {
         let queues = CandidateQueues::new(32, 16);
-        let lo = SwarmAddress::with_first_byte(0x80);
-        let hi = SwarmAddress::with_first_byte(0x40);
+        let lo = OverlayAddress::with_first_byte(0x80);
+        let hi = OverlayAddress::with_first_byte(0x40);
 
         queues.push(b(0), lo);
         queues.push(b(1), hi);

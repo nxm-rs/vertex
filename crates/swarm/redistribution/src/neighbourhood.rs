@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use nectar_primitives::{Bin, ChunkAddress, SwarmAddress};
+use nectar_primitives::{Bin, ChunkAddress, OverlayAddress, XorMetric};
 use vertex_swarm_api::StorageRadius;
 
 /// The per-round, on-chain-derived depth at which a storer's reserve is sampled.
@@ -142,19 +142,19 @@ impl TryFrom<u8> for CommittedDepth {
 ///
 /// ```
 /// use vertex_swarm_redistribution::{CommittedDepth, canonical_neighbourhood};
-/// use nectar_primitives::SwarmAddress;
+/// use nectar_primitives::{ChunkAddress, OverlayAddress};
 /// use alloy_primitives::B256;
 ///
-/// let anchor = SwarmAddress::zero();
-/// let near = SwarmAddress::from(B256::ZERO);
-/// let far = SwarmAddress::from(B256::repeat_byte(0xff));
+/// let anchor = OverlayAddress::zero();
+/// let near = ChunkAddress::from(B256::ZERO);
+/// let far = ChunkAddress::from(B256::repeat_byte(0xff));
 /// let depth = CommittedDepth::try_from(1).unwrap();
 /// let hood = canonical_neighbourhood(&anchor, depth, [near, far]);
 /// assert_eq!(hood, vec![near]);
 /// ```
 #[must_use]
 pub fn canonical_neighbourhood(
-    anchor: &SwarmAddress,
+    anchor: &OverlayAddress,
     depth: CommittedDepth,
     addrs: impl IntoIterator<Item = ChunkAddress>,
 ) -> Vec<ChunkAddress> {
@@ -175,7 +175,7 @@ mod tests {
     use nectar_primitives::MAX_PO;
 
     fn addr(byte: u8) -> ChunkAddress {
-        SwarmAddress::from(B256::repeat_byte(byte))
+        ChunkAddress::from(B256::repeat_byte(byte))
     }
 
     fn depth(n: u8) -> CommittedDepth {
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn canonical_neighbourhood_filters_by_depth() {
-        let anchor = SwarmAddress::zero();
+        let anchor = OverlayAddress::zero();
         let near = addr(0x00);
         let far = addr(0xff);
 
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn canonical_neighbourhood_preserves_input_order() {
-        let anchor = SwarmAddress::zero();
+        let anchor = OverlayAddress::zero();
         let addrs = vec![addr(0x01), addr(0x02), addr(0x03)];
         let hood = canonical_neighbourhood(&anchor, depth(0), addrs.clone());
         assert_eq!(hood, addrs);

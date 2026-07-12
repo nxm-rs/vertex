@@ -122,7 +122,7 @@ fn bench_lock_patterns(c: &mut Criterion) {
                 let keys: HashSet<OverlayAddress> = map.read().keys().copied().collect();
                 let mut count = 0;
                 for key in keys {
-                    if key.as_slice()[0] > 128 {
+                    if key.as_bytes()[0] > 128 {
                         count += 1;
                     }
                 }
@@ -136,7 +136,7 @@ fn bench_lock_patterns(c: &mut Criterion) {
                 let guard = map.read();
                 let mut count = 0;
                 for (key, _) in guard.iter() {
-                    if key.as_slice()[0] > 128 {
+                    if key.as_bytes()[0] > 128 {
                         count += 1;
                     }
                 }

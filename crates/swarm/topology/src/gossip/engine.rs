@@ -17,7 +17,7 @@ use tracing::{debug, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, XorMetric};
 use vertex_util_runtime::time::Instant;
 
 use super::GossipConfig;
@@ -198,7 +198,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
     pub(crate) fn on_peers_received(&mut self, gossiper: OverlayAddress, peers: Vec<SwarmPeer>) {
         let peers: Vec<_> = peers
             .into_iter()
-            .filter(|p| OverlayAddress::from(*p.overlay()) != self.local_overlay)
+            .filter(|p| *p.overlay() != self.local_overlay)
             .collect();
         if peers.is_empty() {
             return;
@@ -344,7 +344,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
     ) -> Vec<GossipAction> {
         self.last_depth = depth;
 
-        let new_peer_overlay = OverlayAddress::from(*peer.overlay());
+        let new_peer_overlay = *peer.overlay();
 
         if !node_type.requires_storage() {
             // A connecting client cannot grow past its bootnodes without
@@ -502,7 +502,7 @@ impl<I: SwarmIdentity> GossipEngine<I> {
                 // Exclude the neighbor itself from the result
                 let peers: Vec<SwarmPeer> = filtered
                     .into_iter()
-                    .filter(|p| OverlayAddress::from(*p.overlay()) != neighbor)
+                    .filter(|p| *p.overlay() != neighbor)
                     .cloned()
                     .collect();
 
@@ -654,7 +654,7 @@ mod tests {
     /// Register `n` as a known, actively connected client.
     fn connect_client(ctx: &TopologyTestContext, n: u8) -> OverlayAddress {
         let peer = test_swarm_peer(n);
-        let overlay = OverlayAddress::from(*peer.overlay());
+        let overlay = *peer.overlay();
         ctx.peer_manager.on_peer_connected(
             peer,
             SwarmNodeType::Client,
@@ -674,7 +674,7 @@ mod tests {
     /// announcement sample).
     fn connect_storer(ctx: &TopologyTestContext, n: u8) -> OverlayAddress {
         let peer = test_swarm_peer(n);
-        let overlay = OverlayAddress::from(*peer.overlay());
+        let overlay = *peer.overlay();
         ctx.peer_manager.on_peer_connected(
             peer,
             SwarmNodeType::Storer,
@@ -702,7 +702,7 @@ mod tests {
         let bin2 = connect_storer(&ctx, 0x20);
 
         let newcomer = test_swarm_peer(0x80);
-        let newcomer_overlay = OverlayAddress::from(*newcomer.overlay());
+        let newcomer_overlay = *newcomer.overlay();
         let actions = engine.on_peer_authenticated(&newcomer, SwarmNodeType::Storer, 3);
 
         for recipient in [bin1, bin2] {
@@ -923,7 +923,7 @@ mod tests {
             let mut engine = test_engine(&ctx);
 
             let client = test_swarm_peer(0xC1);
-            let client_overlay = OverlayAddress::from(*client.overlay());
+            let client_overlay = *client.overlay();
             ctx.peer_manager.on_peer_connected(
                 client.clone(),
                 SwarmNodeType::Client,
@@ -939,9 +939,7 @@ mod tests {
             assert!(!action.peers.is_empty(), "the client receives a peer list");
             assert!(
                 action.peers.iter().all(|p| {
-                    ctx.peer_manager
-                        .node_type(&OverlayAddress::from(*p.overlay()))
-                        == Some(SwarmNodeType::Storer)
+                    ctx.peer_manager.node_type(p.overlay()) == Some(SwarmNodeType::Storer)
                 }),
                 "the payload carries storers only"
             );
@@ -976,10 +974,9 @@ mod tests {
 
             assert!(!actions.is_empty());
             assert!(
-                actions.iter().all(|a| a
-                    .peers
+                actions
                     .iter()
-                    .all(|p| OverlayAddress::from(*p.overlay()) != client_overlay)),
+                    .all(|a| a.peers.iter().all(|p| *p.overlay() != client_overlay)),
                 "clients are recipients only, never subjects"
             );
         }

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, B256, Signature, U256};
 use libp2p::{Multiaddr, PeerId};
-use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::SwarmNodeType;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_peer::{SwarmPeer, Timestamp};
@@ -87,7 +86,7 @@ pub fn test_peer_id(n: u8) -> PeerId {
 /// // peer has multiaddr /ip4/127.0.0.5/tcp/1634/p2p/{peer_id}
 /// ```
 pub fn test_swarm_peer(n: u8) -> SwarmPeer {
-    let overlay = SwarmAddress::from(B256::repeat_byte(n));
+    let overlay = OverlayAddress::from(B256::repeat_byte(n));
     let peer_id = test_peer_id(n);
     let multiaddrs = vec![
         format!("/ip4/127.0.0.{}/tcp/1634/p2p/{}", n, peer_id)
@@ -112,7 +111,7 @@ pub fn test_swarm_peer(n: u8) -> SwarmPeer {
 /// timestamp and a `port`-tagged multiaddr, so conflict-resolution tests can
 /// tell which record won by inspecting the stored multiaddrs.
 pub fn test_swarm_peer_with_timestamp(n: u8, timestamp: i64, port: u16) -> SwarmPeer {
-    let overlay = SwarmAddress::from(B256::repeat_byte(n));
+    let overlay = OverlayAddress::from(B256::repeat_byte(n));
     let peer_id = test_peer_id(n);
     let multiaddrs = vec![
         format!("/ip4/127.0.0.{}/tcp/{}/p2p/{}", n, port, peer_id)
@@ -146,7 +145,7 @@ pub fn test_signed_swarm_peer(
     SwarmPeer::sign(&identity, multiaddrs, timestamp, None).expect("sign test peer")
 }
 
-/// Create a SwarmAddress with a specific first byte.
+/// Create a OverlayAddress with a specific first byte.
 ///
 /// The first byte is set to `byte`, remaining bytes are zero.
 /// This is useful for Kademlia routing tests where you need to control
@@ -160,8 +159,8 @@ pub fn test_signed_swarm_peer(
 /// let overlay = make_overlay(0x80);
 /// // overlay == [0x80, 0x00, 0x00, ..., 0x00]
 /// ```
-pub fn make_overlay(byte: u8) -> SwarmAddress {
-    SwarmAddress::with_first_byte(byte)
+pub fn make_overlay(byte: u8) -> OverlayAddress {
+    OverlayAddress::with_first_byte(byte)
 }
 
 /// Create a minimal SwarmPeer for testing (no multiaddrs).
@@ -198,16 +197,16 @@ mod tests {
     #[test]
     fn test_overlay_helpers() {
         let overlay = test_overlay(0xff);
-        assert_eq!(overlay.as_slice(), &[0xff; 32]);
+        assert_eq!(overlay.as_bytes(), &[0xff; 32]);
 
         let peer = test_peer();
-        assert_eq!(peer.as_slice(), &[1u8; 32]);
+        assert_eq!(peer.as_bytes(), &[1u8; 32]);
     }
 
     #[test]
     fn test_swarm_peer_creation() {
         let peer = test_swarm_peer(5);
-        assert_eq!(peer.overlay().as_slice(), &[5u8; 32]);
+        assert_eq!(peer.overlay().as_bytes(), &[5u8; 32]);
         assert_eq!(peer.multiaddrs().len(), 1);
 
         // Verify multiaddr contains /p2p/ component
@@ -221,7 +220,7 @@ mod tests {
     #[test]
     fn test_make_overlay_first_byte() {
         let overlay = make_overlay(0x80);
-        assert_eq!(overlay.as_slice()[0], 0x80);
-        assert!(overlay.as_slice()[1..].iter().all(|&b| b == 0));
+        assert_eq!(overlay.as_bytes()[0], 0x80);
+        assert!(overlay.as_bytes()[1..].iter().all(|&b| b == 0));
     }
 }

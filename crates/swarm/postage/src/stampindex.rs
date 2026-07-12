@@ -94,7 +94,7 @@ impl Decode for StampSlotKey {
 // because serde implements arrays only up to length 32.
 impl serde::Serialize for StampSlotKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let parts: ([u8; 32], [u8; 8]) = (self.batch_id.0, self.stamp_index.to_be_bytes());
+        let parts: ([u8; 32], [u8; 8]) = (self.batch_id.into(), self.stamp_index.to_be_bytes());
         serde::Serialize::serialize(&parts, serializer)
     }
 }
@@ -309,7 +309,7 @@ mod tests {
     }
 
     fn batch(b: u8) -> BatchId {
-        B256::repeat_byte(b)
+        B256::repeat_byte(b).into()
     }
 
     fn addr(b: u8) -> ChunkAddress {

@@ -648,7 +648,7 @@ mod tests {
             .expect("valid content chunk")
             .into();
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
         let cached = CachedChunk::new(chunk, Some(stamp));
         let address = *cached.address();
 

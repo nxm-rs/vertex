@@ -381,7 +381,7 @@ mod tests {
             7,
             vec![ChunkDescriptor::new(
                 ChunkAddress::new([0; 32]),
-                B256::ZERO,
+                B256::ZERO.into(),
                 B256::ZERO,
             )],
         );

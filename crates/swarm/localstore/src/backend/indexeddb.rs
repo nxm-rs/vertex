@@ -27,7 +27,7 @@ struct AddrKey([u8; 32]);
 impl From<&ChunkAddress> for AddrKey {
     fn from(addr: &ChunkAddress) -> Self {
         let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(addr.as_slice());
+        bytes.copy_from_slice(addr.as_bytes());
         Self(bytes)
     }
 }
@@ -179,7 +179,7 @@ mod tests {
 
     fn stamp_at(timestamp: u64) -> Stamp {
         let sig = alloy_primitives::Signature::from_raw(&[1u8; 65]).expect("signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, timestamp, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, timestamp, sig)
     }
 
     fn cache_value(chunk: AnyChunk, stamp: Option<Stamp>) -> CacheValue {
@@ -203,9 +203,10 @@ mod tests {
     #[wasm_bindgen_test]
     fn stamped_single_owner_round_trips() {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("signer");
-        let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(0x22), &b"soc"[..], &signer)
-            .expect("soc")
-            .into();
+        let chunk: AnyChunk =
+            SingleOwnerChunk::new(B256::repeat_byte(0x22).into(), &b"soc"[..], &signer)
+                .expect("soc")
+                .into();
         let value = cache_value(chunk, Some(stamp_at(42)));
         let decoded = decode_value(&encode_value(&value)).expect("decode");
         assert_eq!(decoded.0, value.0);

@@ -23,7 +23,7 @@ table!(pub(crate) Batches, "postage_batches", BatchIdKey, Batch);
 table!(pub(crate) ContextTable, "postage_context", ContextKey, PostageContext, compressed = false);
 
 /// Key newtype carrying the 32-byte big-endian [`BatchId`] for the [`Batches`]
-/// table (local newtype works around the orphan rule on the foreign `B256`).
+/// table (local newtype works around the orphan rule on the foreign `BatchId`).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -33,7 +33,7 @@ impl Encode for BatchIdKey {
     type Encoded = [u8; 32];
 
     fn encode(self) -> Self::Encoded {
-        self.0.0
+        self.0.into()
     }
 }
 
@@ -238,7 +238,7 @@ mod tests {
 
     fn sample_batch(id_byte: u8, value: u128, depth: u8) -> Batch {
         Batch::new(
-            B256::repeat_byte(id_byte),
+            B256::repeat_byte(id_byte).into(),
             value,
             100,
             Address::repeat_byte(0x11),
@@ -309,9 +309,9 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                B256::repeat_byte(0x01),
-                B256::repeat_byte(0x02),
-                B256::repeat_byte(0x03),
+                BatchId::from(B256::repeat_byte(0x01)),
+                BatchId::from(B256::repeat_byte(0x02)),
+                BatchId::from(B256::repeat_byte(0x03)),
             ]
         );
     }
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(store.get(&id).unwrap().unwrap().value(), 5000);
 
         // Top-up for an unknown batch is a no-op.
-        let unknown = B256::repeat_byte(0xff);
+        let unknown = BatchId::from(B256::repeat_byte(0xff));
         store
             .handle_event(BatchEvent::TopUp {
                 batch_id: unknown,
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn batch_id_key_codec_roundtrip() {
-        let k = BatchIdKey(B256::repeat_byte(0x7e));
+        let k = BatchIdKey(B256::repeat_byte(0x7e).into());
         assert_eq!(BatchIdKey::decode(k.encode().as_ref()).unwrap(), k);
         assert!(BatchIdKey::decode(&[0u8; 31]).is_err());
     }

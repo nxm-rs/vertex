@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use hashlink::LinkedHashSet;
 use metrics::gauge;
 use parking_lot::RwLock;
-use vertex_swarm_primitives::{Bin, OverlayAddress};
+use vertex_swarm_primitives::{Bin, OverlayAddress, XorMetric};
 
 /// Error returned when adding a peer to the index fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]

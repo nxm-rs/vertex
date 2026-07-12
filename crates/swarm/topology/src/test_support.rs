@@ -51,7 +51,7 @@ impl TopologyTestContext {
 /// count-based fill for populations built with this helper.
 pub(crate) fn overlay_in_bin(base: OverlayAddress, bin: u8, idx: u8) -> OverlayAddress {
     let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(base.as_slice());
+    bytes.copy_from_slice(base.as_bytes());
     // Flip the bit at position `bin`: bits before it still match `base`, so the
     // first differing bit (the proximity order) is exactly `bin`.
     bytes[(bin / 8) as usize] ^= 0x80 >> (bin % 8);
@@ -71,7 +71,7 @@ pub(crate) fn overlay_in_bin_with_slot(
     idx: u8,
 ) -> OverlayAddress {
     let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(base.as_slice());
+    bytes.copy_from_slice(base.as_bytes());
     bytes[(bin / 8) as usize] ^= 0x80 >> (bin % 8);
     for i in 0..BIT_SUFFIX_LENGTH {
         let pos = bin as usize + 1 + i as usize;

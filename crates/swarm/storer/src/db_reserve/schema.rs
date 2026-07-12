@@ -136,7 +136,7 @@ impl Encode for EntryKey {
         out[0] = self.po;
         out[1..33].copy_from_slice(self.batch.as_slice());
         out[33..65].copy_from_slice(self.stamp_hash.as_slice());
-        out[65..].copy_from_slice(self.addr.as_slice());
+        out[65..].copy_from_slice(self.addr.as_bytes());
         out
     }
 }
@@ -202,7 +202,7 @@ impl Encode for BatchGroupKey {
         let mut out = [0u8; 97];
         out[..32].copy_from_slice(self.batch.as_slice());
         out[32] = self.po;
-        out[33..65].copy_from_slice(self.addr.as_slice());
+        out[33..65].copy_from_slice(self.addr.as_bytes());
         out[65..].copy_from_slice(self.stamp_hash.as_slice());
         out
     }
@@ -299,7 +299,7 @@ mod key_codec_tests {
     fn entry_key_round_trips_and_orders_proximity_major() {
         let k = EntryKey::new(
             7,
-            BatchId::repeat_byte(0x11),
+            BatchId::new([0x11; 32]),
             B256::repeat_byte(0x22),
             ChunkAddress::from([0x33u8; 32]),
         );
@@ -308,7 +308,7 @@ mod key_codec_tests {
         // Smaller po sorts first regardless of trailing fields.
         let far = EntryKey::new(
             1,
-            BatchId::repeat_byte(0xff),
+            BatchId::new([0xff; 32]),
             B256::repeat_byte(0xff),
             ChunkAddress::from([0xffu8; 32]),
         )
@@ -323,7 +323,7 @@ mod key_codec_tests {
             EntryKey::new(po, BatchId::ZERO, B256::ZERO, ChunkAddress::from([0u8; 32])).encode();
         let b = EntryKey::new(
             po,
-            BatchId::repeat_byte(0x01),
+            BatchId::new([0x01; 32]),
             B256::ZERO,
             ChunkAddress::from([0u8; 32]),
         )
@@ -334,18 +334,18 @@ mod key_codec_tests {
     #[test]
     fn batch_group_key_orders_batch_major_then_bin() {
         let k = BatchGroupKey::new(
-            BatchId::repeat_byte(0xab),
+            BatchId::new([0xab; 32]),
             9,
             ChunkAddress::from([0xcdu8; 32]),
             B256::repeat_byte(0xef),
         );
         assert_eq!(BatchGroupKey::decode(k.encode().as_ref()).unwrap(), k);
 
-        let batch = BatchId::repeat_byte(0x07);
+        let batch = BatchId::new([0x07; 32]);
         let lo = BatchGroupKey::new(batch, 1, ChunkAddress::from([0u8; 32]), B256::ZERO).encode();
         let hi = BatchGroupKey::new(batch, 2, ChunkAddress::from([0u8; 32]), B256::ZERO).encode();
         let other = BatchGroupKey::new(
-            BatchId::repeat_byte(0x08),
+            BatchId::new([0x08; 32]),
             0,
             ChunkAddress::from([0u8; 32]),
             B256::ZERO,

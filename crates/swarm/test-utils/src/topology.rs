@@ -1,6 +1,6 @@
 //! Mock topology implementations for testing.
 
-use nectar_primitives::{ChunkAddress, NetworkId, SwarmAddress};
+use nectar_primitives::{ChunkAddress, NetworkId};
 use std::sync::Arc;
 use vertex_swarm_api::{
     PeerReporter, ReportSource, SwarmIdentity, SwarmNodeType, SwarmScoringEvent, SwarmSpec,
@@ -142,8 +142,8 @@ impl MockTopology {
         self
     }
 
-    /// Get the overlay address as SwarmAddress.
-    pub fn overlay(&self) -> SwarmAddress {
+    /// Get the overlay address as OverlayAddress.
+    pub fn overlay(&self) -> OverlayAddress {
         self.identity.overlay_address()
     }
 

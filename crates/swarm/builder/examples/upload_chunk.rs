@@ -18,7 +18,7 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use nectar_postage::{Stamp, StampDigest, StampIndex};
+use nectar_postage::{BatchId, Stamp, StampDigest, StampIndex};
 use vertex_node_builder::NodeBuilder;
 use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_api::{
@@ -36,7 +36,7 @@ use vertex_tasks::{TaskExecutor, TaskManager};
 /// postage batch.
 fn sign_stamp(address: &ChunkAddress) -> Result<Stamp, Box<dyn std::error::Error>> {
     let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11))?;
-    let batch = B256::repeat_byte(0x22);
+    let batch = BatchId::from(B256::repeat_byte(0x22));
     let index = StampIndex::new(0, 0);
     let timestamp = 1_700_000_000u64;
     let prehash = StampDigest::new(*address, batch, index, timestamp).to_prehash();

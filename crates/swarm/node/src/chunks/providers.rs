@@ -141,7 +141,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use nectar_primitives::SwarmAddress;
+    use nectar_primitives::OverlayAddress;
 
     use super::*;
 
@@ -179,7 +179,7 @@ mod tests {
         /// topology mock.
         async fn race_over_handle(
             handle: ClientHandle,
-            candidates: Vec<SwarmAddress>,
+            candidates: Vec<OverlayAddress>,
             address: ChunkAddress,
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
             race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
@@ -195,8 +195,8 @@ mod tests {
             let handle = ClientHandle::new(tx);
 
             let address = address(0xaa);
-            let peer_a = SwarmAddress::from([1u8; 32]);
-            let peer_b = SwarmAddress::from([2u8; 32]);
+            let peer_a = OverlayAddress::from([1u8; 32]);
+            let peer_b = OverlayAddress::from([2u8; 32]);
 
             let start = Instant::now();
             let race = tokio::spawn(race_over_handle(handle, vec![peer_a, peer_b], address));
@@ -262,7 +262,10 @@ mod tests {
             let handle = ClientHandle::new(tx);
 
             let address = address(0xbb);
-            let candidates = vec![SwarmAddress::from([1u8; 32]), SwarmAddress::from([2u8; 32])];
+            let candidates = vec![
+                OverlayAddress::from([1u8; 32]),
+                OverlayAddress::from([2u8; 32]),
+            ];
 
             let outcome = race_over_handle(handle, candidates, address).await;
             assert!(
@@ -312,8 +315,8 @@ mod tests {
             None => unreachable!(),
         };
 
-        fn overlay(n: u8) -> SwarmAddress {
-            SwarmAddress::from([n; 32])
+        fn overlay(n: u8) -> OverlayAddress {
+            OverlayAddress::from([n; 32])
         }
 
         fn test_chunk() -> nectar_primitives::AnyChunk {
@@ -328,7 +331,7 @@ mod tests {
         async fn race_with_limiter(
             handle: ClientHandle,
             limiter: Arc<PeerInflightLimiter>,
-            candidates: Vec<SwarmAddress>,
+            candidates: Vec<OverlayAddress>,
             address: ChunkAddress,
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
             let (candidates, _enforce_cap) = limiter.available(candidates);
@@ -354,7 +357,7 @@ mod tests {
             let handle = ClientHandle::new(tx);
             let limiter = Arc::new(PeerInflightLimiter::new(CAP_ONE));
 
-            let pool: Vec<SwarmAddress> = (1..=16).map(overlay).collect();
+            let pool: Vec<OverlayAddress> = (1..=16).map(overlay).collect();
             let (candidates, _enforce_cap) = limiter.available(pool);
             assert_eq!(candidates.len(), 16, "all 16 peers have a free slot");
 

@@ -3,7 +3,7 @@
 use crate::SwarmSpec;
 use alloy_primitives::Address;
 use alloy_signer::{Signer, SignerSync};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::OverlayAddress;
 use std::sync::Arc;
 use vertex_swarm_primitives::{OverlaySigner, SwarmNodeType};
 
@@ -31,7 +31,7 @@ pub trait SwarmIdentity: OverlaySigner + Send + Sync + 'static {
     fn node_type(&self) -> SwarmNodeType;
 
     /// Overlay address for Kademlia routing (the [`OverlaySigner`] facet).
-    fn overlay_address(&self) -> SwarmAddress {
+    fn overlay_address(&self) -> OverlayAddress {
         self.overlay()
     }
 

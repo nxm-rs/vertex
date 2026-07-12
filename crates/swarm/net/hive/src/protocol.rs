@@ -14,7 +14,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Outbound, ProtocolStreamError,
 };
-use vertex_swarm_peer::{SwarmAddress, SwarmPeer, Timestamp};
+use vertex_swarm_peer::{OverlayAddress, SwarmPeer, Timestamp};
 use vertex_swarm_primitives::{NetworkId, Nonce};
 use vertex_tasks::TaskExecutor;
 use vertex_util_runtime::time::Instant;
@@ -146,7 +146,7 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 async fn validate_batch_blocking(
     raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
-    local_overlay: SwarmAddress,
+    local_overlay: OverlayAddress,
     cache: Arc<PeerCache>,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let Ok(executor) = TaskExecutor::try_current() else {
@@ -168,7 +168,7 @@ async fn validate_batch_blocking(
 fn validate_batch(
     raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
-    local_overlay: &SwarmAddress,
+    local_overlay: &OverlayAddress,
     cache: &PeerCache,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let validation_start = Instant::now();
@@ -206,13 +206,13 @@ fn validate_batch(
 fn validate_proto_peer(
     p: vertex_swarm_net_proto::hive::SwarmPeer,
     network_id: NetworkId,
-    local_overlay: &SwarmAddress,
+    local_overlay: &OverlayAddress,
     cache: &PeerCache,
 ) -> Result<SwarmPeer, ValidationFailure> {
     let overlay = B256::try_from(p.overlay.as_slice()).map_err(ValidationFailure::OverlayLength)?;
 
     // Reject our own overlay address to prevent self-dial
-    let peer_overlay = SwarmAddress::from(overlay);
+    let peer_overlay = OverlayAddress::from(overlay);
     if peer_overlay == *local_overlay {
         debug!("Hive: rejected self-overlay from peer exchange");
         return Err(ValidationFailure::SelfOverlay);

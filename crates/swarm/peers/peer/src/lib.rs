@@ -7,7 +7,7 @@
 //! [`nectar_primitives::signing::sign_data`].
 //!
 //! `Nonce` and `Timestamp` are re-exported from nectar (canonical Swarm
-//! primitives); `SwarmAddress` and `SwarmNodeType` are likewise re-exported
+//! primitives); `OverlayAddress` and `SwarmNodeType` are likewise re-exported
 //! for ergonomics.
 
 pub mod error;
@@ -22,7 +22,7 @@ pub use timestamp_policy::{
     MAX_CLOCK_SKEW, MIN_UPDATE_INTERVAL, TimestampRejection, check_timestamp,
 };
 
-pub use nectar_primitives::SwarmAddress;
+pub use nectar_primitives::OverlayAddress;
 pub use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
 pub use vertex_net_local::AddressScope;
 pub use vertex_swarm_primitives::SwarmNodeType;

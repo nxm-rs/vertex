@@ -190,7 +190,7 @@ mod tests {
     }
 
     fn batch_id(byte: u8) -> BatchId {
-        B256::repeat_byte(byte)
+        B256::repeat_byte(byte).into()
     }
 
     fn anchor() -> SampleAnchor {

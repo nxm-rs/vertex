@@ -15,7 +15,7 @@ use alloy_primitives::{B256, Signature};
 use alloy_signer_local::PrivateKeySigner;
 use libp2p::{PeerId, Swarm};
 use nectar_postage::Stamp;
-use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};
+use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk, XorMetric};
 use tokio::sync::oneshot;
 use vertex_swarm_api::{StorageRadius, SwarmLocalStore};
 use vertex_swarm_localstore::{ChunkStore, Clock};
@@ -43,7 +43,7 @@ impl Clock for FixedClock {
 
 fn content_chunk(payload: &'static [u8]) -> StampedChunk {
     let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-    let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+    let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
     let chunk: AnyChunk = ContentChunk::new(payload)
         .expect("valid content chunk")
         .into();
@@ -52,9 +52,9 @@ fn content_chunk(payload: &'static [u8]) -> StampedChunk {
 
 fn soc_chunk(payload: &'static [u8], stamp_ns: u64) -> StampedChunk {
     let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-    let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, stamp_ns, sig);
+    let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, stamp_ns, sig);
     let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("signer");
-    let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(0x22), payload, &signer)
+    let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(0x22).into(), payload, &signer)
         .expect("valid soc")
         .into();
     StampedChunk::new(chunk, stamp)
@@ -539,7 +539,7 @@ fn overlay_at_proximity(
     address: &nectar_primitives::ChunkAddress,
     leading_bits: usize,
 ) -> OverlayAddress {
-    let mut bytes = address.0.0;
+    let mut bytes = <[u8; 32]>::from(*address);
     let byte = leading_bits / 8;
     let bit = 7 - (leading_bits % 8);
     if let Some(b) = bytes.get_mut(byte) {

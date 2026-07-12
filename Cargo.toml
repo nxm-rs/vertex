@@ -142,17 +142,18 @@ indexing_slicing = "warn"
 # Track nectar via a single shared git source so the workspace resolves one
 # copy of shared nectar types; Cargo.lock pins the exact commit.
 #
-# Tracks nectar `main`, which carries the synchronous
-# BatchStore/StoreValidator/SnapshotStore conversion plus nectar-mantaray and
-# nectar-postage-usage's `client`/`issuer`/`seal` features that the browser
-# upload/download path (bin/swarm-demo) depends on.
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "ef89a5df57178fb96f86544c05e14a6b7c0b34d9" }
+# Pins the tip of nectar's in-flight 0.5.0 train: the typed address world
+# (distinct ChunkAddress, BatchId and SocId newtypes, the SwarmAddress ->
+# OverlayAddress rename) plus the `arbitrary` feature on nectar-primitives
+# and nectar-postage that the fuzz harnesses consume. Re-pin to a main SHA
+# once the train merges.
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-postage-issuer = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-postage-usage = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-mantaray = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "118b66b97305c8fbd6511c37acc4917e9b822bef" }
 
 digest = "0.10"
 

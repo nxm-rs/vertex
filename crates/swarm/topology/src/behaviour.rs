@@ -32,7 +32,7 @@ use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, PeerSnapshot, TrustLevel};
-use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, XorMetric, all_bins};
 
 use crate::DialReason;
 use crate::dial_state::{DialBinState, DialState};
@@ -104,7 +104,7 @@ impl DialTarget {
     /// Get the overlay address if known.
     pub(crate) fn overlay(&self) -> Option<OverlayAddress> {
         match self {
-            Self::Known(peer) => Some(OverlayAddress::from(*peer.overlay())),
+            Self::Known(peer) => Some(*peer.overlay()),
             Self::Unknown(_) => None,
         }
     }
@@ -1123,7 +1123,7 @@ mod tests {
     use crate::kademlia::KademliaConfig;
 
     use alloy_primitives::{Address, B256, Signature};
-    use nectar_primitives::SwarmAddress;
+    use nectar_primitives::OverlayAddress;
     use vertex_swarm_peer::Timestamp;
     use vertex_swarm_primitives::Nonce;
 
@@ -1131,7 +1131,7 @@ mod tests {
         SwarmPeer::from_parts(
             vec![addr.parse().expect("valid multiaddr")],
             Signature::test_signature(),
-            SwarmAddress::from(B256::repeat_byte(1)),
+            OverlayAddress::from(B256::repeat_byte(1)),
             Nonce::ZERO,
             Timestamp::from_seconds(1),
             None,
@@ -1690,7 +1690,7 @@ mod tests {
         fn two_pending_activation_does_not_leak_pending() {
             let mut behaviour = test_behaviour();
             let peer = test_swarm_peer(1);
-            let overlay = OverlayAddress::from(*peer.overlay());
+            let overlay = *peer.overlay();
             let completing_peer = test_peer_id(1);
             let placeholder_peer = test_peer_id(9);
             let c_out = ConnectionId::new_unchecked(1);
@@ -1726,7 +1726,7 @@ mod tests {
         fn refused_duplicate_then_success_does_not_underflow_pending() {
             let mut behaviour = test_behaviour();
             let peer = test_swarm_peer(1);
-            let overlay = OverlayAddress::from(*peer.overlay());
+            let overlay = *peer.overlay();
             let peer_id = test_peer_id(1);
             let c1 = ConnectionId::new_unchecked(1);
             let c2 = ConnectionId::new_unchecked(2);
@@ -1761,7 +1761,7 @@ mod tests {
         fn replacement_keeps_active_gauge_at_truth() {
             let mut behaviour = test_behaviour();
             let peer = test_swarm_peer(1);
-            let overlay = OverlayAddress::from(*peer.overlay());
+            let overlay = *peer.overlay();
             let completing_peer = test_peer_id(1);
             let incumbent_peer = test_peer_id(9);
             let c1 = ConnectionId::new_unchecked(1);
@@ -2000,7 +2000,7 @@ mod tests {
         /// Store a dialable loopback peer and queue it as a dial candidate.
         fn queue_candidate(behaviour: &TopologyBehaviour<Identity>, n: u8) {
             let peer = test_swarm_peer(n);
-            let overlay = OverlayAddress::from(*peer.overlay());
+            let overlay = *peer.overlay();
             behaviour.peer_manager.store_discovered_peer(peer);
             behaviour.routing.requeue_candidate(overlay);
         }
@@ -2258,7 +2258,7 @@ mod tests {
             // Two dialable candidates queued in bin 0.
             for n in [0xC0u8, 0xC1] {
                 let peer = test_swarm_peer(n);
-                let overlay = OverlayAddress::from(*peer.overlay());
+                let overlay = *peer.overlay();
                 behaviour.peer_manager.store_discovered_peer(peer);
                 behaviour.routing.requeue_candidate(overlay);
             }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nectar_primitives::{ChunkAddress, SwarmAddress};
+use nectar_primitives::{ChunkAddress, XorMetric};
 use vertex_swarm_api::{Au, SwarmPricing};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::SwarmSpec;
@@ -36,9 +36,7 @@ impl<S: SwarmSpec + Send + Sync + 'static> SwarmPricing for FixedPricer<S> {
     }
 
     fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au {
-        let peer_addr: &SwarmAddress = peer;
-        let chunk_addr: &SwarmAddress = chunk;
-        let proximity = peer_addr.proximity(chunk_addr);
+        let proximity = peer.proximity(chunk);
         // Saturating: a spec reporting a lower max_po than the proximity cap
         // would otherwise underflow into a giant factor.
         let factor = u64::from(self.spec.max_po()).saturating_sub(u64::from(proximity.get())) + 1;

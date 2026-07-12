@@ -39,11 +39,11 @@ impl MockStorage {
         let mut index = HashMap::with_capacity(chunks.len());
         for (i, chunk) in chunks.into_iter().enumerate() {
             let address = *chunk.address();
-            let stamp_hash = B256::from_slice(address.as_slice());
+            let stamp_hash = B256::from_slice(address.as_bytes());
             items.push(BinScanItem {
                 seq: i as u64 + 1,
                 address,
-                batch_id: BatchId::repeat_byte(0xbb),
+                batch_id: BatchId::new([0xbb; 32]),
                 stamp_hash,
             });
             index.insert(address, chunk);

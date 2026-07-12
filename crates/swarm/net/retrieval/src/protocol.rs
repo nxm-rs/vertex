@@ -214,7 +214,7 @@ mod tests {
     /// signature plus the fixed batch id, indices, and timestamp.
     fn full_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xab), 11, 22, 33, sig)
+        Stamp::new(B256::repeat_byte(0xab).into(), 11, 22, 33, sig)
     }
 
     /// The largest legitimate delivery: a single-owner chunk (the biggest chunk
@@ -223,7 +223,8 @@ mod tests {
     fn maximal_delivery() -> StampedChunk {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("valid signer");
         let body = vec![0x5au8; DEFAULT_BODY_SIZE];
-        let soc = SingleOwnerChunk::new(B256::repeat_byte(0x22), body, &signer).expect("valid soc");
+        let soc = SingleOwnerChunk::new(B256::repeat_byte(0x22).into(), body, &signer)
+            .expect("valid soc");
         let chunk: AnyChunk = soc.into();
         StampedChunk::new(chunk, full_stamp())
     }

@@ -20,7 +20,7 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::{Batch, PostageContext, StampDigest, StampIndex};
-use nectar_primitives::{Bin, Chunk, DefaultContentChunk as ContentChunk};
+use nectar_primitives::{Bin, Chunk, DefaultContentChunk as ContentChunk, XorMetric};
 use std::sync::Arc;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_api::SwarmIdentity as _;
@@ -38,7 +38,7 @@ fn signer() -> PrivateKeySigner {
 }
 
 /// Ample value so it is not expired against a zero cumulative payout.
-fn batch_for(owner: Address, id: B256) -> Batch {
+fn batch_for(owner: Address, id: BatchId) -> Batch {
     Batch::new(id, 1_000_000, 0, owner, DEPTH, BUCKET_DEPTH, false)
 }
 
@@ -54,7 +54,7 @@ fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAdd
         let payload = format!("vertex reserve consensus fixture {seed}/{n}").into_bytes();
         let chunk = ContentChunk::new(payload).expect("valid content chunk");
         let addr = *chunk.address();
-        if addr.as_slice()[0] & 0x80 == 0 {
+        if addr.as_bytes()[0] & 0x80 == 0 {
             return (chunk.into(), addr);
         }
     }
@@ -65,7 +65,7 @@ fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAdd
 /// its proximity order to the zero overlay is `target_po`. Lets a test place
 /// chunks at chosen distances to assert furthest-first eviction.
 fn content_chunk_at_po(seed: u64, target_po: u8) -> (nectar_primitives::AnyChunk, ChunkAddress) {
-    let overlay = ChunkAddress::with_first_byte(0x00);
+    let overlay = ChunkAddress::ZERO;
     for n in 0..1_000_000u64 {
         let payload = format!("vertex reserve po fixture {seed}/{target_po}/{n}").into_bytes();
         let chunk = ContentChunk::new(payload).expect("valid content chunk");
@@ -109,17 +109,17 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        Self::with_batches(&[B256::repeat_byte(0x11)])
+        Self::with_batches(&[BatchId::new([0x11; 32])])
     }
 
     /// All batches are owned by the shared signer, with the live context persisted.
-    fn with_batches(batch_ids: &[B256]) -> Self {
+    fn with_batches(batch_ids: &[BatchId]) -> Self {
         Self::with_capacity(batch_ids, 10_000)
     }
 
     /// As [`with_batches`](Self::with_batches), at a chosen reserve capacity so the
     /// furthest-eviction trigger can be exercised at a small bound.
-    fn with_capacity(batch_ids: &[B256], capacity: u64) -> Self {
+    fn with_capacity(batch_ids: &[BatchId], capacity: u64) -> Self {
         let db = RedbDatabase::in_memory().unwrap().into_arc();
         let batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
         let signer = signer();
@@ -152,7 +152,7 @@ impl Fixture {
     }
 
     fn batch_id(&self) -> BatchId {
-        BatchId::repeat_byte(0x11)
+        BatchId::new([0x11; 32])
     }
 
     /// Stamp `chunk` under `batch_id` at `(index, timestamp)` and put it.
@@ -187,9 +187,9 @@ fn reserve_size_counts_stamped_entries_not_addresses() {
     // (batchID, stampIndex, address)), not 1. Size feeds the consensus-committed
     // storage_radius.
     let ids = [
-        B256::repeat_byte(0x11),
-        B256::repeat_byte(0x22),
-        B256::repeat_byte(0x33),
+        BatchId::new([0x11; 32]),
+        BatchId::new([0x22; 32]),
+        BatchId::new([0x33; 32]),
     ];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(1);
@@ -277,7 +277,7 @@ fn refcounted_payload_survives_partial_eviction() {
     // Same content under two batches: one Payload row at refcnt 2; the second
     // put bumps the refcount without rewriting the body. Evicting one entry
     // leaves the body (refcnt 1); evicting the last drops it.
-    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let ids = [BatchId::new([0x11; 32]), BatchId::new([0x22; 32])];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(3);
 
@@ -389,7 +389,7 @@ fn get_returns_exact_admitting_stamp() {
 fn removal_fully_compacts_all_tables_no_tombstones() {
     // remove() deletes every row of every stamped entry for an address across
     // all six tables, leaving no tombstone.
-    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let ids = [BatchId::new([0x11; 32]), BatchId::new([0x22; 32])];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(5);
 
@@ -406,7 +406,7 @@ fn removal_fully_compacts_all_tables_no_tombstones() {
     assert_eq!(fx.row_count::<Replay>(), 0, "no Replay tombstones");
     assert_eq!(fx.row_count::<Payload>(), 0, "no Payload tombstones");
     // The arbiter slot is cleared, so it does not pin a stale newest timestamp.
-    let slot0 = StampSlotKey::new(BatchId::from(ids[0]), StampIndex::new(0, 0));
+    let slot0 = StampSlotKey::new(ids[0], StampIndex::new(0, 0));
     assert!(
         fx.db
             .view(|tx| tx.get::<StampIndexTable>(slot0))
@@ -433,7 +433,7 @@ fn unknown_batch_and_stampless_puts_are_rejected() {
 
     // Sign under a batch id the store does not hold.
     let unknown = Batch::new(
-        B256::repeat_byte(0x99),
+        BatchId::new([0x99; 32]),
         1_000_000,
         0,
         fx.signer.address(),
@@ -454,7 +454,7 @@ fn unknown_batch_and_stampless_puts_are_rejected() {
 fn bin_scan_replays_entries_in_insertion_order() {
     // The Replay table surfaces each entry's (address, batch, stampHash) in
     // per-bin insertion order without a body read.
-    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let ids = [BatchId::new([0x11; 32]), BatchId::new([0x22; 32])];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(7);
     let bin = addr.bin(&fx.overlay);
@@ -491,8 +491,8 @@ fn batch_expiry_sweep_evicts_only_the_expired_batch() {
 
     // Two batches with distinct content addresses, so neither eviction touches
     // the other's refcounted payload.
-    let live_id = B256::repeat_byte(0x11);
-    let expiring_id = B256::repeat_byte(0x22);
+    let live_id = BatchId::new([0x11; 32]);
+    let expiring_id = BatchId::new([0x22; 32]);
     let fx = Fixture::with_batches(&[live_id, expiring_id]);
     let (chunk_a, addr_a) = content_chunk_in_bucket0(101);
     let (chunk_b, addr_b) = content_chunk_in_bucket0(202);
@@ -621,7 +621,7 @@ fn nothing_evicted_when_no_batch_is_expired() {
     use crate::expiry::ExpirySweep;
 
     // Both batches retain ample value against a zero cumulative payout.
-    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let ids = [BatchId::new([0x11; 32]), BatchId::new([0x22; 32])];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(303);
     fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
@@ -645,7 +645,7 @@ fn expired_event_evicts_reserve_before_store_removal() {
     use crate::expiry::ExpirySweep;
     use std::cell::Cell;
 
-    let expiring_id = B256::repeat_byte(0x33);
+    let expiring_id = BatchId::new([0x33; 32]);
     let fx = Fixture::with_batches(&[expiring_id]);
     let (chunk, addr) = content_chunk_in_bucket0(404);
     fx.put(&chunk, &addr, expiring_id, 0, 100).unwrap();
@@ -681,7 +681,7 @@ fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
     // so the caller can retry the removal.
     use crate::expiry::ExpirySweep;
 
-    let expiring_id = B256::repeat_byte(0x44);
+    let expiring_id = BatchId::new([0x44; 32]);
     let fx = Fixture::with_batches(&[expiring_id]);
     let (chunk, addr) = content_chunk_in_bucket0(505);
     fx.put(&chunk, &addr, expiring_id, 0, 100).unwrap();
@@ -710,7 +710,7 @@ fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
 fn evict_to_capacity_drops_the_furthest_entries_first() {
     // Capacity 2, three entries at distinct proximity orders. The two furthest
     // (lowest proximity) are evicted; the closest survives.
-    let id = B256::repeat_byte(0x11);
+    let id = BatchId::new([0x11; 32]);
     let fx = Fixture::with_capacity(&[id], 2);
     let batch_id = fx.batch_id();
 
@@ -758,7 +758,7 @@ fn evict_to_capacity_does_not_rewind_bin_cursors() {
     // A bin's monotonic insertion cursor must survive eviction so a pull-sync
     // resume point stays valid: a scan from a sequence past the evicted entry
     // still resolves the survivor.
-    let id = B256::repeat_byte(0x11);
+    let id = BatchId::new([0x11; 32]);
     let fx = Fixture::with_capacity(&[id], 1);
     let batch_id = fx.batch_id();
 
@@ -818,7 +818,7 @@ fn evict_to_capacity_frees_the_body_only_on_the_last_reference() {
     // One content address under two batches: the shared payload survives the
     // first entry's eviction (refcnt 2 -> 1) and is freed only when the last
     // referencing entry goes.
-    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let ids = [BatchId::new([0x11; 32]), BatchId::new([0x22; 32])];
     let fx = Fixture::with_capacity(&ids, 1);
     let (chunk, addr) = content_chunk_at_po(1, 4);
 

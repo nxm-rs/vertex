@@ -15,14 +15,14 @@ workspace = true
 ## nectar (re-exported public surface; do not redefine these types)
 # The `serde` feature is required so `Batch` satisfies the vertex-storage
 # `Value` bound (Serialize + DeserializeOwned) for the `Batches` table, and so
-# `ChunkAddress` (a `nectar_primitives::SwarmAddress`) is serialisable when it
-# is stored in the stamp-index entry value.
+# `ChunkAddress` is serialisable when it is stored in the stamp-index entry
+# value.
 nectar-postage = { workspace = true, features = ["serde"] }
 nectar-primitives = { workspace = true, features = ["serde"] }
 
 ## vertex
 # The `alloy` feature provides the fixed-size codec for `Address`; `BatchId`
-# (a `B256`) is encoded by a local newtype codec in this crate.
+# is encoded by a local newtype codec in this crate.
 vertex-storage = { workspace = true, features = ["alloy"] }
 
 ## misc

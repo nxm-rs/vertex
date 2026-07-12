@@ -89,7 +89,7 @@ impl GossipIntake {
             return Err(GossipCheckError::NoPeerId);
         }
 
-        let overlay = OverlayAddress::from(*gossiped_peer.overlay());
+        let overlay = *gossiped_peer.overlay();
         let now = Instant::now();
         let fingerprint = multiaddrs_fingerprint(gossiped_peer);
 

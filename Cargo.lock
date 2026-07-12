@@ -1827,7 +1827,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2714,7 +2714,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3947,7 +3947,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4908,7 +4908,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "nectar-contracts"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
+source = "git+https://github.com/nxm-rs/nectar?rev=118b66b97305c8fbd6511c37acc4917e9b822bef#118b66b97305c8fbd6511c37acc4917e9b822bef"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4918,12 +4918,13 @@ dependencies = [
 [[package]]
 name = "nectar-postage"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
+source = "git+https://github.com/nxm-rs/nectar?rev=118b66b97305c8fbd6511c37acc4917e9b822bef#118b66b97305c8fbd6511c37acc4917e9b822bef"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "arbitrary",
  "byteorder",
+ "derive_more",
  "k256",
  "nectar-primitives",
  "serde",
@@ -4934,7 +4935,7 @@ dependencies = [
 [[package]]
 name = "nectar-primitives"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
+source = "git+https://github.com/nxm-rs/nectar?rev=118b66b97305c8fbd6511c37acc4917e9b822bef#118b66b97305c8fbd6511c37acc4917e9b822bef"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -4950,7 +4951,6 @@ dependencies = [
  "hybrid-array",
  "js-sys",
  "keccak-batch",
- "once_cell",
  "parking_lot",
  "rand 0.10.1",
  "rayon",
@@ -4965,7 +4965,7 @@ dependencies = [
 [[package]]
 name = "nectar-swarms"
 version = "0.4.0"
-source = "git+https://github.com/nxm-rs/nectar?rev=ef89a5df57178fb96f86544c05e14a6b7c0b34d9#ef89a5df57178fb96f86544c05e14a6b7c0b34d9"
+source = "git+https://github.com/nxm-rs/nectar?rev=118b66b97305c8fbd6511c37acc4917e9b822bef#118b66b97305c8fbd6511c37acc4917e9b822bef"
 dependencies = [
  "alloy-chains",
  "num_enum",
@@ -6667,7 +6667,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6725,7 +6725,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7478,7 +7478,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

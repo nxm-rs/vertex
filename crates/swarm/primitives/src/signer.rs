@@ -1,7 +1,7 @@
 //! The node identity's overlay-derivation facet over alloy's signing trait.
 
 use alloy_primitives::Address;
-use nectar_primitives::{SwarmAddress, compute_overlay};
+use nectar_primitives::{OverlayAddress, compute_overlay};
 
 use crate::{NetworkId, Nonce};
 
@@ -27,7 +27,7 @@ pub trait OverlaySigner: SignerSync {
     fn nonce(&self) -> Nonce;
 
     /// The overlay this identity derives: `compute_overlay(address, network_id, nonce)`.
-    fn overlay(&self) -> SwarmAddress {
+    fn overlay(&self) -> OverlayAddress {
         compute_overlay(&self.address(), self.network_id(), &self.nonce())
     }
 }

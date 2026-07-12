@@ -40,7 +40,7 @@ Rules that catch the most review comments. None of these bend.
 
 Vertex owns the **node**: libp2p protocols, peer management, topology, storage backend, observability, CLI, the binary. `nectar` (https://github.com/nxm-rs/nectar) owns the **primitives and layer-2 constructs**: anything another Swarm consumer (light client, indexer, web tool, contract verifier) would want without a libp2p stack. Both repos are under nxm-rs control, so moving code across the boundary is a same-org PR.
 
-Belongs in `nectar`: chunk types (`CAC`, `SOC`), span encoding, BMT hash and proofs; address types (`SwarmAddress`, `OverlayAddress` derivation), proximity order, bin math; manifests (mantaray nodes, traversal, edge encoding); feeds (epoch grid, lookup, SOC-based mutability); postage (batch contract decode, stamp signing and verification, bucket math); erasure coding, redundancy, recovery; any pure-data validation needing neither network nor database.
+Belongs in `nectar`: chunk types (`CAC`, `SOC`), span encoding, BMT hash and proofs; address types (`OverlayAddress` derivation, `ChunkAddress`), proximity order, bin math; manifests (mantaray nodes, traversal, edge encoding); feeds (epoch grid, lookup, SOC-based mutability); postage (batch contract decode, stamp signing and verification, bucket math); erasure coding, redundancy, recovery; any pure-data validation needing neither network nor database.
 
 Belongs in `vertex`: libp2p `NetworkBehaviour`s and wire protocols; peer manager, topology, scoring, backoff, dialer; storage abstractions (`vertex-storage`) and backends (`vertex-storage-redb`); storer reserve, chunk store, redistribution agent; node lifecycle, builder, CLI, observability, RPC.
 

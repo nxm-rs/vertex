@@ -85,7 +85,7 @@ impl DiscoveredBatch {
     /// Reconstruct a [`Batch`] from the discovered on-chain geometry.
     pub fn to_batch(&self) -> Batch {
         Batch::new(
-            self.batch_id,
+            self.batch_id.into(),
             0,
             0,
             self.owner,

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use alloy_primitives::{Address, Signature, U256};
-use nectar_primitives::recompute_neighborhood_depth;
+use nectar_primitives::{XorMetric, recompute_neighborhood_depth};
 use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 use vertex_net_peer_registry::ConnectionDirection;
 use vertex_swarm_api::{DisconnectReason, SwarmIdentity, SwarmSpec};
@@ -395,7 +395,7 @@ impl SimWorld {
             .collect();
         // Sort before the seeded shuffle so the selection is reproducible
         // regardless of the hash-map iteration order.
-        active.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        active.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         active.shuffle(&mut self.rng);
         let take = ((active.len() as f64) * fraction) as usize;
         for overlay in active.into_iter().take(take) {

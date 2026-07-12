@@ -47,11 +47,11 @@ pub use validated::{ValidatedChunk, ValidationError};
 // Re-export canonical Swarm primitives from nectar. See the crate-level docs
 // for the ProximityOrder / Bin / NeighborhoodDepth distinction.
 pub use nectar_postage::{BatchId, Stamp, StampError};
-pub use nectar_primitives::{Bin, NetworkId, Nonce, ProximityOrder, Timestamp, compute_overlay};
+pub use nectar_primitives::{
+    Bin, NetworkId, Nonce, OverlayAddress, ProximityOrder, Timestamp, XorMetric, compute_overlay,
+};
 
 use core::fmt;
-
-use nectar_primitives::SwarmAddress;
 
 /// The neighborhood-depth boundary: bins at or beyond `depth` are the
 /// neighborhood (the node's area of responsibility), shallower bins are
@@ -187,9 +187,6 @@ pub fn neighborhood_bins(
 ) -> impl DoubleEndedIterator<Item = Bin> + Clone {
     (depth.get()..=max.get()).map(|po| Bin::new(po).unwrap_or(Bin::MAX))
 }
-
-/// Overlay address for Swarm routing and peer identification.
-pub type OverlayAddress = SwarmAddress;
 
 /// Swarm node type determining capabilities and protocols.
 #[derive(

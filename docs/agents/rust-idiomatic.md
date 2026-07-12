@@ -42,7 +42,7 @@ Order of preference when reaching for a derive: `thiserror` then `strum` then `d
 - Prefer enum dispatch (`AdmissionDecision`, `TopologyEvent`, `AdmissionRejection`) over `Box<dyn Trait>` for closed sets. Exhaustive `match` is the contract.
 - Use sealed traits (`mod private { pub trait Sealed {} }`) for extension points the workspace controls but third parties must not implement.
 - Push invariants into the type system with const generics where the dimension is known at compile time. The chunk-size const-generic plan in `docs/design/chunk-size-const-generic.md` is the model: a single `const BODY_SIZE: usize` flows from `ChunkTypeSet` through `AnyChunk` to `SwarmSpec`. Add new compile-time dimensions the same way; do not pass them as runtime `usize` fields.
-- Newtypes for protocol identifiers (`OverlayAddress`, `SwarmAddress`). Do not pass raw `[u8; 32]` across module boundaries.
+- Newtypes for protocol identifiers (`OverlayAddress`, `ChunkAddress`). Do not pass raw `[u8; 32]` across module boundaries.
 
 ### Module discipline
 

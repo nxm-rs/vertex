@@ -28,7 +28,6 @@ use vertex_swarm_redistribution::{
 
 use nectar_primitives::{
     Chunk, DefaultAnyChunk, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
-    SwarmAddress,
 };
 
 use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
@@ -39,7 +38,7 @@ use vertex_swarm_test_utils::vectors::{assert_bytes_eq_hex, hex_array, hex_vec};
 /// never feeds the RC/OG/TR BMT geometry, so the byte-for-byte proof vectors are
 /// unaffected.
 fn fixture_stamp(slot: usize) -> Stamp {
-    let batch: BatchId = B256::repeat_byte(0xc0 + slot as u8);
+    let batch: BatchId = B256::repeat_byte(0xc0 + slot as u8).into();
     let index = StampIndex::new(slot as u32, slot as u32);
     let sig = alloy_primitives::Signature::test_signature();
     Stamp::with_index(batch, index, 1, sig)
@@ -63,7 +62,7 @@ fn cac_transformed_address_matches_reference_vector() {
     let chunk = DefaultContentChunk::new(content).unwrap();
     assert_bytes_eq_hex(
         "chunk address must match the reference vector",
-        chunk.address().as_slice(),
+        chunk.address().as_bytes(),
         WANT_CHUNK_ADDR,
     );
 
@@ -71,7 +70,7 @@ fn cac_transformed_address_matches_reference_vector() {
     let tr = any.transformed_address(ANCHOR_CAC);
     assert_bytes_eq_hex(
         "transformed address must match the reference vector",
-        tr.as_slice(),
+        tr.as_bytes(),
         WANT_TRANSFORMED,
     );
 }
@@ -168,7 +167,7 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
             let chunk = parse_chunk(it);
             assert_bytes_eq_hex(
                 "parsed chunk address must match the reference",
-                chunk.address().as_slice(),
+                chunk.address().as_bytes(),
                 &it.chunk_address,
             );
 
@@ -178,7 +177,7 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
                     "recomputed transformed address must match the reference for {}",
                     it.chunk_address,
                 ),
-                item.transformed_address.as_slice(),
+                item.transformed_address.as_bytes(),
                 &it.transformed_address,
             );
             item
@@ -346,7 +345,7 @@ fn same_content_multi_batch_ties_to_one_slot_with_stable_commitment() {
             .into();
 
     let stamp_a = {
-        let batch: BatchId = B256::repeat_byte(0xa1);
+        let batch: BatchId = B256::repeat_byte(0xa1).into();
         Stamp::with_index(
             batch,
             StampIndex::new(1, 1),
@@ -355,7 +354,7 @@ fn same_content_multi_batch_ties_to_one_slot_with_stable_commitment() {
         )
     };
     let stamp_b = {
-        let batch: BatchId = B256::repeat_byte(0xb2);
+        let batch: BatchId = B256::repeat_byte(0xb2).into();
         Stamp::with_index(
             batch,
             StampIndex::new(2, 2),
@@ -486,13 +485,13 @@ fn witness_proofs_self_verify() {
         (&proofs.0[2], idx.last),
     ] {
         assert!(
-            p.rc_proof.verify(rc_root.as_slice()).expect("rc verify"),
+            p.rc_proof.verify(&rc_root).expect("rc verify"),
             "RC proof must verify against the reserve-commitment root",
         );
 
         assert!(
             p.og_proof
-                .verify(plain_root(&items[require].chunk).as_slice())
+                .verify(&plain_root(&items[require].chunk))
                 .expect("og verify"),
             "OG proof must verify against the chunk's plain BMT root",
         );
@@ -502,7 +501,7 @@ fn witness_proofs_self_verify() {
         // against the prefixed root directly.
         assert!(
             p.tr_proof
-                .verify(prefixed_root(&items[require].chunk, sample.as_bytes()).as_slice())
+                .verify(&prefixed_root(&items[require].chunk, sample.as_bytes()))
                 .expect("tr verify"),
             "TR proof must verify against the anchor-prefixed BMT root",
         );
@@ -511,19 +510,19 @@ fn witness_proofs_self_verify() {
 
 /// The plain BMT root of the witnessed chunk body. For a CAC this is the chunk
 /// address; for a SOC it is the wrapped CAC's address.
-fn plain_root(chunk: &DefaultAnyChunk) -> SwarmAddress {
+fn plain_root(chunk: &DefaultAnyChunk) -> B256 {
     let mut hasher = DefaultHasher::new();
     hasher.set_span(chunk.span());
     hasher.update(chunk.data());
-    SwarmAddress::from(hasher.sum())
+    hasher.sum()
 }
 
 /// The anchor-prefixed BMT root of the witnessed chunk body (the TR proof's
 /// root). For a CAC this equals the transformed address; for a SOC it is its
 /// inner component.
-fn prefixed_root(chunk: &DefaultAnyChunk, anchor: &[u8]) -> SwarmAddress {
+fn prefixed_root(chunk: &DefaultAnyChunk, anchor: &[u8]) -> B256 {
     let mut hasher = DefaultHasher::with_prefix(anchor);
     hasher.set_span(chunk.span());
     hasher.update(chunk.data());
-    SwarmAddress::from(hasher.sum())
+    hasher.sum()
 }

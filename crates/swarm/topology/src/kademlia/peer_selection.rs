@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, HashSet};
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, neighborhood_bins};
+use vertex_swarm_primitives::{
+    Bin, NeighborhoodDepth, OverlayAddress, XorMetric, neighborhood_bins,
+};
 
 use crate::behaviour::ConnectionRegistry;
 

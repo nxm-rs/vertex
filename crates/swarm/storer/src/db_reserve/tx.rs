@@ -4,7 +4,7 @@
 //! atomically.
 
 use nectar_postage::Stamp;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, XorMetric};
 use vertex_storage::{DatabaseError, DbTxMut};
 use vertex_swarm_api::SwarmError;
 use vertex_swarm_postage::{StampIndexTable, StampSlotKey};

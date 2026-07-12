@@ -597,7 +597,7 @@ mod tests {
 
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig)
     }
 
     /// A content chunk seeded so each test chunk has a unique address.

@@ -1,7 +1,9 @@
 //! Codec implementations for fixed-byte key types.
 
 #[cfg(feature = "nectar")]
-crate::impl_fixed_codec!(nectar_primitives::SwarmAddress, 32);
+crate::impl_fixed_codec!(nectar_primitives::OverlayAddress, 32);
+#[cfg(feature = "nectar")]
+crate::impl_fixed_codec!(nectar_primitives::ChunkAddress, 32);
 
 #[cfg(feature = "alloy")]
 crate::impl_fixed_codec!(alloy_primitives::Address, 20);
@@ -13,29 +15,43 @@ mod tests {
     #[cfg(feature = "nectar")]
     mod nectar {
         use super::*;
-        use nectar_primitives::SwarmAddress;
+        use nectar_primitives::{ChunkAddress, OverlayAddress};
 
         #[test]
-        fn test_swarm_address_roundtrip() {
-            let addr = SwarmAddress::from([0x42u8; 32]);
+        fn test_overlay_address_roundtrip() {
+            let addr = OverlayAddress::from([0x42u8; 32]);
             let encoded = addr.encode();
-            let decoded = SwarmAddress::decode(&encoded).unwrap();
+            let decoded = OverlayAddress::decode(&encoded).unwrap();
             assert_eq!(decoded, addr);
         }
 
         #[test]
-        fn test_swarm_address_zero() {
-            let addr = SwarmAddress::from([0u8; 32]);
+        fn test_overlay_address_zero() {
+            let addr = OverlayAddress::from([0u8; 32]);
             let encoded = addr.encode();
-            let decoded = SwarmAddress::decode(&encoded).unwrap();
+            let decoded = OverlayAddress::decode(&encoded).unwrap();
             assert_eq!(decoded, addr);
         }
 
         #[test]
-        fn test_swarm_address_decode_wrong_length() {
-            assert!(SwarmAddress::decode(&[0u8; 31]).is_err());
-            assert!(SwarmAddress::decode(&[0u8; 33]).is_err());
-            assert!(SwarmAddress::decode(&[]).is_err());
+        fn test_overlay_address_decode_wrong_length() {
+            assert!(OverlayAddress::decode(&[0u8; 31]).is_err());
+            assert!(OverlayAddress::decode(&[0u8; 33]).is_err());
+            assert!(OverlayAddress::decode(&[]).is_err());
+        }
+
+        #[test]
+        fn test_chunk_address_roundtrip() {
+            let addr = ChunkAddress::from([0x42u8; 32]);
+            let encoded = addr.encode();
+            let decoded = ChunkAddress::decode(&encoded).unwrap();
+            assert_eq!(decoded, addr);
+        }
+
+        #[test]
+        fn test_chunk_address_decode_wrong_length() {
+            assert!(ChunkAddress::decode(&[0u8; 31]).is_err());
+            assert!(ChunkAddress::decode(&[]).is_err());
         }
     }
 

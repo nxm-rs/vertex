@@ -699,7 +699,7 @@ mod tests {
     /// debits the serving peer exactly once through the reservation path.
     #[tokio::test]
     async fn builder_wiring_debits_an_origin_delivery() {
-        use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
+        use nectar_primitives::{AnyChunk, ContentChunk, OverlayAddress};
         use tokio::sync::mpsc;
         use vertex_swarm_api::{
             OriginAccounting, SwarmAccounting, SwarmPeerAccounting, SwarmPricing,
@@ -721,7 +721,7 @@ mod tests {
             .expect("valid content chunk")
             .into();
         let address = *chunk.address();
-        let overlay = ChunkAddress::from([0x5cu8; 32]);
+        let overlay = OverlayAddress::from([0x5cu8; 32]);
         let price = accounting.pricing().peer_price(&overlay, &address);
         assert!(price > Au::ZERO, "the per-chunk price is non-zero");
 

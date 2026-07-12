@@ -113,7 +113,15 @@ mod tests {
     /// Batch owned by `owner`, depth 18 / bucket depth 16, with ample value so it
     /// is not expired against a zero cumulative payout.
     fn batch_for(owner: Address) -> Batch {
-        Batch::new(B256::repeat_byte(0x11), 1_000_000, 0, owner, 18, 16, false)
+        Batch::new(
+            B256::repeat_byte(0x11).into(),
+            1_000_000,
+            0,
+            owner,
+            18,
+            16,
+            false,
+        )
     }
 
     /// Sign a stamp for `address` under `batch`, using a bucket/index consistent

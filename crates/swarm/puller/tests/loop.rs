@@ -169,7 +169,7 @@ fn stamped(seed: u8) -> StampedChunk {
     raw[..64].fill(1);
     raw[64] = 27;
     let sig = Signature::try_from(&raw[..]).unwrap();
-    let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+    let stamp = Stamp::new(B256::repeat_byte(0xaa).into(), 3, 7, 42, sig);
     StampedChunk::new(chunk.into(), stamp)
 }
 

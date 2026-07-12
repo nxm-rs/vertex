@@ -149,7 +149,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let total = records.len();
         let mut loaded = 0usize;
         for snapshot in records {
-            let overlay = OverlayAddress::from(*snapshot.peer.overlay());
+            let overlay = *snapshot.peer.overlay();
             if self.index.add(overlay).is_err() {
                 continue;
             }
