@@ -90,6 +90,19 @@ through:
 |---|---|
 | `u256_wire` | decode is the exact inverse of encode: an accepted input re-encodes to the identical bytes, any 32-byte prefix taken as a value round-trips, and oversized or leading-zero-abusive inputs error rather than truncate, wrap, or panic |
 
+`framing_decode` is a property target over the uvarint length-delimited
+frame layer beneath every protocol codec: the `Codec` wrapper and
+`FramedProto` in `vertex-net-codec`. The first input byte selects the feed
+chunk size, the rest is the raw stream, and the sweep runs across a matrix
+of frame caps mirroring the per-protocol budgets. Most of the frame
+arithmetic lives upstream in `quick-protobuf-codec`; the target pins the
+wrapper's error mapping and the cap wiring, and catches regressions on
+dependency bumps:
+
+| Target | Invariant |
+|---|---|
+| `framing_decode` | chunk boundaries never change the decoded frames, truncated frames and pathological varints error or wait but never panic, a declared length above the cap is rejected on the bare prefix before any payload arrives, garbage after a valid frame does not corrupt it and the frame consumes exactly its own bytes, every yielded frame survives decode-encode-decode, and the framed recv path agrees with the raw decoder (a clean end of stream maps to the closed error, a truncated tail to a codec error) |
+
 Round-trip targets take a structured value via the valid-by-construction
 `Arbitrary` impls behind each owning crate's `arbitrary` feature (the same
 impls drive the stable proptest suites), so the invariant is stronger:
@@ -125,6 +138,7 @@ nightly or libFuzzer:
 - `seed_replay_pseudosettle_decode` in `crates/swarm/net/pseudosettle/src/codec.rs`
 - `seed_replay_swap_decode` in `crates/swarm/net/swap/src/codec.rs`
 - `seed_replay_u256_wire` in `crates/net/codec/src/utils.rs` (the `u256_wire` seeds are raw helper input, no protobuf framing)
+- `seed_replay_framing_decode` in `crates/net/codec/src/framed.rs` (a `framing_decode` seed is one chunk-size control byte then the raw stream)
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.
