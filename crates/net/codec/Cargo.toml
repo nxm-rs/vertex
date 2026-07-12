@@ -20,3 +20,9 @@ quick-protobuf.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 vertex-util-runtime.workspace = true
+
+[features]
+# The fuzz-facing surface (the u256 wire invariant sweep), shared by the
+# fuzz workspace and the stable seed-replay test. Dev-only: never enabled by
+# a shipped artefact cone.
+arbitrary = []

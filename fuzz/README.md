@@ -58,6 +58,9 @@ invariant is *no panic, no OOM, no hang*:
 | `pullsync_bitvector` | `check_bitvector` over `BitVector::from_wire_bytes` and `BitVector::from_bytes` | `from_bytes` accepts exactly `len / 8 + 1` bytes, trailing pad bits never surface through `get`/`count_ones`, `set` past `len` is a no-op, and accepted bytes round-trip unchanged |
 | `retrieval_decode` | the retrieval `Request` and the address-parameterized `Delivery` decode; a delivery input's first 32 bytes are the requested address, the rest the raw frame, so the fuzzer controls both sides of the chunk reconstruction | the 32-byte address check on `Request`, the empty-data failure sentinel, the optional stamp parse, and the chunk reconstruction against the requested address never panic; a decoded success carries the requested address |
 | `headers_decode` | the stream-headers envelope (the exchange every headered protocol negotiation runs) through `check_headers` on writer-produced frames with adversarial entries, plus the flat `Header` entry on raw bytes | the map never exceeds the wire entry count, a duplicate key collapses to its last occurrence (proto3 last-field-wins), and re-encoding the decoded envelope decodes back equal |
+| `pricing_decode` | the pricing `AnnouncePaymentThreshold` deserialize + `from_proto` | the canonical amount decode never panics, a decoded threshold re-encodes to the identical wire bytes, and an oversized or leading-zero amount errors rather than truncates or wraps |
+| `pseudosettle_decode` | the pseudosettle `Payment` and `PaymentAck` deserialize + `from_proto` | the canonical amount decode never panics, a decoded amount re-encodes to the identical wire bytes, and an oversized or leading-zero amount errors rather than truncates or wraps |
+| `swap_decode` | the swap `EmitCheque` (the JSON cheque payload path: addresses, the bare-decimal payout across the full 256-bit range, the fixed 65-byte base64 signature) and `Handshake` deserialize + `from_proto` | the cheque JSON parse and the 20-byte beneficiary check never panic, and a decoded cheque stays stable across re-encode (the JSON is value-preserving, not byte-canonical) |
 
 The flat frames are fed raw `&[u8]` straight through the generated reader;
 the nested frames (the handshake `Ack`/`SynAck`, the pullsync `Offer`, the
@@ -78,6 +81,15 @@ input overflows the budget math.
 |---|---|
 | `handshake_uvarint_differential` | predicted block size equals the encoded length, the bound never exceeds the frame budget, and the budget math never overflows |
 
+`u256_wire` is a dedicated property target over the trimmed big-endian
+`U256` helpers in `vertex-net-codec` (`decode_u256_be`/`encode_u256_be`),
+the funnel every accounting codec's peer-controlled monetary quantity runs
+through:
+
+| Target | Invariant |
+|---|---|
+| `u256_wire` | decode is the exact inverse of encode: an accepted input re-encodes to the identical bytes, any 32-byte prefix taken as a value round-trips, and oversized or leading-zero-abusive inputs error rather than truncate, wrap, or panic |
+
 Round-trip targets take a structured value via the valid-by-construction
 `Arbitrary` impls behind each owning crate's `arbitrary` feature (the same
 impls drive the stable proptest suites), so the invariant is stronger:
@@ -91,6 +103,9 @@ encode must decode back to an equal value.
 | `pullsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` across the whole pullsync message set |
 | `retrieval_roundtrip` | a request reproduces itself through the wire; a delivery decodes back to its stampless projection (the serve path ships chunk data only) through the address-parameterized codec pair |
 | `headers_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for envelopes, whose keys are unique by map construction |
+| `pricing_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for threshold announcements across the full 256-bit range |
+| `pseudosettle_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for payments and acks, the full 256-bit amount range and the whole timestamp span included |
+| `swap_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for cheques (the full 256-bit payout surviving the transport JSON's bare-decimal number path) and handshakes |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
@@ -106,6 +121,10 @@ nightly or libFuzzer:
 - `seed_replay_pullsync_bitvector` in `crates/swarm/net/pullsync/src/bitvector.rs` (the `pullsync_bitvector` seeds: a two-byte little-endian declared length then the packed bytes, covering truncated and padding-abuse vectors)
 - `seed_replay_retrieval_decode` in `crates/swarm/net/retrieval/src/codec.rs` (a delivery seed is the 32-byte requested address followed by the raw wire frame)
 - `seed_replay_headers_decode` in `crates/swarm/net/headers/src/codec.rs`
+- `seed_replay_pricing_decode` in `crates/swarm/net/pricing/src/codec.rs`
+- `seed_replay_pseudosettle_decode` in `crates/swarm/net/pseudosettle/src/codec.rs`
+- `seed_replay_swap_decode` in `crates/swarm/net/swap/src/codec.rs`
+- `seed_replay_u256_wire` in `crates/net/codec/src/utils.rs` (the `u256_wire` seeds are raw helper input, no protobuf framing)
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.

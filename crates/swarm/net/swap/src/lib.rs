@@ -6,10 +6,16 @@
 //! transport-only: the cheque signature is EIP-712 over the cheque fields, not
 //! over the JSON bytes.
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls;
+
 mod codec;
 mod error;
 mod headers;
 mod protocol;
+
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
 
 pub use codec::{EmitCheque, EmitChequeCodec, Handshake, HandshakeCodec};
 pub use error::SwapError;

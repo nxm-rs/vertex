@@ -4,7 +4,10 @@ mod framed;
 pub use framed::{FramedProto, StreamClosed};
 
 mod utils;
-pub use utils::{current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
+pub use utils::{U256DecodeError, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
+
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
 
 /// Direct protobuf codec for types that don't need domain wrapper conversion.
 pub(crate) type ProtoCodec<T> = quick_protobuf_codec::Codec<T>;

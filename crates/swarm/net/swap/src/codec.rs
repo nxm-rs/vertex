@@ -115,49 +115,69 @@ mod tests {
         let decoded = codec.decode(&mut buf).unwrap().unwrap();
         assert_eq!(original, decoded);
     }
+
+    /// Replay the committed fuzz seeds through the same decode paths the
+    /// `swap_decode` fuzz target drives, so the stable test gate proves the
+    /// seeds stay panic-free without the fuzzer.
+    #[test]
+    fn seed_replay_swap_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/swap_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let cheque = crate::fuzz::decode_emit_cheque(&data);
+            let handshake = crate::fuzz::decode_handshake(&data);
+
+            if name.starts_with("valid-cheque-") {
+                assert!(cheque.is_some(), "seed {name} must decode as a cheque");
+            } else if name.starts_with("valid-handshake-") {
+                assert!(
+                    handshake.is_some(),
+                    "seed {name} must decode as a handshake"
+                );
+            } else if name.starts_with("invalid-cheque-") {
+                assert!(cheque.is_none(), "seed {name} must stay a cheque Err");
+            } else if name.starts_with("invalid-handshake-") {
+                assert!(handshake.is_none(), "seed {name} must stay a handshake Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 7,
+            "expected at least the 7 curated seeds, found {replayed}"
+        );
+    }
 }
 
+// Stable pins of the round-trip invariant, drawing both messages through the
+// shared `Arbitrary` impls (any 65 signature bytes round-trip: the codec
+// carries them opaquely, validity is the chequebook layer's concern) so the
+// proptest suite and the fuzz round-trip target drive one construction path.
 #[cfg(test)]
 mod proptests {
-    use alloy_primitives::U256;
-    use bytes::Bytes;
     use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
     use vertex_net_codec::prop_assert_proto_roundtrip;
-    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt};
 
     use super::*;
-
-    // The codec carries the signature opaquely (the JSON is transport-only),
-    // so any 65 bytes round-trip; signature validity is the chequebook
-    // layer's concern.
-    fn signed_cheque() -> impl Strategy<Value = SignedCheque> {
-        (
-            any::<[u8; 20]>(),
-            any::<[u8; 20]>(),
-            any::<[u8; 32]>(),
-            prop::collection::vec(any::<u8>(), 65),
-        )
-            .prop_map(|(chequebook, beneficiary, payout, signature)| {
-                let cheque = Cheque::new(
-                    Address::from(chequebook),
-                    Address::from(beneficiary),
-                    U256::from_be_bytes(payout),
-                );
-                SignedCheque::new(cheque, Bytes::from(signature))
-            })
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn emit_cheque_roundtrips(cheque in signed_cheque()) {
-            prop_assert_proto_roundtrip!(EmitCheque::new(cheque));
+        fn emit_cheque_roundtrips(cheque in arb::<EmitCheque>()) {
+            prop_assert_proto_roundtrip!(cheque);
         }
 
         #[test]
-        fn handshake_roundtrips(beneficiary in any::<[u8; 20]>()) {
-            prop_assert_proto_roundtrip!(Handshake::new(Address::from(beneficiary)));
+        fn handshake_roundtrips(handshake in arb::<Handshake>()) {
+            prop_assert_proto_roundtrip!(handshake);
         }
     }
 }

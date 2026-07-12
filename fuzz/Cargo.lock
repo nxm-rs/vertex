@@ -5808,10 +5808,13 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
  "vertex-swarm-net-identify",
+ "vertex-swarm-net-pricing",
  "vertex-swarm-net-proto",
+ "vertex-swarm-net-pseudosettle",
  "vertex-swarm-net-pullsync",
  "vertex-swarm-net-pushsync",
  "vertex-swarm-net-retrieval",
+ "vertex-swarm-net-swap",
  "vertex-swarm-peer",
 ]
 
@@ -5884,6 +5887,23 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-accounting-chequebook"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "bytes",
+ "getrandom 0.2.17",
+ "nectar-contracts",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "strum",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6076,12 +6096,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-net-pricing"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "arbitrary",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
+]
+
+[[package]]
 name = "vertex-swarm-net-proto"
 version = "0.1.0"
 dependencies = [
  "pb-rs",
  "quick-protobuf",
  "walkdir",
+]
+
+[[package]]
+name = "vertex-swarm-net-pseudosettle"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "arbitrary",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
 ]
 
 [[package]]
@@ -6151,6 +6211,28 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
  "vertex-swarm-primitives",
+]
+
+[[package]]
+name = "vertex-swarm-net-swap"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "arbitrary",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-accounting-chequebook",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
 ]
 
 [[package]]
