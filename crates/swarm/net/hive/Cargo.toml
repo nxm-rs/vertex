@@ -49,11 +49,21 @@ strum.workspace = true
 ## error handling
 thiserror.workspace = true
 
+## test-value generation (feature `arbitrary`)
+arbitrary = { workspace = true, optional = true }
+
+[features]
+# The fuzz-facing surface (`fuzz` module): the batch validation entry point
+# and valid-by-construction generators shared with the fuzz targets.
+# Dev-only: never enabled by a shipped artefact cone.
+arbitrary = ["dep:arbitrary", "vertex-swarm-peer/arbitrary"]
+
 [dev-dependencies]
 criterion.workspace = true
 dashmap.workspace = true
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
+quick-protobuf.workspace = true
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 
 [[bench]]

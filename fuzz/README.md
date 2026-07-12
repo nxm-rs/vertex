@@ -51,6 +51,9 @@ invariant is *no panic, no OOM, no hang*:
 |---|---|---|
 | `pushsync_decode` | `pushsync::{Delivery, Receipt}` deserialize + `from_proto` | address/nonce length checks, stamp parsing, chunk reconstruction, signature parsing, and the storage radius range never panic |
 | `handshake_decode` | `decode_syn`/`decode_ack`/`decode_synack` on adversarial field content | the multiaddr block decode and its count cap, overlay/nonce/signature length checks, EIP-191 signature recovery, the network-id gate, the welcome cap, and the admission checks reachable from decode never panic |
+| `swarm_peer_parse` | `deserialize_multiaddrs` on raw bytes, `SwarmPeer::parse` and the gossip `check_timestamp` policy on adversarial content | the hand-rolled list/uvarint decoder and its count cap, EIP-191 recovery, overlay validation, the chequebook length check, the timestamp and clock-skew checks, and the timestamp policy's accept bounds never panic |
+| `hive_decode` | the hive `Peers` batch through `validate_batch` (length checks, the two-tier cache, EIP-191 recovery, the /p2p/ requirement) | validation classifies every raw record exactly once, full-validation successes stay proportional to wire bytes (so a frame-capped message bounds per-message ECDSA work), and re-validating survivors through the cache reproduces them |
+| `identify_decode` | the identify message conversions (`Info`/`PushInfo`) over the vendored generated struct | public-key decode, multiaddr and protocol filtering, and the signed-peer-record consistency gate never panic; the push conversion is total |
 
 The flat `Syn` frame is fed raw `&[u8]` straight through the generated
 reader; the nested `Ack`/`SynAck` frames go through the real write then read
@@ -79,6 +82,7 @@ encode must decode back to an equal value.
 |---|---|
 | `pushsync_roundtrip` | `from_proto(deserialize(serialize(into_proto(value)))) == value` for deliveries and receipts |
 | `handshake_roundtrip` | encode then wire then decode reproduces the syn/ack/synack, signature recovery included |
+| `swarm_peer_roundtrip` | a signed record's wire fields parse back to an equal record, and the clock-skew window holds exactly at its inclusive boundaries |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
@@ -87,6 +91,9 @@ nightly or libFuzzer:
 
 - `seed_replay_pushsync_decode` in `crates/swarm/net/pushsync/src/codec.rs`
 - `seed_replay_handshake_decode` in `crates/swarm/net/handshake/src/codec/mod.rs`
+- `seed_replay_swarm_peer_parse` in `crates/swarm/peers/peer/src/serde_multiaddr.rs`
+- `seed_replay_hive_decode` in `crates/swarm/net/hive/src/protocol.rs`
+- `seed_replay_identify_decode` in `crates/swarm/net/identify/src/protocol.rs`
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.

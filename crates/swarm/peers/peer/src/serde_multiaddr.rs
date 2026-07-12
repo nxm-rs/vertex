@@ -15,7 +15,7 @@ use std::io::{Cursor, Read};
 /// Chosen because 0x99 is not a valid multiaddr protocol code.
 ///
 /// BEE-COMPAT(SWIP-148): see module docs.
-const MULTIADDR_LIST_PREFIX: u8 = 0x99;
+pub(crate) const MULTIADDR_LIST_PREFIX: u8 = 0x99;
 
 /// Maximum multiaddrs accepted per peer record. A gossiped or handshaked record
 /// carrying more is rejected whole, so a peer cannot inflate resident table
@@ -199,6 +199,45 @@ mod tests {
         assert!(
             matches!(err, MultiAddrError::CountExceeded { max } if max == MAX_MULTIADDRS_PER_PEER),
             "over-full record must reject with CountExceeded, got {err:?}"
+        );
+    }
+
+    /// Replays the committed fuzz seeds through the exact multiaddr-block
+    /// decode the `swarm_peer_parse` fuzz target drives on raw bytes, so the
+    /// stable test gate proves the seeds stay panic-free without the fuzzer.
+    #[test]
+    fn seed_replay_swarm_peer_parse() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/swarm_peer_parse");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let decoded = deserialize_multiaddrs(&data);
+
+            if name.starts_with("valid-") || name.starts_with("edge-") {
+                let addrs = decoded.unwrap_or_else(|e| panic!("seed {name} must decode: {e}"));
+                assert!(addrs.len() <= MAX_MULTIADDRS_PER_PEER, "seed {name}");
+                // Canonical re-encode round-trips, save for the lone-addr
+                // shapes the single-addr encoding cannot carry (see the
+                // helper).
+                if !crate::fuzz::reencodes_ambiguously(&addrs) {
+                    let again = deserialize_multiaddrs(&serialize_multiaddrs(&addrs))
+                        .unwrap_or_else(|e| panic!("seed {name} must re-decode: {e}"));
+                    assert_eq!(again, addrs);
+                }
+            } else if name.starts_with("invalid-") {
+                assert!(decoded.is_err(), "seed {name} must stay an Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 7,
+            "expected at least the 7 curated seeds, found {replayed}"
         );
     }
 }

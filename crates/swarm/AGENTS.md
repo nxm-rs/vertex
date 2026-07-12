@@ -75,3 +75,4 @@ Primitives and layer-2 constructs (chunks, addresses, BMT, manifests, feeds, pos
 - `cargo test -p vertex-swarm-<name>` per crate.
 - `vertex-swarm-test-utils` provides `MockIdentity`, `MockTopology`, and cluster-shaped fixtures behind the `cluster` feature.
 - `topology` and `node` rely on `libp2p-swarm-test` for behaviour tests; prefer that over hand-rolled mocks.
+- `peers/peer` carries the `swarm_peer_parse`/`swarm_peer_roundtrip` fuzz targets under `fuzz/` at the repo root; its `fuzz` module (behind `arbitrary`) holds the owned wire-record holder and adversarial generators, and the committed multiaddr-block seeds replay via `seed_replay_swarm_peer_parse` in `serde_multiaddr.rs`. Read `fuzz/README.md` before extending them.

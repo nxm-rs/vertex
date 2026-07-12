@@ -11,6 +11,8 @@
 //! for ergonomics.
 
 pub mod error;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
 mod serde_multiaddr;
 pub mod swarm_peer;
 pub mod timestamp_policy;
@@ -50,4 +52,21 @@ pub fn arbitrary_multiaddr(
     };
 
     addr.parse().map_err(|_| arbitrary::Error::IncorrectFormat)
+}
+
+/// Generate a random multiaddr terminating in a `/p2p/` component, for
+/// records that must pass gossip validation (which requires the peer id).
+#[cfg(any(test, feature = "arbitrary"))]
+pub fn arbitrary_multiaddr_with_peer_id(
+    u: &mut arbitrary::Unstructured<'_>,
+) -> arbitrary::Result<libp2p::Multiaddr> {
+    // sha2-256 multihash code; any 32-byte digest is a well-formed peer id.
+    let digest: [u8; 32] = u.arbitrary()?;
+    let multihash = libp2p::multihash::Multihash::<64>::wrap(0x12, &digest)
+        .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+    let peer_id =
+        libp2p::PeerId::from_multihash(multihash).map_err(|_| arbitrary::Error::IncorrectFormat)?;
+    let mut addr = arbitrary_multiaddr(u)?;
+    addr.push(libp2p::multiaddr::Protocol::P2p(peer_id));
+    Ok(addr)
 }

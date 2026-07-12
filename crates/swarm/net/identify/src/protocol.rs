@@ -9,7 +9,7 @@ use libp2p::swarm::StreamProtocol;
 use crate::error::UpgradeError;
 use crate::generated as proto;
 
-const MAX_MESSAGE_SIZE_BYTES: usize = 4096;
+pub(crate) const MAX_MESSAGE_SIZE_BYTES: usize = 4096;
 
 /// Identify information of a peer sent in protocol messages.
 #[derive(Debug, Clone)]
@@ -221,5 +221,52 @@ impl TryFrom<proto::Identify> for PushInfo {
         };
 
         Ok(info)
+    }
+}
+
+#[cfg(test)]
+mod seed_replay {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use quick_protobuf::{BytesReader, MessageRead};
+
+    use super::*;
+
+    /// Replays the committed fuzz seeds through the exact decode-then-convert
+    /// path the `identify_decode` fuzz target drives, so the stable test gate
+    /// proves the seeds stay panic-free without the fuzzer.
+    #[test]
+    fn seed_replay_identify_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fuzz/seeds/identify_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+            assert!(
+                data.len() <= MAX_MESSAGE_SIZE_BYTES,
+                "seed {name} busts the frame cap"
+            );
+
+            let mut reader = BytesReader::from_bytes(&data);
+            let msg = proto::Identify::from_reader(&mut reader, &data)
+                .unwrap_or_else(|e| panic!("seed {name} must deserialize: {e}"));
+            let info = Info::try_from(msg.clone());
+            let push = PushInfo::try_from(msg);
+            assert!(push.is_ok(), "push conversion is total, seed {name}");
+
+            if name.starts_with("valid-") || name.starts_with("edge-") {
+                assert!(info.is_ok(), "seed {name} must convert");
+            } else if name.starts_with("invalid-") {
+                assert!(info.is_err(), "seed {name} must stay an Err");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 5,
+            "expected at least the 5 curated seeds, found {replayed}"
+        );
     }
 }
