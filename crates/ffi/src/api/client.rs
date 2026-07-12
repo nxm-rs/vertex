@@ -325,7 +325,7 @@ fn client_data_dirs() -> DataDirs {
 /// Limiting is by chunk count; `window_bytes` is retained for ABI stability but
 /// ignored. The core clamps to at least one, so a zero degrades to
 /// one-at-a-time rather than deadlocking.
-fn stream_config(config: VertexStreamConfig) -> StreamConfig {
+pub(crate) fn stream_config(config: VertexStreamConfig) -> StreamConfig {
     StreamConfig::new(usize::try_from(config.max_concurrency).unwrap_or(usize::MAX))
 }
 
@@ -339,7 +339,10 @@ fn network_spec(network: VertexNetwork) -> Arc<Spec> {
 
 /// Build a client identity. A present key must be exactly 32 bytes; an absent
 /// key yields a random ephemeral identity.
-fn build_identity(spec: &Arc<Spec>, private_key: Option<&[u8]>) -> FfiResult<Arc<Identity>> {
+pub(crate) fn build_identity(
+    spec: &Arc<Spec>,
+    private_key: Option<&[u8]>,
+) -> FfiResult<Arc<Identity>> {
     let Some(key) = private_key else {
         return Ok(Arc::new(Identity::random(
             spec.clone(),
@@ -365,7 +368,7 @@ fn build_identity(spec: &Arc<Spec>, private_key: Option<&[u8]>) -> FfiResult<Arc
 }
 
 /// Build the network config, overriding bootnodes when the host supplies them.
-fn build_network(bootnodes: Vec<String>) -> NetworkConfig {
+pub(crate) fn build_network(bootnodes: Vec<String>) -> NetworkConfig {
     let mut network = NetworkConfig::default();
     if !bootnodes.is_empty() {
         let parsed: Vec<Multiaddr> = bootnodes
@@ -382,7 +385,7 @@ fn build_network(bootnodes: Vec<String>) -> NetworkConfig {
 /// Reconstruct a strong [`StampedChunk`] from the raw upload payload.
 ///
 /// Consumes the upload so `data` moves into `Bytes` without a second copy.
-fn reconstruct_upload(chunk: VertexChunkUpload) -> FfiResult<StampedChunk> {
+pub(crate) fn reconstruct_upload(chunk: VertexChunkUpload) -> FfiResult<StampedChunk> {
     let address = parse_address(&chunk.address)?;
     let stamp = parse_stamp(&chunk.stamp)?;
     // Bytes self-validate against the address (mismatch rejected), pinning the variant.
@@ -394,12 +397,12 @@ fn reconstruct_upload(chunk: VertexChunkUpload) -> FfiResult<StampedChunk> {
 }
 
 /// Parse a 32-byte chunk address.
-fn parse_address(bytes: &[u8]) -> FfiResult<ChunkAddress> {
+pub(crate) fn parse_address(bytes: &[u8]) -> FfiResult<ChunkAddress> {
     core_parse_address(bytes)
         .map_err(|ParseAddressError { got }| FfiError::InvalidAddress { len: got })
 }
 
-fn parse_stamp(bytes: &[u8]) -> FfiResult<Stamp> {
+pub(crate) fn parse_stamp(bytes: &[u8]) -> FfiResult<Stamp> {
     Stamp::try_from_slice(bytes).map_err(|e| FfiError::InvalidStamp {
         reason: e.to_string(),
     })
@@ -490,5 +493,104 @@ mod tests {
         let spec = init_dev();
         let identity = build_identity(&spec, None).expect("ephemeral identity builds");
         assert_eq!(identity.node_type(), SwarmNodeType::Client);
+    }
+}
+
+/// Totality of the entry-boundary helpers over the `api::types` input shapes:
+/// every generated input either succeeds or returns a typed [`FfiError`].
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod proptests {
+    use nectar_postage::STAMP_SIZE;
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn upload_strategy() -> impl Strategy<Value = VertexChunkUpload> {
+        (
+            proptest::collection::vec(any::<u8>(), 0..=64),
+            proptest::collection::vec(any::<u8>(), 0..=4200),
+            proptest::collection::vec(any::<u8>(), 0..=160),
+            any::<bool>(),
+        )
+            .prop_map(|(address, data, stamp, validate)| VertexChunkUpload {
+                address,
+                data,
+                stamp,
+                validate,
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn parse_address_accepts_exactly_32_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 0..=64),
+        ) {
+            match parse_address(&bytes) {
+                Ok(address) => {
+                    prop_assert_eq!(bytes.len(), 32);
+                    prop_assert_eq!(address.as_bytes(), bytes.as_slice());
+                }
+                Err(FfiError::InvalidAddress { len }) => prop_assert_eq!(len, bytes.len()),
+                Err(e) => return Err(TestCaseError::fail(format!("unexpected error: {e}"))),
+            }
+        }
+
+        #[test]
+        fn parse_stamp_gates_on_length(
+            bytes in proptest::collection::vec(any::<u8>(), 0..=160),
+        ) {
+            match parse_stamp(&bytes) {
+                Ok(_) => prop_assert_eq!(bytes.len(), STAMP_SIZE),
+                Err(FfiError::InvalidStamp { .. }) => {}
+                Err(e) => return Err(TestCaseError::fail(format!("unexpected error: {e}"))),
+            }
+        }
+
+        #[test]
+        fn reconstruct_upload_returns_typed_errors(upload in upload_strategy()) {
+            let address = upload.address.clone();
+            match reconstruct_upload(upload) {
+                Ok(stamped) => prop_assert_eq!(stamped.address().as_bytes(), address.as_slice()),
+                Err(FfiError::InvalidAddress { len }) => prop_assert_eq!(len, address.len()),
+                Err(FfiError::InvalidStamp { .. } | FfiError::ChunkMismatch { .. }) => {}
+                Err(e) => return Err(TestCaseError::fail(format!("unexpected error: {e}"))),
+            }
+        }
+
+        #[test]
+        fn build_identity_gates_on_key_length(
+            key in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..=64)),
+        ) {
+            let spec = init_dev();
+            match (build_identity(&spec, key.as_deref()).map(|_| ()), key) {
+                (Ok(()), None) => {}
+                (Ok(()), Some(key)) => prop_assert_eq!(key.len(), 32),
+                (Err(FfiError::InvalidPrivateKey { len }), Some(key)) => {
+                    prop_assert_eq!(len, key.len());
+                    prop_assert_ne!(len, 32);
+                }
+                // A 32-byte value can still be an invalid scalar (zero or over
+                // the curve order); that fails after the length guard.
+                (Err(FfiError::Build { .. }), Some(key)) => prop_assert_eq!(key.len(), 32),
+                (Err(e), _) => return Err(TestCaseError::fail(format!("unexpected error: {e}"))),
+            }
+        }
+
+        #[test]
+        fn build_network_accepts_any_strings(
+            bootnodes in proptest::collection::vec("\\PC{0,48}", 0..8),
+        ) {
+            let _ = build_network(bootnodes);
+        }
+
+        #[test]
+        fn stream_config_clamps_concurrency(
+            window_bytes in any::<u64>(),
+            max_concurrency in any::<u32>(),
+        ) {
+            let cfg = stream_config(VertexStreamConfig { window_bytes, max_concurrency });
+            prop_assert!(cfg.max_concurrency >= 1);
+        }
     }
 }

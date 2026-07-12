@@ -59,6 +59,20 @@ check-cone:
         exit 1
     fi
     echo "cone guard: vertex-ffi is free of the storer cone"
+    # The fuzz and proptest surface is dev-only: the ffi `arbitrary` feature is
+    # never enabled by a shipped artefact, so neither generator crate may
+    # resolve into the cdylib cone.
+    dev_leaked=""
+    for crate in arbitrary proptest; do
+        if grep -q " $crate v" <<<"$tree"; then
+            dev_leaked="$dev_leaked $crate"
+        fi
+    done
+    if [ -n "$dev_leaked" ]; then
+        echo "cone guard: vertex-ffi pulls the dev-only generator crates:$dev_leaked" >&2
+        exit 1
+    fi
+    echo "cone guard: vertex-ffi is free of the dev-only generator crates"
     # The default `vertex` binary is a bare client: it must not resolve the
     # storer code cone. The full storer node lives behind `--features storer`.
     default_tree="$(cargo tree -p vertex -e features)"

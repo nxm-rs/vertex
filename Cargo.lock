@@ -8365,11 +8365,13 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
+ "arbitrary",
  "flutter_rust_bridge",
  "futures",
  "metrics",
  "metrics-util",
  "nectar-postage",
+ "proptest",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",

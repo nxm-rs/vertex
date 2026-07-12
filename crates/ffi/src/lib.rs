@@ -37,6 +37,10 @@
 
 pub mod api;
 
+// Fuzz-facing surface, outside `api` so binding codegen never sees it.
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod fuzz;
+
 // The generated glue declares `pub` items behind this private module and
 // unwraps where the bridge invariants hold; allow both here rather than
 // touching generated code (the codegen owns the file).

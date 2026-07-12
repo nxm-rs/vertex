@@ -103,6 +103,22 @@ dependency bumps:
 |---|---|
 | `framing_decode` | chunk boundaries never change the decoded frames, truncated frames and pathological varints error or wait but never panic, a declared length above the cap is rejected on the bare prefix before any payload arrives, garbage after a valid frame does not corrupt it and the frame consumes exactly its own bytes, every yielded frame survives decode-encode-decode, and the framed recv path agrees with the raw decoder (a clean end of stream maps to the closed error, a truncated tail to a codec error) |
 
+`ffi_entry` guards the embedded-client entry boundary in `vertex-ffi`, the
+one place raw host bytes and strings become strong types. A panic there
+would unwind across the cdylib into the host process, so the oracle is
+stricter than no-crash: every malformed input maps to a typed `FfiError`
+and valid-by-construction inputs are accepted. The shared driver
+(`vertex_ffi::fuzz::check_entry`, behind the crate's `arbitrary` feature)
+sweeps chunk-address and stamp parsing, upload reconstruction from raw
+payload plus stamp bytes (a really signed stamped chunk must rebuild; a
+flipped stamp or address bit must not), identity key handling (the 32-byte
+guard, then the secp256k1 scalar check), bootnode multiaddr string parsing,
+the stream-config clamp, and the logging filter-directive parse:
+
+| Target | Invariant |
+|---|---|
+| `ffi_entry` | every entry helper returns a strong type or a typed `FfiError` (nothing panics across the cdylib boundary), a coherent stamped chunk reconstructs to its own address while a flipped address bit is a typed mismatch, wrong-length keys and addresses map to their length-carrying error variants, and the stream-config clamp never yields a zero concurrency |
+
 Round-trip targets take a structured value via the valid-by-construction
 `Arbitrary` impls behind each owning crate's `arbitrary` feature (the same
 impls drive the stable proptest suites), so the invariant is stronger:
@@ -139,6 +155,7 @@ nightly or libFuzzer:
 - `seed_replay_swap_decode` in `crates/swarm/net/swap/src/codec.rs`
 - `seed_replay_u256_wire` in `crates/net/codec/src/utils.rs` (the `u256_wire` seeds are raw helper input, no protobuf framing)
 - `seed_replay_framing_decode` in `crates/net/codec/src/framed.rs` (a `framing_decode` seed is one chunk-size control byte then the raw stream)
+- `seed_replay_ffi_entry` in `crates/ffi/src/fuzz.rs` (an `ffi_entry` seed is raw driver input with no framing; the same bytes sweep every entry helper)
 
 The round-trip invariants are pinned on stable by the `assert_proto_roundtrip!`
 tests next to each codec.
