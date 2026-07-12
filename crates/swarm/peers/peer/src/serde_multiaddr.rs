@@ -222,8 +222,9 @@ mod tests {
             if name.starts_with("valid-") || name.starts_with("edge-") {
                 let addrs = decoded.unwrap_or_else(|e| panic!("seed {name} must decode: {e}"));
                 assert!(addrs.len() <= MAX_MULTIADDRS_PER_PEER, "seed {name}");
-                // Canonical re-encode round-trips, save for the lone-addr shape
-                // whose bytes collide with the list prefix (see the helper).
+                // Canonical re-encode round-trips, save for the lone-addr
+                // shapes the single-addr encoding cannot carry (see the
+                // helper).
                 if !crate::fuzz::reencodes_ambiguously(&addrs) {
                     let again = deserialize_multiaddrs(&serialize_multiaddrs(&addrs))
                         .unwrap_or_else(|e| panic!("seed {name} must re-decode: {e}"));

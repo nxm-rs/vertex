@@ -26,9 +26,9 @@ fuzz_target!(|data: &[u8]| {
     // cap holds and the canonical re-encode round-trips.
     if let Ok(addrs) = deserialize_multiaddrs(data) {
         assert!(addrs.len() <= MAX_MULTIADDRS_PER_PEER);
-        // A lone multiaddr whose bytes open with the list prefix cannot be
-        // told apart from a list on decode, so the single-addr encoding only
-        // re-decodes for every other shape.
+        // A lone multiaddr whose bytes are empty or open with the list prefix
+        // cannot survive the single-addr encoding, so the round-trip oracle
+        // skips those shapes.
         if !reencodes_ambiguously(&addrs) {
             let bytes = serialize_multiaddrs(&addrs);
             let again = deserialize_multiaddrs(&bytes).expect("re-encoded block decodes");

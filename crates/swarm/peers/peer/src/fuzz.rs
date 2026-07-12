@@ -80,17 +80,18 @@ pub fn arbitrary_multiaddrs_bytes(u: &mut Unstructured<'_>) -> arbitrary::Result
     }
 }
 
-/// True for the one multiaddr-block shape the single-address encoding cannot
+/// True for the multiaddr-block shapes the single-address encoding cannot
 /// round-trip: a lone multiaddr whose wire bytes open with the list prefix
-/// (e.g. `/webrtc`, bytes `0x99 0x02`), which the decoder then reads back as a
-/// list marker. This prefix collision is inherent to the wire format, so a
-/// re-encode round-trip oracle must exclude it.
+/// (e.g. `/webrtc`, bytes `0x99 0x02`), read back as a list marker, or whose
+/// wire bytes are empty, read back as the no-address block. Both collisions
+/// are inherent to the wire format, so a re-encode round-trip oracle must
+/// exclude them.
 #[must_use]
 pub fn reencodes_ambiguously(addrs: &[Multiaddr]) -> bool {
-    matches!(
-        addrs,
-        [only] if only.to_vec().first() == Some(&crate::serde_multiaddr::MULTIADDR_LIST_PREFIX)
-    )
+    matches!(addrs, [only] if {
+        let bytes = only.to_vec();
+        bytes.is_empty() || bytes.first() == Some(&crate::serde_multiaddr::MULTIADDR_LIST_PREFIX)
+    })
 }
 
 /// Flip one drawn bit in `bytes`; a no-op on an empty slice.
