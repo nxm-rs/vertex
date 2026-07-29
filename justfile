@@ -12,7 +12,11 @@ clippy:
     cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
 
 test:
-    cargo test --all-features
+    cargo nextest run --all-features
+
+# Doctests: nextest does not run them, so keep a dedicated recipe.
+doctest:
+    cargo test --doc --workspace --all-features
 
 nextest:
     cargo nextest run --all-features
@@ -131,7 +135,7 @@ deny-sources:
 audit:
     cargo audit
 
-ci: fmt-check clippy test deny
+ci: fmt-check clippy test doctest deny
 
 pre-commit: fmt clippy
 
@@ -154,7 +158,7 @@ watch:
     cargo watch -x check
 
 watch-test:
-    cargo watch -x test
+    cargo watch -x 'nextest run'
 
 # Build the release container image locally (amd64). The published image is
 # multi-arch; arm64 is built in CI.
