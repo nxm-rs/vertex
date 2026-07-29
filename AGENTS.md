@@ -1,76 +1,185 @@
 # AGENTS.md
 
-Canonical contract for any agent working in this repository (Claude Code, Codex, Cursor, OpenHands, or a human collaborator). `CLAUDE.md` at the same level is a symlink to this file; subdirectories that ship their own per-area `AGENTS.md` follow the same pattern.
+This file is the canonical contract for any agent that works in this repository.
+An agent is Claude Code, Codex, Cursor, OpenHands, or a human collaborator.
+`CLAUDE.md` at the same level is a symlink to this file.
+Subdirectories that ship their own per-area `AGENTS.md` follow the same pattern.
 
-Vertex is a Rust implementation of the Ethereum Swarm node, designed for modularity, performance, and client diversity. The dominant peer on the live network is the Go reference node; v1 conformance with its wire bytes is required so Vertex can acquire real users, while the internal architecture is free to be idiomatic Rust.
+Vertex is a Rust implementation of the Ethereum Swarm node.
+Vertex is designed for modularity, performance, and client diversity.
+The dominant peer on the live network is the Go reference node.
+Vertex must conform to the reference wire bytes for v1 so that Vertex can acquire real users.
+The internal architecture is free to be idiomatic Rust.
 
 ## Process: start every task here
 
-Walk this checklist before writing code. Skip it only for typo and clippy-lint changes.
+Walk this checklist before you write code.
+Skip the checklist only for typo and clippy-lint changes.
 
-1. **Classify the change.** Wire-visible? Public-trait? Internal refactor? New feature? Bug fix? Each path has different rules below.
-2. **Read the relevant guidance.** This file top to bottom; the per-area `AGENTS.md` for every directory you touch; the matching deep guide under `docs/agents/` (table below) for any wire, Rust-architecture, or libp2p question; the `docs/` pages linked from the area files; for protocol semantics, the relevant chapter of `docs/swarm/reference/book-of-swarm.txt`.
-3. **Refine the scope and spec before code.**
-   - Wire-visible change: define the exact bytes and gate behind a `SwarmHardfork` if it diverges from the reference. Add or update the conformance vectors under the protocol crate's `tests/`.
-   - Public-trait change: write or update the design note (crate root rustdoc or `docs/design/`) and run it past the affected crates.
+1. **Classify the change.**
+   Decide whether the change is wire-visible, public-trait, an internal refactor, a new feature, or a bug fix.
+   Each path has different rules below.
+2. **Read the relevant guidance.**
+   Read this file from top to bottom.
+   Read the per-area `AGENTS.md` for every directory you touch.
+   Read the matching deep guide under `docs/agents/` in the table below for any wire, Rust-architecture, or libp2p question.
+   Read the `docs/` pages that the area files link.
+   For protocol semantics, read the relevant chapter of `docs/swarm/reference/book-of-swarm.txt`.
+3. **Refine the scope and spec before you write code.**
+   - Wire-visible change: define the exact bytes.
+     Gate the change behind a `SwarmHardfork` if it diverges from the reference.
+     Add or update the conformance vectors under the protocol crate's `tests/`.
+   - Public-trait change: write or update the design note in the crate root rustdoc or `docs/design/`.
+     Run the design note past the affected crates.
    - New CLI flag or config knob: place it where `crates/node/AGENTS.md` says it belongs.
-4. **Update AGENTS.md before implementing.** If guidance for an area is missing, stale, or wrong, fix it in the same PR. Do not implement against guidance you know is wrong.
-5. **Implement, then verify.** `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test -p <crate>`. Push. Watch `gh pr checks <N>` until green.
+4. **Update AGENTS.md before you implement.**
+   If guidance for an area is missing, stale, or wrong, fix it in the same PR.
+   Do not implement against guidance that you know is wrong.
+5. **Implement, then verify.**
+   Run `cargo fmt --all`, then `cargo clippy --all-targets --all-features -- -D warnings`, then `cargo test -p <crate>`.
+   Push.
+   Watch `gh pr checks <N>` until green.
 
 ## Top of mind
 
-Rules that catch the most review comments. None of these bend.
+These rules catch the most review comments.
+None of these rules bend.
 
-- **`multiaddrs`, never `underlay`.** Hook-enforced by `.claude/hooks/content-lint.sh`; applies to code, comments, docs, commits, PR bodies.
-- **No em-dashes.** Hook-enforced by `.claude/hooks/content-lint.sh`; ASCII hyphens or split the sentence.
-- **No inline references to the reference implementation in code or operator-facing docs.** Brief architectural notes belong only at the crate root rustdoc, not scattered through call sites. Agent-only files under `docs/agents/` are the exception.
-- **No "Unit N" internal plan labels in shipped rustdoc.** Describe consumers and components by name.
-- **Rustdoc is terse by default; calibrate low.** State the intent plus the one non-obvious invariant a reader needs: a wire or byte layout, a consensus-observable rule, a real safety or ordering reason. No module essays, no `///` that restates the signature, no `//` that narrates the next line. Comment only what the code cannot say, once. Full guidance in `docs/agents/rust-idiomatic.md`.
-- **Pre-commit is required, not polish.** `cargo fmt --all` and `cargo clippy --all-targets --all-features -- -D warnings`. Zero tolerance for unformatted or warning-bearing pushes.
-- **Scope verification to the change; CI runs the full matrix.** Test the crates you touched (`cargo test -p <crate>`), not the whole workspace. Never run benches as a correctness gate or outside performance work. A doc or comment only change needs clippy (for `missing_docs`) and doctests only if a `///` fence changed, never the test suite. For a comment-only restack or pure move, prove code-equivalence with a filtered `git diff` instead of recompiling. Full rules in `docs/agents/rust-idiomatic.md`.
-- **`git push` and `gh pr checks <N>` are one unit.** Watch CI until green. `MERGEABLE` is not the success signal.
-- **No attribution in commits; AI disclosure required in PR bodies.** Commit messages stay clean: no "Co-Authored-By" lines, no robot footer. PR bodies REQUIRE a factual `AI Assistance: <tool> used for <parts>` line per the org guide `github.com/nxm-rs/.github` `CONTRIBUTING.md`. Omitting it risks PR closure or a ban.
-- **No wire change without a fork gate.** Use `SwarmHardfork` and `ForkDigest`. Never feature-flag wire bytes with cargo features.
-- **Primitives and layer-2 constructs live in `nectar`, not `vertex`.** See Repo split before adding chunk, addressing, manifest, feed, BMT, postage, or other domain-primitive code here.
-- **Reach for the workspace derive macros before hand-rolling impls.** `thiserror`, `strum`, `derive_more`, `auto_impl(&, Arc, Box)`. Rules in `docs/agents/rust-idiomatic.md`.
-- **A client node will run in wasm.** Plan every new crate for `wasm32-unknown-unknown`: pick `target_arch` vs feature cfg per `docs/agents/wasm.md`, audit tokio features, keep the wasm cone clean.
-- **Public APIs are FFI and gRPC only. No HTTP+JSON.** Vertex is library-first: FFI (Dart bindings and similar) for native and mobile, gRPC for desktop and server operator scripting, wasm-bindgen for browsers. No `openapi.yml`, no `serde_json` in public paths, no HTTP handler frameworks. Rules in `docs/agents/api-surface.md`.
+- **Use `multiaddrs` for a peer transport address, never the deprecated synonym.**
+  The hook `.claude/hooks/content-lint.sh` enforces this rule.
+  It applies to code, comments, docs, commits, and PR bodies.
+- **Use no em-dashes.**
+  The hook `.claude/hooks/content-lint.sh` enforces this rule.
+  Use ASCII hyphens or split the sentence.
+- **Write no inline references to the reference implementation in code or operator-facing docs.**
+  Brief architectural notes belong only in the crate root rustdoc, not scattered through call sites.
+  The agent-only files under `docs/agents/` are the exception.
+- **Write no "Unit N" internal plan labels in shipped rustdoc.**
+  Describe consumers and components by name.
+- **Keep rustdoc terse by default and calibrate low.**
+  State the intent and the one non-obvious invariant that a reader needs: a wire or byte layout, a consensus-observable rule, or a real safety or ordering reason.
+  Write no module essays, no `///` that restates the signature, and no `//` that narrates the next line.
+  Comment only what the code cannot say, and comment it once.
+  Full guidance is in `docs/agents/rust-idiomatic.md`.
+- **Treat pre-commit as required, not as polish.**
+  Run `cargo fmt --all` and `cargo clippy --all-targets --all-features -- -D warnings`.
+  Never push unformatted or warning-bearing code.
+- **Scope verification to the change, because CI runs the full matrix.**
+  Test the crates you touched with `cargo test -p <crate>`, not the whole workspace.
+  Never run benches as a correctness gate or outside performance work.
+  A doc-only or comment-only change needs clippy for `missing_docs`, and doctests only if a `///` fence changed, never the test suite.
+  For a comment-only restack or a pure move, prove code-equivalence with a filtered `git diff` instead of a recompile.
+  Full rules are in `docs/agents/rust-idiomatic.md`.
+- **Treat `git push` and `gh pr checks <N>` as one unit.**
+  Watch CI until it is green.
+  `MERGEABLE` is not the success signal.
+- **Add no attribution in commits, and add the required AI disclosure in PR bodies.**
+  Keep commit messages clean: no "Co-Authored-By" lines and no robot footer.
+  PR bodies must include a factual `AI Assistance: <tool> used for <parts>` line, per the org guide `github.com/nxm-rs/.github` `CONTRIBUTING.md`.
+  If you omit the disclosure, you risk PR closure or a ban.
+- **Make no wire change without a fork gate.**
+  Use `SwarmHardfork` and `ForkDigest`.
+  Never feature-flag wire bytes with cargo features.
+- **Keep primitives and layer-2 constructs in `nectar`, not in `vertex`.**
+  Read the Repo split section before you add chunk, addressing, manifest, feed, BMT, postage, or other domain-primitive code here.
+- **Reach for the workspace derive macros before you hand-roll an impl.**
+  Use `thiserror`, `strum`, `derive_more`, and `auto_impl(&, Arc, Box)`.
+  Rules are in `docs/agents/rust-idiomatic.md`.
+- **A client node runs in wasm.**
+  Plan every new crate for `wasm32-unknown-unknown`.
+  Pick `target_arch` cfg or feature cfg per `docs/agents/wasm.md`, audit the tokio features, and keep the wasm cone clean.
+- **Public APIs are FFI and gRPC only, with no HTTP and JSON.**
+  Vertex is library-first: FFI such as Dart bindings for native and mobile, gRPC for desktop and server operator scripting, and wasm-bindgen for browsers.
+  Add no `openapi.yml`, no `serde_json` in public paths, and no HTTP handler frameworks.
+  Rules are in `docs/agents/api-surface.md`.
 
 ## Repo split: vertex vs nectar
 
-Vertex owns the **node**: libp2p protocols, peer management, topology, storage backend, observability, CLI, the binary. `nectar` (https://github.com/nxm-rs/nectar) owns the **primitives and layer-2 constructs**: anything another Swarm consumer (light client, indexer, web tool, contract verifier) would want without a libp2p stack. Both repos are under nxm-rs control, so moving code across the boundary is a same-org PR.
+Vertex owns the **node**: libp2p protocols, peer management, topology, storage backend, observability, CLI, and the binary.
+`nectar` at https://github.com/nxm-rs/nectar owns the **primitives and layer-2 constructs**: anything another Swarm consumer wants without a libp2p stack.
+Another Swarm consumer is a light client, an indexer, a web tool, or a contract verifier.
+Both repos are under nxm-rs control, so a move across the boundary is a same-org PR.
 
-Belongs in `nectar`: chunk types (`CAC`, `SOC`), span encoding, BMT hash and proofs; address types (`SwarmAddress`, `OverlayAddress` derivation), proximity order, bin math; manifests (mantaray nodes, traversal, edge encoding); feeds (epoch grid, lookup, SOC-based mutability); postage (batch contract decode, stamp signing and verification, bucket math); erasure coding, redundancy, recovery; any pure-data validation needing neither network nor database.
+These items belong in `nectar`.
+Chunk types (`CAC`, `SOC`), span encoding, and BMT hash and proofs.
+Address types (`SwarmAddress`, `OverlayAddress` derivation), proximity order, and bin math.
+Manifests: mantaray nodes, traversal, and edge encoding.
+Feeds: epoch grid, lookup, and SOC-based mutability.
+Postage: batch contract decode, stamp signing and verification, and bucket math.
+Erasure coding, redundancy, and recovery.
+Any pure-data validation that needs neither the network nor the database.
 
-Belongs in `vertex`: libp2p `NetworkBehaviour`s and wire protocols; peer manager, topology, scoring, backoff, dialer; storage abstractions (`vertex-storage`) and backends (`vertex-storage-redb`); storer reserve, chunk store, redistribution agent; node lifecycle, builder, CLI, observability, RPC.
+These items belong in `vertex`.
+libp2p `NetworkBehaviour`s and wire protocols.
+Peer manager, topology, scoring, backoff, and dialer.
+Storage abstractions (`vertex-storage`) and backends (`vertex-storage-redb`).
+Storer reserve, chunk store, and redistribution agent.
+Node lifecycle, builder, CLI, observability, and RPC.
 
-How to apply this:
+Apply this split as follows.
 
-- Before adding a type or function to a `vertex-swarm-*` crate, ask: would a non-node consumer want this? If yes, draft it in `nectar` (PR under `nxm-rs/nectar`) and depend on it from vertex.
-- If you find primitive-shaped code already in vertex that belongs upstream, open an issue here and a migration PR in nectar. The workspace pins all nectar deps to the same git rev (`Cargo.toml`), so the move is one rev bump here once nectar merges.
-- `vertex-swarm-primitives` is the canonical re-export surface. New nectar exports flow into the workspace through it, so consumers see one path.
-- If something is genuinely vertex-only (a `Validated*` wrapper depending on a vertex storage trait, say), it stays here and a comment at the top of the type says why.
+- Before you add a type or function to a `vertex-swarm-*` crate, ask whether a non-node consumer would want it.
+  If yes, draft it in `nectar` as a PR under `nxm-rs/nectar` and depend on it from vertex.
+- If you find primitive-shaped code in vertex that belongs upstream, open an issue here and a migration PR in nectar.
+  The workspace pins all nectar deps to the same git rev in `Cargo.toml`, so the move is one rev bump here once nectar merges.
+- `vertex-swarm-primitives` is the canonical re-export surface.
+  New nectar exports flow into the workspace through it, so consumers see one path.
+- If something is genuinely vertex-only, it stays here, and a comment at the top of the type says why.
+  An example is a `Validated*` wrapper that depends on a vertex storage trait.
 
 ## Feature and cfg contract
 
-Vertex ships three artefacts: a bare client (the default), a storer (`--features storer`), and the FFI client library (the `vertex-ffi` cdylib). The cone guards (`just check-cone`, the `features` CI job) enforce this split.
+Vertex ships three artefacts: a bare client as the default, a storer through `--features storer`, and the FFI client library as the `vertex-ffi` cdylib.
+The cone guards enforce this split: `just check-cone` and the `features` CI job.
 
-- `default = []` IS the bare client and is load-bearing: no storer cone, no chain, no swap. Never write `default = ["..."]` on a shipped crate.
-- Features are for CAPABILITIES (`chain`, `swap`, the `storer` composite, observability slices), never for node TYPES. A node type is the runtime `SwarmNodeType`, dispatched at launch, never a per-type feature.
-- `#[cfg(feature = ...)]` lives only at composition roots: `bin/vertex` (cli), `vertex-swarm-builder` (launch), `crates/ffi` (lib), and `vertex-node-builder` (the protocol-agnostic launch shell, where the optional `metrics` slice gates the Prometheus recorder and axum server). Domain crates (`client-behaviour`, `client-protocol`, `api`, `topology`, the node protocol) take their capabilities through traits and optional providers and carry no feature cfg, with one sanctioned exception: the `swap` capability. Swap cheque variants and their dispatch are gated inside `client-behaviour` and `client-protocol` because a swap-off build must exclude the swap cone (`vertex-swarm-net-swap`, the swap settlement crates, and the chain provider's swap pulls) at compile time to stay lean, and that cone cannot be reached through a runtime provider. This is interop-safe: a swap-off client speaking only pricing and pseudosettle is a normal peer. Do not "tidy" these gates away by always-compiling the swap codec; that drags the swap and chain cone into the bare and wasm client, which the swap cone guard exists to catch.
-- Platform boundaries are `target_arch` cfg, never a feature. Never combine a feature and a target in one dependency table entry.
-- FFI is a crate (the cdylib artefact), not a feature. There is no `ffi` feature anywhere; the crate boundary scopes it.
-- A workspace member must not unconditionally enable `chain`, `swap`, or `storer` on a shared crate. Cargo unifies features across the build graph, so one such edge pulls the cone into the default client. This is the unification footgun the cone guards catch.
+- `default = []` is the bare client and is load-bearing: no storer cone, no chain, and no swap.
+  Never write `default = ["..."]` on a shipped crate.
+- Features are for capabilities such as `chain`, `swap`, the `storer` composite, and observability slices, never for node types.
+  A node type is the runtime `SwarmNodeType`, dispatched at launch, never a per-type feature.
+- `#[cfg(feature = ...)]` lives only at the composition roots: `bin/vertex` for the CLI, `vertex-swarm-builder` for launch, `crates/ffi` for the lib, and `vertex-node-builder` for the protocol-agnostic launch shell.
+  In `vertex-node-builder`, the optional `metrics` slice gates the Prometheus recorder and the axum server.
+  Domain crates (`client-behaviour`, `client-protocol`, `api`, `topology`, and the node protocol) take their capabilities through traits and optional providers and carry no feature cfg, with one sanctioned exception: the `swap` capability.
+  Swap cheque variants and their dispatch are gated inside `client-behaviour` and `client-protocol`, because a swap-off build must exclude the swap cone at compile time to stay lean, and a runtime provider cannot reach that cone.
+  The swap cone is `vertex-swarm-net-swap`, the swap settlement crates, and the chain provider's swap pulls.
+  This is interop-safe: a swap-off client that speaks only pricing and pseudosettle is a normal peer.
+  Do not "tidy" these gates away by always-compiling the swap codec, because that drags the swap and chain cone into the bare and wasm client, which the swap cone guard exists to catch.
+- Platform boundaries are `target_arch` cfg, never a feature.
+  Never combine a feature and a target in one dependency table entry.
+- FFI is a crate, the cdylib artefact, not a feature.
+  There is no `ffi` feature anywhere, because the crate boundary scopes it.
+- A workspace member must not unconditionally enable `chain`, `swap`, or `storer` on a shared crate.
+  Cargo unifies features across the build graph, so one such edge pulls the cone into the default client.
+  This is the unification footgun that the cone guards catch.
 
 ## Build, test, lint
 
-- Edition `2024`, MSRV `1.92`. Do not raise MSRV without bumping the workspace `Cargo.toml` in the same commit.
+- The edition is `2024` and the MSRV is `1.92`.
+  Do not raise the MSRV without a bump to the workspace `Cargo.toml` in the same commit.
 - `cargo build --release -p vertex` builds the binary into `target/release/vertex`.
-- `cargo nextest run` runs workspace unit and integration tests; doctests run separately via `cargo test --doc` (nextest does not run them). Per-crate: `cargo nextest run -p <crate>`. Integration tests live under each crate's `tests/`.
-- `cargo fmt --all` formats. `cargo clippy --all-targets --all-features -- -D warnings` lints. Both required pre-commit.
-- The `justfile` at repo root collects common workflows. When in doubt, read it.
-- Missing tooling on this NixOS host: use `nix-shell -p <pkg> --run "..."`. The project shell is in `flake.nix`.
-- `.claude/` ships Claude Code hooks: rustfmt-on-edit (per-file format on Write/Edit), nextest-on-stop (runs `cargo nextest run` for touched crates), and content-lint (blocks em-dashes and `underlay`). Shared hook config is tracked; personal and session state stays ignored.
+- `cargo nextest run` runs the workspace unit and integration tests.
+  Doctests run separately through `cargo test --doc`, because nextest does not run them.
+  Run one crate with `cargo nextest run -p <crate>`.
+  Integration tests live under each crate's `tests/`.
+- `cargo fmt --all` formats the code.
+  `cargo clippy --all-targets --all-features -- -D warnings` lints the code.
+  Both are required pre-commit.
+- The `justfile` at the repo root collects the common workflows.
+  When in doubt, read it.
+- For missing tooling on this NixOS host, use `nix-shell -p <pkg> --run "..."`.
+  The project shell is in `flake.nix`.
+- `.claude/` ships Claude Code hooks.
+  rustfmt-on-edit formats each file on Write and Edit.
+  nextest-on-stop runs `cargo nextest run` for the touched crates.
+  content-lint blocks em-dashes and the deprecated peer-address term.
+  The shared hook config is tracked, and personal and session state stays ignored.
+
+## Documentation
+
+Write all documentation in ASD-STE100 Simplified Technical English.
+Use short sentences, the active voice, and one idea per sentence.
+In markdown files, put each sentence on its own line and do not wrap within a sentence, because GitHub reflows the file when it displays it.
+This keeps a diff to one changed line per changed sentence.
+In PR and issue bodies, keep one line per paragraph, because GitHub renders a single newline in a comment as a line break.
 
 ## Where rules live
 
@@ -82,7 +191,7 @@ Vertex ships three artefacts: a bare client (the default), a storer (`--features
 | Wasm client goal, cfg-gating, crate boundary, runtime/transport/storage plan | `docs/agents/wasm.md` |
 | API surfaces: FFI primary, gRPC for ops, wasm-bindgen for browsers, no JSON | `docs/agents/api-surface.md` |
 
-Per-area `AGENTS.md` files apply when you edit code in that directory.
+The per-area `AGENTS.md` files apply when you edit code in that directory.
 
 | Path | Scope |
 |---|---|
@@ -99,7 +208,7 @@ Per-area `AGENTS.md` files apply when you edit code in that directory.
 
 ## Doc map
 
-Primary sources for the Process step:
+These are the primary sources for the Process step.
 
 - `docs/swarm/reference/book-of-swarm.txt` (Viktor Tron): conceptual source of truth. Chapter anchors in `docs/agents/swarm-protocol.md`.
 - `docs/architecture/overview.md`: layering, dependency direction, libp2p boundary.
@@ -118,13 +227,24 @@ Primary sources for the Process step:
 
 ## Commits, PRs, CI
 
-- Conventional Commits, imperative mood. Scope by area: `feat(swarm-net-pushsync): ...`, `fix(topology): ...`, `chore(deps): ...`, `test(swarm-peer): ...`.
-- No em-dashes in commits or PR bodies. No attribution or robot footers in commit messages.
-- Read the org guide `github.com/nxm-rs/.github` `CONTRIBUTING.md` before opening any PR. It binds every nxm-rs repo: Oxford English (British vocabulary with `-ize` endings), one PR does one thing, link an issue, and a mandatory `AI Assistance: <tool> used for <parts>` disclosure. The PR body must cover What, Why (the linked issue), Testing, and that disclosure.
-- PR bodies are markdown: no hard-wrapped paragraphs. One logical line per paragraph. Let GitHub reflow.
-- After every `git push`, run `gh pr checks <N>` and watch until green.
-- Destructive operations (`git push --force` to a shared branch, `git reset --hard`, deleting branches): confirm with the human owner first.
+- Use Conventional Commits in the imperative mood.
+  Scope by area: `feat(swarm-net-pushsync): ...`, `fix(topology): ...`, `chore(deps): ...`, and `test(swarm-peer): ...`.
+- Use no em-dashes in commits or PR bodies.
+  Use no attribution or robot footers in commit messages.
+- Read the org guide `github.com/nxm-rs/.github` `CONTRIBUTING.md` before you open any PR.
+  It binds every nxm-rs repo: Oxford English with British vocabulary and `-ize` endings, one PR does one thing, link an issue, and a mandatory `AI Assistance: <tool> used for <parts>` disclosure.
+  The PR body must cover What, Why with the linked issue, Testing, and that disclosure.
+- PR bodies are markdown: use no hard-wrapped paragraphs.
+  Use one logical line per paragraph.
+  Let GitHub reflow the text.
+- After every `git push`, run `gh pr checks <N>` and watch until it is green.
+- Confirm destructive operations with the human owner first.
+  A destructive operation is `git push --force` to a shared branch, `git reset --hard`, or a branch deletion.
 
 ## Project tension
 
-Vertex must experiment with the Swarm protocol while shipping a v1 conformant enough to acquire real users on the live network. The two coexist by locking v1 wire behaviour to the reference implementation (see `docs/agents/swarm-protocol.md`) and gating protocol experiments behind `SwarmHardfork` variants selected by `ForkDigest` at handshake time. If you want to "fix" a wire-level quirk in the reference without a fork, you are about to break interop.
+Vertex must experiment with the Swarm protocol and at the same time ship a v1 that is conformant enough to acquire real users on the live network.
+The two goals coexist through two rules.
+Lock the v1 wire behaviour to the reference implementation, as `docs/agents/swarm-protocol.md` describes.
+Gate protocol experiments behind `SwarmHardfork` variants that `ForkDigest` selects at handshake time.
+If you want to "fix" a wire-level quirk in the reference without a fork, you are about to break interop.
