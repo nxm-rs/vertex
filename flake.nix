@@ -28,7 +28,7 @@
         devShells.default = pkgs.mkShell {
           name = "vertex-dev";
 
-          # Disable fortify hardening — jemalloc's configure runs test
+          # Disable fortify hardening: jemalloc's configure runs test
           # compiles with -O0 which conflicts with _FORTIFY_SOURCE.
           hardeningDisable = [ "fortify" ];
 
@@ -53,6 +53,8 @@
             cargo-watch        # File watcher
             cargo-expand       # Macro expansion
             cargo-nextest      # Test runner
+            ripgrep            # Fast search (used by .claude content-lint hook)
+            ast-grep           # Structural code search
             trunk              # wasm bundler for bin/swarm-demo (fetches the
                                # lockfile-matching wasm-bindgen itself)
 

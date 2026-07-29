@@ -21,8 +21,8 @@ Walk this checklist before writing code. Skip it only for typo and clippy-lint c
 
 Rules that catch the most review comments. None of these bend.
 
-- **`multiaddrs`, never `underlay`.** Applies to code, comments, docs, commits, PR bodies.
-- **No em-dashes.** ASCII hyphens or split the sentence. Source, rustdoc, markdown, commits, PR bodies, chat output.
+- **`multiaddrs`, never `underlay`.** Hook-enforced by `.claude/hooks/content-lint.sh`; applies to code, comments, docs, commits, PR bodies.
+- **No em-dashes.** Hook-enforced by `.claude/hooks/content-lint.sh`; ASCII hyphens or split the sentence.
 - **No inline references to the reference implementation in code or operator-facing docs.** Brief architectural notes belong only at the crate root rustdoc, not scattered through call sites. Agent-only files under `docs/agents/` are the exception.
 - **No "Unit N" internal plan labels in shipped rustdoc.** Describe consumers and components by name.
 - **Rustdoc is terse by default; calibrate low.** State the intent plus the one non-obvious invariant a reader needs: a wire or byte layout, a consensus-observable rule, a real safety or ordering reason. No module essays, no `///` that restates the signature, no `//` that narrates the next line. Comment only what the code cannot say, once. Full guidance in `docs/agents/rust-idiomatic.md`.
@@ -66,10 +66,11 @@ Vertex ships three artefacts: a bare client (the default), a storer (`--features
 
 - Edition `2024`, MSRV `1.92`. Do not raise MSRV without bumping the workspace `Cargo.toml` in the same commit.
 - `cargo build --release -p vertex` builds the binary into `target/release/vertex`.
-- `cargo test` runs workspace unit tests. Per-crate: `cargo test -p <crate>`. Integration tests live under each crate's `tests/`.
+- `cargo nextest run` runs workspace unit and integration tests; doctests run separately via `cargo test --doc` (nextest does not run them). Per-crate: `cargo nextest run -p <crate>`. Integration tests live under each crate's `tests/`.
 - `cargo fmt --all` formats. `cargo clippy --all-targets --all-features -- -D warnings` lints. Both required pre-commit.
 - The `justfile` at repo root collects common workflows. When in doubt, read it.
 - Missing tooling on this NixOS host: use `nix-shell -p <pkg> --run "..."`. The project shell is in `flake.nix`.
+- `.claude/` ships Claude Code hooks: rustfmt-on-edit (per-file format on Write/Edit), nextest-on-stop (runs `cargo nextest run` for touched crates), and content-lint (blocks em-dashes and `underlay`). Shared hook config is tracked; personal and session state stays ignored.
 
 ## Where rules live
 
