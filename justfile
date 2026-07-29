@@ -16,7 +16,7 @@ test:
 
 # Doctests: nextest does not run them, so keep a dedicated recipe.
 doctest:
-    cargo test --doc --all-features
+    cargo test --doc --workspace --all-features
 
 nextest:
     cargo nextest run --all-features
