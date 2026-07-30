@@ -10,16 +10,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # sccache caches each rustc invocation across jobs and runs, so the same
-  # dependency graph is compiled once per content change instead of once per job.
-  # Incremental compilation must be off, because sccache cannot cache it.
-  # RUSTFLAGS stays unset: a per-job difference re-fingerprints the whole graph
-  # and every sccache key, and a global -D warnings would make a warning in a
-  # dependency fatal. mold stays a setup-mold symlink for the same reason, so no
-  # linker flag enters the cache key.
-  RUSTC_WRAPPER: sccache
+  # A runner is ephemeral, so an incremental build pays for itself only inside one
+  # job. Off, it keeps the cached target directory small and the cache upload short.
+  # RUSTFLAGS stays unset, because a per-job difference re-fingerprints the whole
+  # graph and invalidates the restored target directory. mold stays a setup-mold
+  # symlink for the same reason: no linker flag enters the cache key.
   CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -61,9 +57,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      # rustfmt parses; it compiles nothing, so this job needs no cache.
       - uses: ./.github/actions/rust-setup
         with:
           components: rustfmt
+          cache: "false"
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -101,9 +99,6 @@ jobs:
             exit 1
           fi
           echo "cone guard: vertex-ffi is free of the observability server stack"
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   # The `vertex` binary ships two cones: the default bare client (no storer code,
   # no chain, no swap) and the full storer node behind `--features storer`. The
@@ -194,9 +189,6 @@ jobs:
             exit 1
           fi
           echo "cone guard: default vertex is free of the swap and chain cone"
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   test:
     name: test
@@ -214,9 +206,6 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run tests
         run: cargo nextest run --workspace --all-features --no-tests=warn --locked
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   doc:
     name: doc
@@ -300,9 +289,6 @@ jobs:
       - name: Build browser demo for wasm32
         working-directory: bin/swarm-demo
         run: cargo build --target wasm32-unknown-unknown
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   ci-success:
     name: ci success

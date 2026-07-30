@@ -1,5 +1,5 @@
 name: rust-setup
-description: Installs the toolchain that rust-toolchain.toml pins, sccache over the Actions cache, and a registry-only cargo cache.
+description: Installs the toolchain that rust-toolchain.toml pins and restores the per-job cargo and target cache.
 
 inputs:
   components:
@@ -8,12 +8,8 @@ inputs:
   targets:
     description: "extra rustup targets, comma-separated"
     default: ""
-  save-if:
-    description: >
-      May this run write the registry cache? The cache holds only the small
-      ~/.cargo registry, and the Actions cache is branch-scoped, so a pull
-      request that saves its own registry warms its re-runs without touching the
-      main baseline. Set false to make a job restore-only.
+  cache:
+    description: "restore and save the cargo and target cache; set false for a job that compiles nothing"
     default: "true"
 
 runs:
@@ -40,18 +36,17 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    # Content-addressed rustc cache, shared across jobs and across runs. It
-    # caches the workspace crates, which rust-cache deletes before it saves.
-    # The Actions cache backend needs no secret and works on fork pull requests.
-    # A miss degrades to a cold compile, never to a build failure.
-    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba  # v0.0.11
-
-    # target/ belongs to sccache, so rust-cache keeps only the registry index,
-    # the git checkouts, and the downloaded crate sources. One shared key serves
-    # every job.
+    # One cache per job, holding the registry and that job's target directory.
+    # A restored target directory is what makes a warm run cheap: cargo skips a
+    # fresh unit outright, which no compiler cache can beat.
+    #
+    # An sccache layer over the Actions cache was measured on this workspace and
+    # rejected. It has to replace the target cache to pay off, and then every
+    # unit needs a rustc invocation, so a warm run cost two to three times the
+    # baseline. The Actions cache service also refused about 380 object writes
+    # per job, which held the warm hit rate between 34% and 70%. A shared
+    # compiler cache needs a backend that can absorb the write volume.
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      if: inputs.cache == 'true'
       with:
-        cache-targets: "false"
-        shared-key: registry
-        save-if: ${{ inputs.save-if }}
-        cache-on-failure: "true"
+        cache-on-failure: true
