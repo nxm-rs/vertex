@@ -128,6 +128,20 @@ impl HostContext {
         auth: SimAuth,
         build: impl FnOnce(&Keypair) -> B,
     ) -> Swarm<B> {
+        self.swarm_with_idle(auth, Duration::from_secs(60), build)
+    }
+
+    /// Build a swarm with an explicit idle-connection timeout.
+    ///
+    /// Hosts that must hold otherwise-quiet connections across long virtual
+    /// horizons (scripted scenario peers) need the timeout to outlive the
+    /// scenario schedule.
+    pub fn swarm_with_idle<B: NetworkBehaviour>(
+        &self,
+        auth: SimAuth,
+        idle: Duration,
+        build: impl FnOnce(&Keypair) -> B,
+    ) -> Swarm<B> {
         let keypair = self.keypair();
         let behaviour = build(&keypair);
         let peer_id = keypair.public().to_peer_id();
@@ -135,8 +149,7 @@ impl HostContext {
             stack(auth, &keypair),
             behaviour,
             peer_id,
-            libp2p::swarm::Config::with_tokio_executor()
-                .with_idle_connection_timeout(Duration::from_secs(60)),
+            libp2p::swarm::Config::with_tokio_executor().with_idle_connection_timeout(idle),
         )
     }
 
