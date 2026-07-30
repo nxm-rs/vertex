@@ -26,6 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      # audit-check reuses a cargo-audit that is already on PATH and otherwise
+      # builds it from source under the pinned toolchain, where a transitive
+      # dependency needs a newer rustc than the workspace MSRV. Install the
+      # prebuilt binary so the audit never depends on the pinned toolchain.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # v2
+        with:
+          tool: cargo-audit
+
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
