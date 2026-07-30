@@ -312,6 +312,7 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
 
     /// `has_chunk` is a local sync lookup, so each request maps straight to a
     /// response.
+    #[allow(clippy::result_large_err)]
     async fn has_chunks(
         &self,
         request: Request<Streaming<HasChunkRequest>>,
