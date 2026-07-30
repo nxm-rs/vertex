@@ -102,7 +102,7 @@ Runtime mechanism unchanged (the cleanest seam in the tree): `enable_storage(Arc
 
 Public seam: `StorerNodeBuilder::with_reserve(Arc<dyn ReserveStore>)` and `with_reserve_factory(...)`, the public face of `build_storer_reserve`. Default stays the admission-gated `DbReserve`.
 
-Single-injection: take one injected `Arc<dyn ReserveStore>` and derive the retrieval-serve view by arc-upcast at the call site, exactly as `launch.rs:597-598` already does (`Arc::clone(&reserve) as Arc<dyn SwarmLocalStore>` and `reserve as Arc<dyn ReserveStore>`). The arc-upcast works at MSRV 1.92. Do not add `ReserveStore::into_local_store`; an `Arc<Self>` receiver is incompatible with `auto_impl(&, Arc, Box)`. With the composite of section 2.5, the upcast reserve view becomes the `reserve` leg of `CacheThenReserve`.
+Single-injection: take one injected `Arc<dyn ReserveStore>` and derive the retrieval-serve view by arc-upcast at the call site, exactly as `launch.rs:597-598` already does (`Arc::clone(&reserve) as Arc<dyn SwarmLocalStore>` and `reserve as Arc<dyn ReserveStore>`). The arc-upcast works at the workspace MSRV. Do not add `ReserveStore::into_local_store`; an `Arc<Self>` receiver is incompatible with `auto_impl(&, Arc, Box)`. With the composite of section 2.5, the upcast reserve view becomes the `reserve` leg of `CacheThenReserve`.
 
 Ordering safety (`enable_forwarding` and `enable_storage` run before the event loop) is enforced structurally: `build()` calls them in order; the operator never calls them post-build.
 
