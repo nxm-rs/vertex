@@ -14,10 +14,17 @@ on:
       - 'deny.toml'
   workflow_dispatch:
 
+# A second push supersedes the first: three matrix jobs per run are not worth
+# duplicating.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         checks:

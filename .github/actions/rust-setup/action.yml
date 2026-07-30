@@ -1,0 +1,52 @@
+name: rust-setup
+description: Installs the toolchain that rust-toolchain.toml pins and restores the per-job cargo and target cache.
+
+inputs:
+  components:
+    description: "extra rustup components, comma-separated"
+    default: ""
+  targets:
+    description: "extra rustup targets, comma-separated"
+    default: ""
+  cache:
+    description: "restore and save the cargo and target cache; set false for a job that compiles nothing"
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # rust-toolchain.toml is the one source of truth for the channel. Installing
+    # any other channel here is wasted work, because the file overrides the
+    # rustup default for every cargo call in the repository.
+    - id: channel
+      shell: bash
+      run: |
+        channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+        if [ -z "$channel" ]; then
+          echo "rust-setup: no channel found in rust-toolchain.toml" >&2
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+    # The pin is the same action commit the workflows used before; the toolchain
+    # input overrides the action's own default channel.
+    - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # v1
+      with:
+        toolchain: ${{ steps.channel.outputs.channel }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    # One cache per job, holding the registry and that job's target directory.
+    # A restored target directory is what makes a warm run cheap: cargo skips a
+    # fresh unit outright, which no compiler cache can beat.
+    #
+    # An sccache layer over the Actions cache was measured on this workspace and
+    # rejected. It has to replace the target cache to pay off, and then every
+    # unit needs a rustc invocation, so a warm run cost two to three times the
+    # baseline. The Actions cache service also refused about 380 object writes
+    # per job, which held the warm hit rate between 34% and 70%. A shared
+    # compiler cache needs a backend that can absorb the write volume.
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      if: inputs.cache == 'true'
+      with:
+        cache-on-failure: true

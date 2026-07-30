@@ -167,6 +167,12 @@ The cone guards enforce this split: `just check-cone` and the `features` CI job.
   When in doubt, read it.
 - For missing tooling on this NixOS host, use `nix-shell -p <pkg> --run "..."`.
   The project shell is in `flake.nix`.
+- CI builds on the channel that `rust-toolchain.toml` pins, which is the MSRV, and never on current stable.
+  Every job takes the toolchain and the cache from the `.github/actions/rust-setup` composite action.
+  Keep `RUSTFLAGS` unset and out of the workflows, because a per-job difference re-fingerprints the whole graph and invalidates the restored target directory.
+  An sccache layer over the Actions cache was measured and rejected: it costs two to three times the baseline, and the reasons are in the composite action.
+  CI passes `--locked` to every workspace cargo call, so a stale `Cargo.lock` fails the run.
+  A change that touches only markdown, `docs/`, `.claude/`, or `LICENSE` skips the five compile jobs, because no `.rs` file pulls a markdown file into rustdoc.
 - `.claude/` ships Claude Code hooks.
   rustfmt-on-edit formats each file on Write and Edit.
   nextest-on-stop runs `cargo nextest run` for the touched crates.
