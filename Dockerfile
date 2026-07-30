@@ -2,7 +2,7 @@
 
 # Build stage. Multi-arch clean: buildx sets TARGETPLATFORM, so no architecture
 # is hard-coded here.
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 
 # Build dependencies for the vertex cone:
 # - protobuf-compiler: the gRPC server stack (prost/tonic) generates code from

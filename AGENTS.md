@@ -153,7 +153,7 @@ The cone guards enforce this split: `just check-cone` and the `features` CI job.
 
 ## Build, test, lint
 
-- The edition is `2024` and the MSRV is `1.92`.
+- The edition is `2024` and the MSRV is `1.94`.
   Do not raise the MSRV without a bump to the workspace `Cargo.toml` in the same commit.
 - `cargo build --release -p vertex` builds the binary into `target/release/vertex`.
 - `cargo nextest run` runs the workspace unit and integration tests.

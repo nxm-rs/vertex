@@ -15,8 +15,13 @@
           inherit system overlays;
         };
 
-        # Rust stable toolchain with rust-analyzer and WASM target
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        # rust-toolchain.toml pins the channel for CI and for rustup users, so the
+        # dev shell reads it from there rather than tracking latest stable.
+        rustChannel = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+
+        # The pinned toolchain, plus the editor extensions the shell needs and the
+        # wasm target the client cone builds for.
+        rustToolchain = pkgs.rust-bin.stable.${rustChannel}.default.override {
           extensions = [ "rust-analyzer" "rust-src" "clippy" "rustfmt" ];
           targets = [ "wasm32-unknown-unknown" ];
         };
