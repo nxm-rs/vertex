@@ -10,7 +10,6 @@ use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 
 use crate::behaviour::ConnectionRegistry;
-use crate::kademlia::BIT_SUFFIX_LENGTH;
 
 pub(crate) struct TopologyTestContext {
     pub local_overlay: OverlayAddress,
@@ -55,34 +54,6 @@ pub(crate) fn overlay_in_bin(base: OverlayAddress, bin: u8, idx: u8) -> OverlayA
     // Flip the bit at position `bin`: bits before it still match `base`, so the
     // first differing bit (the proximity order) is exactly `bin`.
     bytes[(bin / 8) as usize] ^= 0x80 >> (bin % 8);
-    bytes[31] = idx;
-    OverlayAddress::from(bytes)
-}
-
-/// Like [`overlay_in_bin`] but places the overlay in an explicit sub-prefix
-/// `slot`: the [`BIT_SUFFIX_LENGTH`] bits right after the bin's differing bit
-/// are set to `slot`, matching the production `slot_of` extraction. A family
-/// built with one `slot` lands in `bin` yet shares a sub-trie (a monoculture);
-/// distinct slots spread across the bin's sub-tries.
-pub(crate) fn overlay_in_bin_with_slot(
-    base: OverlayAddress,
-    bin: u8,
-    slot: u8,
-    idx: u8,
-) -> OverlayAddress {
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(base.as_slice());
-    bytes[(bin / 8) as usize] ^= 0x80 >> (bin % 8);
-    for i in 0..BIT_SUFFIX_LENGTH {
-        let pos = bin as usize + 1 + i as usize;
-        let bit = (slot >> (BIT_SUFFIX_LENGTH - 1 - i)) & 1;
-        let mask = 0x80u8 >> (pos % 8);
-        if bit == 1 {
-            bytes[pos / 8] |= mask;
-        } else {
-            bytes[pos / 8] &= !mask;
-        }
-    }
     bytes[31] = idx;
     OverlayAddress::from(bytes)
 }
