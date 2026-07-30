@@ -17,6 +17,19 @@ use crate::trace::{SimTrace, TraceEntry};
 /// Outcome a host future reports to the world.
 pub type HostResult = turmoil::Result;
 
+/// Environment variable forcing a replay seed onto every world built with
+/// [`SimWorldBuilder::seed`].
+pub const SEED_ENV: &str = "VERTEX_SIM_SEED";
+
+#[allow(clippy::panic)]
+fn env_seed() -> Option<u64> {
+    let value = std::env::var(SEED_ENV).ok()?;
+    match value.parse() {
+        Ok(seed) => Some(seed),
+        Err(_) => panic!("{SEED_ENV} must be a u64, got {value:?}"),
+    }
+}
+
 /// A failed run, carrying the seed that replays it exactly.
 #[derive(Debug, thiserror::Error)]
 #[error("sim failed (seed={seed}): {message}")]
@@ -43,6 +56,7 @@ pub fn listen_multiaddr(port: u16) -> Multiaddr {
 #[derive(Debug, Clone, Default)]
 pub struct SimWorldBuilder {
     seed: u64,
+    seed_pinned: bool,
     duration: Option<Duration>,
     tick: Option<Duration>,
     latency: Option<(Duration, Duration)>,
@@ -53,8 +67,20 @@ pub struct SimWorldBuilder {
 impl SimWorldBuilder {
     /// Seed for the whole world: message latencies, drop draws, and every
     /// host identity derive from it. Defaults to 0.
+    ///
+    /// [`SEED_ENV`] overrides it at build, so a failed run replays exactly
+    /// from its reported seed. Derive host material from
+    /// [`SimWorld::seed`], never from the value passed here.
     pub fn seed(mut self, seed: u64) -> Self {
         self.seed = seed;
+        self
+    }
+
+    /// Seed exempt from the [`SEED_ENV`] override, for determinism proofs
+    /// that compare worlds built from distinct seeds.
+    pub fn fixed_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.seed_pinned = true;
         self
     }
 
@@ -98,9 +124,13 @@ impl SimWorldBuilder {
     /// dial filter admits without consulting the real host's routing state,
     /// so whole-node dialling stays deterministic across machines.
     pub fn build(self) -> SimWorld {
+        let seed = match (self.seed_pinned, env_seed()) {
+            (false, Some(seed)) => seed,
+            _ => self.seed,
+        };
         let mut builder = turmoil::Builder::new();
         builder.ip_version(turmoil::IpVersion::V6);
-        builder.rng_seed(self.seed);
+        builder.rng_seed(seed);
         if let Some(duration) = self.duration {
             builder.simulation_duration(duration);
         }
@@ -119,7 +149,7 @@ impl SimWorldBuilder {
         }
         SimWorld {
             sim: builder.build(),
-            seed: self.seed,
+            seed,
             trace: SimTrace::default(),
         }
     }
@@ -314,8 +344,21 @@ mod tests {
     }
 
     #[test]
+    fn env_overrides_the_default_seed() {
+        // SAFETY: under nextest every test owns its process; under plain
+        // cargo test the concurrently racing tests are seed-independent.
+        unsafe { std::env::set_var(SEED_ENV, "1234") };
+        let replayed = SimWorld::builder().seed(1).build();
+        let pinned = SimWorld::builder().fixed_seed(1).build();
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(SEED_ENV) };
+        assert_eq!(replayed.seed(), 1234, "the env seed forces the replay");
+        assert_eq!(pinned.seed(), 1, "a fixed seed ignores the override");
+    }
+
+    #[test]
     fn failure_reports_seed() {
-        let mut world = SimWorld::builder().seed(99).build();
+        let mut world = SimWorld::builder().fixed_seed(99).build();
         world.client("boom", |_ctx| async { Err("boom".into()) });
         let error = world.try_run().expect_err("client fails the run");
         let rendered = error.to_string();

@@ -68,9 +68,12 @@ async fn drive_to_completion(traced: &mut TracedSwarm<Behaviour>) -> HostResult 
 }
 
 /// Run the two-host handshake sim and return the world trace.
+///
+/// The seed is fixed, not replayable: these tests derive identities from the
+/// literal and compare worlds built from distinct seeds.
 fn run_sim(seed: u64, auth: SimAuth) -> Vec<String> {
     let mut world = SimWorld::builder()
-        .seed(seed)
+        .fixed_seed(seed)
         .duration(Duration::from_secs(120))
         .build();
 

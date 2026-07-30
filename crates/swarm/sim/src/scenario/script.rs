@@ -452,8 +452,9 @@ mod tests {
     #[test]
     fn churn_selection_is_seeded() {
         fn victims(seed: u64) -> Vec<String> {
+            // Fixed: this test compares distinct seeds.
             let mut world = SimWorld::builder()
-                .seed(seed)
+                .fixed_seed(seed)
                 .duration(Duration::from_secs(10))
                 .build();
             let mut scenario = Scenario::new(&world, test_spec());

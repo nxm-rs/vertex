@@ -25,6 +25,8 @@ fn partition_collapses_then_heals_by_rediscovery() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     let sat = usize::from(DEFAULT_SATURATION_PEERS);
     let mut scenario = Scenario::new(&world, spec());
@@ -37,7 +39,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             if bin > 0 {
                 severed.push(name.clone());
@@ -55,7 +57,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             heal.push(name);
         }
@@ -69,7 +71,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
         Duration::from_secs(2),
         || handle.routing_stats().depth == 2,
     );
-    assert!(converged, "fixture never converged (seed={SEED})");
+    assert!(converged, "fixture never converged (seed={seed})");
 
     // Partition: the far side of the cut is gone, not merely disconnected.
     for name in &severed {
@@ -85,7 +87,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
     );
     assert!(
         collapsed,
-        "a multi-bin loss must lower the published depth at once (seed={SEED}): {:?}",
+        "a multi-bin loss must lower the published depth at once (seed={seed}): {:?}",
         handle.routing_stats()
     );
 
@@ -99,7 +101,7 @@ fn partition_collapses_then_heals_by_rediscovery() {
             .expect("world advances");
         assert!(
             handle.routing_stats().depth <= 1,
-            "depth must not heal without reachable supply (seed={SEED})"
+            "depth must not heal without reachable supply (seed={seed})"
         );
     }
 
@@ -114,10 +116,10 @@ fn partition_collapses_then_heals_by_rediscovery() {
     );
     assert!(
         healed,
-        "depth never re-climbed from the new supply (seed={SEED}): {:?}",
+        "depth never re-climbed from the new supply (seed={seed}): {:?}",
         handle.routing_stats()
     );
     Invariants::new()
         .phase_counters_consistent()
-        .assert(&handle.routing_stats(), SEED);
+        .assert(&handle.routing_stats(), seed);
 }

@@ -24,6 +24,8 @@ fn all_backoff_is_starvation_without_redial() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     // Half the supply never listens (the dial fails at the transport), half
     // accepts the transport but fails the handshake; both paths arm backoff.
@@ -39,7 +41,7 @@ fn all_backoff_is_starvation_without_redial() {
             &dark,
             STORER,
             PeerScript::Unreachable,
-            place(SEED, bin),
+            place(seed, bin),
         );
         names.push(dark);
         let refuser = format!("refuser-{bin}");
@@ -48,7 +50,7 @@ fn all_backoff_is_starvation_without_redial() {
             &refuser,
             STORER,
             PeerScript::HandshakeFail,
-            place(SEED, bin),
+            place(seed, bin),
         );
         countable.push(refuser.clone());
         names.push(refuser);
@@ -76,7 +78,7 @@ fn all_backoff_is_starvation_without_redial() {
     };
     assert!(
         all_attempted,
-        "every gossiped candidate must be dialled once (seed={SEED})"
+        "every gossiped candidate must be dialled once (seed={seed})"
     );
 
     // The fixed point: across many further evaluation rounds nothing is
@@ -97,7 +99,7 @@ fn all_backoff_is_starvation_without_redial() {
         .collect();
     assert_eq!(
         attempts_before, attempts_after,
-        "an all-backoff table must not re-dial (seed={SEED})"
+        "an all-backoff table must not re-dial (seed={seed})"
     );
 
     // The fixed point is the dial backoff holding every candidate.
@@ -105,7 +107,7 @@ fn all_backoff_is_starvation_without_redial() {
         overlays
             .iter()
             .all(|overlay| handle.peer_manager().peer_is_in_backoff(overlay)),
-        "every failed candidate must arm the dial backoff (seed={SEED})"
+        "every failed candidate must arm the dial backoff (seed={seed})"
     );
     assert_eq!(
         handle.routing_stats().connected_peers_total,

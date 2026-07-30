@@ -31,13 +31,15 @@ fn outbound_quota_holds_under_inbound_flood() {
     // flood alone satisfies the count and only the outbound quota can
     // justify further dials.
     let probe = launch_node(&mut world, KademliaConfig::default().with_total_target(8));
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
     // The node's libp2p keypair is freshly generated inside the build, so
     // the flood dials the bare address and learns the peer id on the wire.
     let node_addr = world.multiaddr_of(NODE, NODE_PORT);
 
     // Every bin-0 peer shares one sub-prefix slot, so the empty-slot pass
     // stays quiet and the quota is the only path into the flooded bin.
-    let anchor = node_overlay(SEED);
+    let anchor = node_overlay(seed);
     let slot0 = Some(Placement::new(anchor, Bin::new(0).unwrap_or(Bin::MAX)).in_slot(0));
     let mut scenario = Scenario::new(&world, spec());
     let mut anchors = Vec::new();
@@ -86,7 +88,7 @@ fn outbound_quota_holds_under_inbound_flood() {
     );
     assert!(
         flooded,
-        "the inbound flood never met the count target (seed={SEED}): {:?}",
+        "the inbound flood never met the count target (seed={seed}): {:?}",
         handle.routing_stats()
     );
     let supply_dials = |world: &SimWorld| -> usize {
@@ -109,13 +111,13 @@ fn outbound_quota_holds_under_inbound_flood() {
     );
     assert!(
         quota_met,
-        "the quota never pulled outbound dials into the flooded bin (seed={SEED}): {:?}",
+        "the quota never pulled outbound dials into the flooded bin (seed={seed}): {:?}",
         handle.routing_stats()
     );
     assert_eq!(
         supply_dials(&world),
         QUOTA,
-        "exactly the quota of supply peers is self-dialed (seed={SEED})"
+        "exactly the quota of supply peers is self-dialed (seed={seed})"
     );
 
     // No storm: with the quota met the evaluator falls quiet; the bin holds
@@ -126,7 +128,7 @@ fn outbound_quota_holds_under_inbound_flood() {
     assert_eq!(
         connected_in_bin(&handle.routing_stats(), 0),
         8 + QUOTA,
-        "the quota-filled bin holds without a dial storm (seed={SEED})"
+        "the quota-filled bin holds without a dial storm (seed={seed})"
     );
     assert_eq!(
         supply_dials(&world),
@@ -146,7 +148,7 @@ fn outbound_quota_holds_under_inbound_flood() {
     );
     assert!(
         drained,
-        "the inbound leaver never drained (seed={SEED}): {:?}",
+        "the inbound leaver never drained (seed={seed}): {:?}",
         handle.routing_stats()
     );
     world
@@ -155,11 +157,11 @@ fn outbound_quota_holds_under_inbound_flood() {
     assert_eq!(
         connected_in_bin(&handle.routing_stats(), 0),
         7 + QUOTA,
-        "the drained bin holds steady: the count target is still met (seed={SEED})"
+        "the drained bin holds steady: the count target is still met (seed={seed})"
     );
     assert_eq!(
         supply_dials(&world),
         QUOTA,
-        "an inbound leave never moves the outbound share (seed={SEED})"
+        "an inbound leave never moves the outbound share (seed={seed})"
     );
 }

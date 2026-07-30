@@ -47,14 +47,16 @@ fn churn_bursts_hold_the_depth_floor() {
         .tokio_io()
         .build();
 
-    // The node's overlay is derivable up front, so scripted peers can be
-    // placed against it before the node exists.
+    // Derive from the built world's seed: a replay override changes it. The
+    // node's overlay is derivable up front, so scripted peers can be placed
+    // against it before the node exists.
+    let seed = world.seed();
     let node_spec = spec();
     let node_overlay = {
         use vertex_swarm_api::SwarmIdentity as _;
         Identity::new(
-            host_signer(SEED, "node"),
-            vertex_swarm_sim::host_nonce(SEED, "node"),
+            host_signer(seed, "node"),
+            vertex_swarm_sim::host_nonce(seed, "node"),
             node_spec.clone(),
             SwarmNodeType::Client,
         )
@@ -149,13 +151,13 @@ fn churn_bursts_hold_the_depth_floor() {
         }
         assert!(
             world.elapsed() < Duration::from_secs(60),
-            "node never published its topology handle (seed={SEED})"
+            "node never published its topology handle (seed={seed})"
         );
     };
     while handle.routing_stats().depth < 1 {
         assert!(
             world.elapsed() < Duration::from_secs(600),
-            "depth never converged (seed={SEED}): {:?}",
+            "depth never converged (seed={seed}): {:?}",
             handle.routing_stats()
         );
         world
@@ -167,8 +169,8 @@ fn churn_bursts_hold_the_depth_floor() {
         .phase_counters_consistent()
         .saturation_floor(saturation);
     let steady = Invariants::new().depth_floor(1);
-    always.assert(&handle.routing_stats(), SEED);
-    steady.assert(&handle.routing_stats(), SEED);
+    always.assert(&handle.routing_stats(), seed);
+    steady.assert(&handle.routing_stats(), seed);
 
     // The unreachable peer never counts as connected.
     let stats = handle.routing_stats();
@@ -205,8 +207,8 @@ fn churn_bursts_hold_the_depth_floor() {
                 }
             }
             let stats = handle.routing_stats();
-            always.assert(&stats, SEED);
-            steady.assert(&stats, SEED);
+            always.assert(&stats, seed);
+            steady.assert(&stats, seed);
         })
         .expect("schedule applies");
 }

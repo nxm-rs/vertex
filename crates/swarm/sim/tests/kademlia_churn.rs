@@ -24,6 +24,8 @@ fn churn_storm_recovers_depth() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     // Two peers of slack per below-depth bin, so a burst that briefly locks a
     // restarted peer into dial backoff cannot starve the refill.
@@ -37,7 +39,7 @@ fn churn_storm_recovers_depth() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             names.push(name);
         }
@@ -51,7 +53,7 @@ fn churn_storm_recovers_depth() {
         Duration::from_secs(2),
         || handle.routing_stats().depth == 2,
     );
-    assert!(converged, "fixture never converged (seed={SEED})");
+    assert!(converged, "fixture never converged (seed={seed})");
 
     let always = Invariants::new()
         .phase_counters_consistent()
@@ -86,10 +88,10 @@ fn churn_storm_recovers_depth() {
             );
             assert!(
                 recovered,
-                "depth never returned after a burst (seed={SEED}): {:?}",
+                "depth never returned after a burst (seed={seed}): {:?}",
                 handle.routing_stats()
             );
-            always.assert(&handle.routing_stats(), SEED);
+            always.assert(&handle.routing_stats(), seed);
             // The refilled connections must be blameless for the next burst.
             common::mark_overlays_productive(&handle, &overlays);
         })
@@ -104,5 +106,5 @@ fn churn_storm_recovers_depth() {
         2,
         "table recovers after the storm"
     );
-    always.assert(&handle.routing_stats(), SEED);
+    always.assert(&handle.routing_stats(), seed);
 }

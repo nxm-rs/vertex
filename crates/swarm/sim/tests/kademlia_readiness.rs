@@ -24,6 +24,8 @@ fn boundary_flap_holds_the_readiness_clock() {
         .tokio_io()
         .build();
     let probe = launch_node(&mut world, KademliaConfig::default());
+    // Derive from the built world seed so a replay override reproduces exactly.
+    let seed = world.seed();
 
     // Bin 0 saturated; the neighbourhood (bins >= 1) holds exactly the
     // saturation threshold: four bin-1 peers plus the flapper, two in bin 2,
@@ -37,7 +39,7 @@ fn boundary_flap_holds_the_readiness_clock() {
                 &name,
                 STORER,
                 PeerScript::Honest,
-                place(SEED, bin),
+                place(seed, bin),
             );
             names.push(name);
         }
@@ -47,7 +49,7 @@ fn boundary_flap_holds_the_readiness_clock() {
         "flapper",
         STORER,
         PeerScript::Honest,
-        place(SEED, 1),
+        place(seed, 1),
     );
     names.push("flapper".to_owned());
 
@@ -66,7 +68,7 @@ fn boundary_flap_holds_the_readiness_clock() {
     );
     assert!(
         converged,
-        "the saturated neighbourhood never carried a readiness clock (seed={SEED}): {:?}",
+        "the saturated neighbourhood never carried a readiness clock (seed={seed}): {:?}",
         handle.readiness()
     );
 
@@ -86,11 +88,11 @@ fn boundary_flap_holds_the_readiness_clock() {
             assert_eq!(
                 readiness.depth.get(),
                 1,
-                "a one-peer flap never moves depth (cycle {cycle}, seed={SEED})"
+                "a one-peer flap never moves depth (cycle {cycle}, seed={seed})"
             );
             assert!(
                 readiness.neighborhood_stable_for.is_some(),
-                "a one-peer flap never zeroes the readiness clock (cycle {cycle}, seed={SEED})"
+                "a one-peer flap never zeroes the readiness clock (cycle {cycle}, seed={seed})"
             );
         }
         let restored = run_until(
@@ -101,7 +103,7 @@ fn boundary_flap_holds_the_readiness_clock() {
         );
         assert!(
             restored,
-            "the flapper was never re-dialled (cycle {cycle}, seed={SEED}): {:?}",
+            "the flapper was never re-dialled (cycle {cycle}, seed={seed}): {:?}",
             handle.readiness()
         );
     }
@@ -119,10 +121,10 @@ fn boundary_flap_holds_the_readiness_clock() {
     );
     assert!(
         observed,
-        "the crashed pair was never observed (seed={SEED})"
+        "the crashed pair was never observed (seed={seed})"
     );
     assert!(
         handle.readiness().neighborhood_stable_for.is_none(),
-        "a multi-peer loss clears the readiness clock immediately (seed={SEED})"
+        "a multi-peer loss clears the readiness clock immediately (seed={seed})"
     );
 }

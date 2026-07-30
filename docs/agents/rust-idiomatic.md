@@ -92,6 +92,7 @@ A deterministic simulation tier that drives the same behaviours under virtual ti
 
 - Integration tests live in `crates/<name>/tests/` (see `crates/swarm/node/tests`, `crates/swarm/peers/peer/tests`).
 - No `#[ignore]` tests on `main`. If a test is flaky, fix it or delete it.
+- The deterministic sim tier is `vertex-swarm-sim`: seeded turmoil worlds running real swarms and whole nodes on virtual time. It runs in its own nextest lane (`cargo nextest run -p vertex-swarm-sim --profile sim`, the CI `sim` job) and is kept out of the default lane by `.config/nextest.toml`. Every sim failure names its seed (`seed=N`); replay it exactly with `VERTEX_SIM_SEED=N cargo nextest run -p vertex-swarm-sim --profile sim -E 'test(<name>)'`. A scenario too big even for the sim lane gets excluded by filterset in that file, never `#[ignore]`.
 - Tests assert on enum variants (`matches!(err, HandshakeError::NetworkIdMismatch)`), never on `err.to_string()`.
 
 Scope local verification to the change; CI runs the full matrix per PR, so your job is to catch what the change can actually break, not to re-run everything.
