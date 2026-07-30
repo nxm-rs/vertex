@@ -15,6 +15,12 @@ on:
       - '**/Cargo.lock'
   workflow_dispatch:
 
+# A second push supersedes the first. The group holds the ref, so a scheduled run
+# on main never cancels a pull-request scan.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: write
@@ -23,6 +29,7 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 

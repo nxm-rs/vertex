@@ -1,0 +1,57 @@
+name: rust-setup
+description: Installs the toolchain that rust-toolchain.toml pins, sccache over the Actions cache, and a registry-only cargo cache.
+
+inputs:
+  components:
+    description: "extra rustup components, comma-separated"
+    default: ""
+  targets:
+    description: "extra rustup targets, comma-separated"
+    default: ""
+  save-if:
+    description: >
+      May this run write the registry cache? The cache holds only the small
+      ~/.cargo registry, and the Actions cache is branch-scoped, so a pull
+      request that saves its own registry warms its re-runs without touching the
+      main baseline. Set false to make a job restore-only.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # rust-toolchain.toml is the one source of truth for the channel. Installing
+    # any other channel here is wasted work, because the file overrides the
+    # rustup default for every cargo call in the repository.
+    - id: channel
+      shell: bash
+      run: |
+        channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+        if [ -z "$channel" ]; then
+          echo "rust-setup: no channel found in rust-toolchain.toml" >&2
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+    # The pin is the same action commit the workflows used before; the toolchain
+    # input overrides the action's own default channel.
+    - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # v1
+      with:
+        toolchain: ${{ steps.channel.outputs.channel }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    # Content-addressed rustc cache, shared across jobs and across runs. It
+    # caches the workspace crates, which rust-cache deletes before it saves.
+    # The Actions cache backend needs no secret and works on fork pull requests.
+    # A miss degrades to a cold compile, never to a build failure.
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba  # v0.0.11
+
+    # target/ belongs to sccache, so rust-cache keeps only the registry index,
+    # the git checkouts, and the downloaded crate sources. One shared key serves
+    # every job.
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      with:
+        cache-targets: "false"
+        shared-key: registry
+        save-if: ${{ inputs.save-if }}
+        cache-on-failure: "true"

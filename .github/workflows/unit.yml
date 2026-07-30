@@ -10,18 +10,58 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # sccache caches each rustc invocation across jobs and runs, so the same
+  # dependency graph is compiled once per content change instead of once per job.
+  # Incremental compilation must be off, because sccache cannot cache it.
+  # RUSTFLAGS stays unset: a per-job difference re-fingerprints the whole graph
+  # and every sccache key, and a global -D warnings would make a warning in a
+  # dependency fatal. mold stays a setup-mold symlink for the same reason, so no
+  # linker flag enters the cache key.
+  RUSTC_WRAPPER: sccache
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # Documentation-only changes cannot alter any compile output: no `.rs` file
+  # pulls a markdown file into rustdoc. This job lets the compile jobs skip such
+  # a change, and it fails open (code=true) for any event or API result it cannot
+  # classify.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Detect whether any file outside the documentation set changed
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          code=true
+          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ]; then
+            if files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE}...${HEAD}" --paginate --jq '.files[].filename')"; then
+              if [ -n "$files" ] && ! grep -qvE '(\.md$)|^docs/|^\.claude/|^LICENSE$' <<<"$files"; then
+                code=false
+              fi
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "compile jobs run: $code"
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+      - uses: ./.github/actions/rust-setup
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -29,27 +69,27 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+      - uses: ./.github/actions/rust-setup
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          cache-on-failure: true
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy (production)
-        run: cargo clippy --workspace --lib --all-features -- -D warnings
+        run: cargo clippy --workspace --lib --all-features --locked -- -D warnings
       - name: Clippy (tests)
-        run: cargo clippy --workspace --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
+        run: cargo clippy --workspace --tests --benches --all-features --locked -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
       # Keep the embedded FFI cone free of the native observability server stack
       # (Prometheus exporter, OTLP appender). Pure `cargo tree`, no compile.
       - name: Cone guard (ffi)
         run: |
-          tree="$(cargo tree -p vertex-ffi -e normal)"
+          tree="$(cargo tree -p vertex-ffi -e normal --locked)"
           leaked=""
           for crate in metrics-exporter-prometheus opentelemetry-appender-tracing; do
             if grep -q "$crate" <<<"$tree"; then
@@ -61,6 +101,9 @@ jobs:
             exit 1
           fi
           echo "cone guard: vertex-ffi is free of the observability server stack"
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   # The `vertex` binary ships two cones: the default bare client (no storer code,
   # no chain, no swap) and the full storer node behind `--features storer`. The
@@ -71,15 +114,14 @@ jobs:
     name: features
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+      - uses: ./.github/actions/rust-setup
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          cache-on-failure: true
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -87,27 +129,27 @@ jobs:
       # feature unification would pull that cone into the default client. Checking
       # the binary in isolation with no default features guards that footgun.
       - name: Check bare client cone (no default features)
-        run: cargo check -p vertex --no-default-features
+        run: cargo check -p vertex --no-default-features --locked
       - name: Build default client cone
-        run: cargo build -p vertex
+        run: cargo build -p vertex --locked
       - name: Clippy default client cone
-        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets -- -D warnings
+        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets --locked -- -D warnings
       # The swap client cone: cheque settlement (and the chain provider it pulls)
       # without the storer cone.
       - name: Build swap client cone
-        run: cargo build -p vertex --features swap
+        run: cargo build -p vertex --features swap --locked
       - name: Build storer cone
-        run: cargo build -p vertex --features storer
+        run: cargo build -p vertex --features storer --locked
       - name: Clippy storer cone
-        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets --features storer -- -D warnings
+        run: cargo clippy -p vertex -p vertex-swarm-builder -p vertex-swarm-node --all-targets --features storer --locked -- -D warnings
       # The embedded FFI client cdylib: native-only, client-only.
       - name: Build FFI cone
-        run: cargo build -p vertex-ffi
+        run: cargo build -p vertex-ffi --locked
       # The default binary must not resolve the storer code cone. Pure
       # `cargo tree`, no compile.
       - name: Storer cone guard (default vertex)
         run: |
-          tree="$(cargo tree -p vertex -e features)"
+          tree="$(cargo tree -p vertex -e features --locked)"
           leaked=""
           for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
             if grep -q "$crate" <<<"$tree"; then
@@ -123,7 +165,7 @@ jobs:
       # is a client, and never enables the builder's `reserve`.
       - name: Storer cone guard (vertex-ffi)
         run: |
-          tree="$(cargo tree -p vertex-ffi -e normal)"
+          tree="$(cargo tree -p vertex-ffi -e normal --locked)"
           leaked=""
           for crate in vertex-swarm-storer vertex-swarm-puller vertex-swarm-redistribution vertex-swarm-storer-behaviour; do
             if grep -q "$crate" <<<"$tree"; then
@@ -140,7 +182,7 @@ jobs:
       # lean client lean. Pseudosettle is always on and needs neither.
       - name: Swap cone guard (default vertex)
         run: |
-          tree="$(cargo tree -p vertex -e features)"
+          tree="$(cargo tree -p vertex -e features --locked)"
           leaked=""
           for crate in vertex-swarm-net-swap vertex-swarm-accounting-swap vertex-swarm-accounting-chequebook vertex-chain; do
             if grep -q "$crate" <<<"$tree"; then
@@ -152,63 +194,66 @@ jobs:
             exit 1
           fi
           echo "cone guard: default vertex is free of the swap and chain cone"
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   test:
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          cache-on-failure: true
+      - uses: ./.github/actions/rust-setup
       - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # nextest
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run tests
-        run: cargo nextest run --workspace --all-features --no-tests=warn
+        run: cargo nextest run --workspace --all-features --no-tests=warn --locked
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   doc:
     name: doc
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          cache-on-failure: true
+      - uses: ./.github/actions/rust-setup
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run doctests
-        run: cargo test --doc --workspace --all-features
+        run: cargo test --doc --workspace --all-features --locked
 
   wasm:
     name: wasm
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      # The wasm cone is single-threaded, so it builds on the pinned stable
-      # toolchain; no nightly, no atomics, no build-std. See docs/agents/wasm.md.
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+      # The wasm cone is single-threaded, so it builds on the pinned toolchain;
+      # no nightly, no atomics, no build-std. See docs/agents/wasm.md.
+      - uses: ./.github/actions/rust-setup
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          cache-on-failure: true
       - name: Build peer stack for wasm32
-        run: cargo build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
+        run: cargo build --target wasm32-unknown-unknown --locked -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
       # The full client cone: `vertex-swarm-node` pulls topology and every
       # `/swarm/...` wire protocol, so this is the milestone wasm build for a
       # browser client node.
       - name: Build client cone for wasm32
-        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node
+        run: cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-node
       # The wasm-bindgen acceptance test for the converged client core: it
       # composes the pseudosettle and SWAP accounting, round-trips the in-memory
       # and IndexedDB-backed caches, and is the wasm-reachability gate. Built
@@ -216,12 +261,12 @@ jobs:
       # and persisted-cache test bodies are compiled. Built here (not run, which
       # needs a headless browser runner).
       - name: Build wasm client-core test for wasm32
-        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
+        run: cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
       # The wasm-portable SWAP path: the swap accounting stack and
       # `vertex-swarm-node/swap` (which pulls the wasm-portable chain provider)
       # build for the browser target.
       - name: Build swap path for wasm32
-        run: cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
+        run: cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
       # The on-chain cashout path: the chequebook client and the swap cashout
       # logic are transport-generic, so with `swap-chequebook` selecting the
       # browser fetch transport they build for wasm. `vertex-chain` is the shared
@@ -231,38 +276,44 @@ jobs:
       # cashout into the embedded client.
       - name: Build cashout path for wasm32
         run: |
-          cargo build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
-          cargo build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
-          cargo build --target wasm32-unknown-unknown -p vertex-chain --features provider
-          cargo build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-accounting-chequebook --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-accounting-swap --features swap-chequebook
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-chain --features provider
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-node --features swap-chequebook
       # The wasm-bindgen reachability test for the construction seam: it asserts
       # `ProviderBuilder::new().connect_http(url)` links and constructs on wasm32
       # without a live RPC. Built here (not run, which needs a headless browser).
       - name: Build chain provider wasm test for wasm32
-        run: cargo build --target wasm32-unknown-unknown -p vertex-chain --features provider --tests
+        run: cargo build --target wasm32-unknown-unknown --locked -p vertex-chain --features provider --tests
       # The browser cache backend: the IndexedDB `Database` impl and the
       # `ChunkStore` backend that mirrors to it build for wasm under the
       # `indexeddb` feature.
       - name: Build IndexedDB cache backend for wasm32
         run: |
-          cargo build --target wasm32-unknown-unknown -p vertex-storage-indexeddb
-          cargo build --target wasm32-unknown-unknown -p vertex-swarm-localstore --features indexeddb
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-storage-indexeddb
+          cargo build --target wasm32-unknown-unknown --locked -p vertex-swarm-localstore --features indexeddb
       # The browser demo is the integration target: a swap-capable client node
       # with the IndexedDB cache. It is its own workspace root (own
-      # `.cargo/config.toml`), so it is built from inside its directory. Its
-      # `vertex-swarm-node` dep carries the `swap`/`swap-chequebook` and
-      # `indexeddb` features.
+      # `.cargo/config.toml`) with no committed lockfile, so it is built from
+      # inside its directory and without `--locked`. Its `vertex-swarm-node` dep
+      # carries the `swap`/`swap-chequebook` and `indexeddb` features.
       - name: Build browser demo for wasm32
         working-directory: bin/swarm-demo
         run: cargo build --target wasm32-unknown-unknown
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   ci-success:
     name: ci success
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, features, test, doc, wasm]
+    needs: [changes, fmt, clippy, features, test, doc, wasm]
     steps:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1
         with:
+          # The compile jobs skip a documentation-only change by design, so a skip
+          # of those five is not a failure. Every other job must report success.
+          allowed-skips: clippy, features, test, doc, wasm
           jobs: ${{ toJSON(needs) }}
