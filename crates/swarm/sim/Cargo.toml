@@ -1,0 +1,29 @@
+[package]
+name = "vertex-swarm-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Deterministic swarm simulation over a turmoil-backed libp2p transport"
+
+[lints]
+workspace = true
+
+[dependencies]
+futures.workspace = true
+libp2p = { workspace = true, features = ["plaintext"] }
+tokio.workspace = true
+turmoil.workspace = true
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+vertex-swarm-identity.workspace = true
+vertex-swarm-net-handshake.workspace = true
+vertex-swarm-primitives.workspace = true
+vertex-swarm-spec.workspace = true
+vertex-swarm-test-utils.workspace = true
