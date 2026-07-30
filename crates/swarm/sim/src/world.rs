@@ -226,6 +226,10 @@ impl SimWorld {
     }
 
     /// Drop all traffic between two hosts.
+    ///
+    /// A dial across the partition errors immediately in virtual time; to
+    /// model blackholed traffic that hangs until a timeout, use
+    /// [`hold`](Self::hold) instead.
     pub fn partition(&self, a: &str, b: &str) {
         self.sim.partition(a, b);
     }
