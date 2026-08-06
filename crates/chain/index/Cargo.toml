@@ -30,8 +30,10 @@ alloy-rpc-types-eth = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 # async: the engine selects between its driver loop and shutdown with
-# `tokio::select!` and ticks the follow loop with `tokio::time::interval`.
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# `tokio::select!`, ticks the follow loop with `tokio::time::interval`, and
+# publishes the block-tip and index-advance `watch` channels (the `sync`
+# feature).
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 # derive macros
