@@ -327,6 +327,8 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "fd9cc0d989000d5
     "autonat",
     "mdns",
     "ping",
+    "relay",
+    "dcutr",
 ] }
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
