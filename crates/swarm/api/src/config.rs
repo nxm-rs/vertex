@@ -1,6 +1,7 @@
 //! Configuration traits for Swarm protocol components.
 
 use core::future::Future;
+use core::num::NonZeroU32;
 use core::time::Duration;
 
 use libp2p::Multiaddr;
@@ -132,6 +133,44 @@ impl PeerConfigValues for DefaultPeerConfig {
 /// address are unaffected.
 pub const DEFAULT_MAX_INBOUND_PER_IP: u32 = 32;
 
+const fn nonzero(n: u32) -> NonZeroU32 {
+    match NonZeroU32::new(n) {
+        Some(value) => value,
+        None => panic!("value must be non-zero"),
+    }
+}
+
+/// Default sustained dial-back budget for the AutoNAT v2 server role, per
+/// minute.
+pub const DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE: NonZeroU32 = nonzero(30);
+
+/// Default cap on AutoNAT v2 server dial-backs in flight at once.
+pub const DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS: NonZeroU32 = nonzero(8);
+
+/// Dial-back budget for the AutoNAT v2 server role.
+///
+/// Any connected peer may ask the server to dial its addresses back, so an
+/// unbounded server is an outbound-dial amplification lever on a public node.
+/// A dial-back beyond the budget is refused with a dial error, which the
+/// requesting client treats as an inconclusive probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutonatServerQuota {
+    /// Sustained dial-backs permitted per minute, with burst capacity up to
+    /// the same value.
+    pub dial_backs_per_minute: NonZeroU32,
+    /// Dial-backs allowed in flight at once.
+    pub max_in_flight: NonZeroU32,
+}
+
+impl Default for AutonatServerQuota {
+    fn default() -> Self {
+        Self {
+            dial_backs_per_minute: DEFAULT_AUTONAT_DIAL_BACKS_PER_MINUTE,
+            max_in_flight: DEFAULT_AUTONAT_MAX_IN_FLIGHT_DIAL_BACKS,
+        }
+    }
+}
+
 /// Configuration for P2P networking.
 ///
 /// Address methods return parsed `Multiaddr` to ensure validation happens early.
@@ -193,6 +232,13 @@ pub trait SwarmNetworkConfig {
     /// the server (verify peers') roles for every node type.
     fn autonat_enabled(&self) -> bool {
         true
+    }
+
+    /// Dial-back budget for the AutoNAT v2 server role (default:
+    /// [`AutonatServerQuota::default`], conservative). Ignored when AutoNAT
+    /// is disabled.
+    fn autonat_server_quota(&self) -> AutonatServerQuota {
+        AutonatServerQuota::default()
     }
 
     /// Whether UPnP automatic port mapping is enabled (default: false). Opt-in

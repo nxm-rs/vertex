@@ -108,9 +108,13 @@ The swarm broadcasts every `ExternalAddrConfirmed` to all behaviours, so the top
 | Behaviour | Default | Flag |
 |-----------|---------|------|
 | AutoNAT v2 (client + server) | enabled for all node types | `--network.autonat` |
+| AutoNAT v2 server dial-back rate | 30 per minute | `--network.autonat-dial-backs-per-minute` |
+| AutoNAT v2 server dial-backs in flight | 8 | `--network.autonat-max-in-flight-dial-backs` |
 | UPnP port mapping | disabled (opt-in) | `--network.upnp` |
 
 AutoNAT v2 runs both roles on every node type, including bootnodes, so the network always has dial-back verifiers. UPnP is opt-in because it actively probes the LAN gateway, which only helps home and NAT'd nodes and is noise on directly-routable hosts. Each behaviour is wrapped in a libp2p `Toggle`, so disabling one leaves an inert behaviour rather than changing the composed type.
+
+The server role's dial-backs are bounded by an explicit budget because any connected peer can request them: on a public node an unbounded server is an outbound-dial amplification lever. A dial-back beyond the sustained rate or the in-flight cap is refused with a dial error, which the requesting client treats as an inconclusive probe and may retry against another verifier. A refused or dial-failed dial-back never promotes the requesting peer to `Reachable`.
 
 ### Interop
 
