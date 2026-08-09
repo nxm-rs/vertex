@@ -190,7 +190,8 @@ pub trait SwarmNetworkConfig {
 
     /// Whether AutoNAT v2 (dial-back reachability verification) is enabled
     /// (default: true). Runs both the client (verify our own addresses) and
-    /// the server (verify peers') roles for every node type.
+    /// the server (verify peers') roles; a bootnode's addresses are static and
+    /// public, so it runs the server role only.
     fn autonat_enabled(&self) -> bool {
         true
     }

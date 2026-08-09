@@ -14,7 +14,7 @@ use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, info, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
+use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmNodeType};
 use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand};
 
 /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as one
@@ -34,18 +34,28 @@ pub(crate) struct NatBehaviour {
 }
 
 impl NatBehaviour {
-    /// Build the NAT behaviours from a network configuration.
+    /// Build the NAT behaviours from a network configuration, profiled by node
+    /// type.
     ///
-    /// AutoNAT v2 and mDNS are enabled by default for every node type; UPnP is
-    /// opt-in. mDNS needs the local [`PeerId`], so the behaviour is built where
-    /// the swarm's public key is available.
-    pub(crate) fn from_config(config: &impl SwarmNetworkConfig, local_peer_id: PeerId) -> Self {
+    /// AutoNAT v2 and mDNS are enabled by default; UPnP is opt-in. A bootnode
+    /// listens on static public addresses, so it keeps only the AutoNAT server
+    /// (dial-back verification of peers) and drops the self-probing client and
+    /// multicast mDNS. mDNS needs the local [`PeerId`], so the behaviour is
+    /// built where the swarm's public key is available.
+    pub(crate) fn from_config(
+        config: &impl SwarmNetworkConfig,
+        local_peer_id: PeerId,
+        node_type: SwarmNodeType,
+    ) -> Self {
         let autonat = config.autonat_enabled();
+        let bootnode = matches!(node_type, SwarmNodeType::Bootnode);
         Self {
-            autonat_client: Toggle::from(autonat.then(autonat::client::Behaviour::default)),
+            autonat_client: Toggle::from(
+                (autonat && !bootnode).then(autonat::client::Behaviour::default),
+            ),
             autonat_server: Toggle::from(autonat.then(autonat::server::Behaviour::default)),
             upnp: Toggle::from(config.upnp_enabled().then(upnp::tokio::Behaviour::default)),
-            mdns: build_mdns_toggle(config.mdns_enabled(), local_peer_id),
+            mdns: build_mdns_toggle(config.mdns_enabled() && !bootnode, local_peer_id),
         }
     }
 }
@@ -219,12 +229,117 @@ fn handle_upnp_event(event: upnp::Event) {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::time::Duration;
+
     use libp2p::identity::Keypair;
 
     use super::*;
 
     fn random_peer_id() -> PeerId {
         Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    /// Config relying on the trait defaults (AutoNAT on, mDNS on, UPnP off),
+    /// with mDNS forced off where a test must not bind a multicast socket.
+    struct TestConfig {
+        empty_addrs: Vec<Multiaddr>,
+        mdns: bool,
+    }
+
+    impl TestConfig {
+        fn new(mdns: bool) -> Self {
+            Self {
+                empty_addrs: Vec::new(),
+                mdns,
+            }
+        }
+    }
+
+    impl SwarmNetworkConfig for TestConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn trusted_peers(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn discovery_enabled(&self) -> bool {
+            true
+        }
+        fn max_peers(&self) -> usize {
+            32
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+        fn mdns_enabled(&self) -> bool {
+            self.mdns
+        }
+    }
+
+    /// The bootnode profile keeps the AutoNAT server and drops the client and
+    /// mDNS even when the config enables them.
+    #[test]
+    fn bootnode_profile_keeps_autonat_server_only() {
+        let config = TestConfig::new(true);
+
+        let nat = NatBehaviour::from_config(&config, random_peer_id(), SwarmNodeType::Bootnode);
+
+        assert!(nat.autonat_server.is_enabled());
+        assert!(!nat.autonat_client.is_enabled());
+        assert!(!nat.mdns.is_enabled());
+        assert!(!nat.upnp.is_enabled());
+    }
+
+    /// A client node keeps both AutoNAT roles.
+    #[test]
+    fn client_profile_runs_both_autonat_roles() {
+        let config = TestConfig::new(false);
+
+        let nat = NatBehaviour::from_config(&config, random_peer_id(), SwarmNodeType::Client);
+
+        assert!(nat.autonat_server.is_enabled());
+        assert!(nat.autonat_client.is_enabled());
+    }
+
+    /// Disabling AutoNAT in the config also disables the bootnode's server.
+    #[test]
+    fn autonat_off_disables_bootnode_server() {
+        struct AutonatOff(TestConfig);
+        impl SwarmNetworkConfig for AutonatOff {
+            fn listen_addrs(&self) -> &[Multiaddr] {
+                self.0.listen_addrs()
+            }
+            fn bootnodes(&self) -> &[Multiaddr] {
+                self.0.bootnodes()
+            }
+            fn trusted_peers(&self) -> &[Multiaddr] {
+                self.0.trusted_peers()
+            }
+            fn discovery_enabled(&self) -> bool {
+                true
+            }
+            fn max_peers(&self) -> usize {
+                32
+            }
+            fn idle_timeout(&self) -> Duration {
+                Duration::from_secs(60)
+            }
+            fn autonat_enabled(&self) -> bool {
+                false
+            }
+            fn mdns_enabled(&self) -> bool {
+                false
+            }
+        }
+        let config = AutonatOff(TestConfig::new(false));
+
+        let nat = NatBehaviour::from_config(&config, random_peer_id(), SwarmNodeType::Bootnode);
+
+        assert!(!nat.autonat_server.is_enabled());
+        assert!(!nat.autonat_client.is_enabled());
     }
 
     #[test]
