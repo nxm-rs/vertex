@@ -41,15 +41,31 @@ use vertex_net_peer_registry::{ActivePeers, PeerRegistry};
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
 
+/// Resolved bootnode and trusted-peer multiaddrs plus the earliest remaining
+/// DNS TTL across the lookups, which schedules the next re-resolution.
+pub(crate) struct ResolvedBootnodes {
+    pub(crate) bootnodes: Vec<Multiaddr>,
+    pub(crate) trusted: Vec<Multiaddr>,
+    /// `None` when no lookup reported a TTL (nothing resolved, or the
+    /// resolution path carries no TTL information).
+    pub(crate) min_ttl: Option<Duration>,
+}
+
 /// Boxed future that resolves `/dnsaddr/` bootnodes and trusted peers into
-/// dialable multiaddrs (resolved bootnodes, resolved trusted).
+/// dialable multiaddrs.
 ///
 /// The `Send` bound follows the platform executor via
 /// [`vertex_tasks::MaybeSendBoxFuture`]: `Send` on native, unbounded on wasm32
 /// where DNS-over-HTTPS resolution is backed by `fetch`, whose future is
 /// `!Send`, and the swarm is single-threaded.
-pub(crate) type BootnodeResolutionFuture =
-    vertex_tasks::MaybeSendBoxFuture<(Vec<Multiaddr>, Vec<Multiaddr>)>;
+pub(crate) type BootnodeResolutionFuture = vertex_tasks::MaybeSendBoxFuture<ResolvedBootnodes>;
+
+/// In-flight dnsaddr resolution, tagged with how it started: a periodic
+/// refresh dials only newly appearing addresses, a connect dials everything.
+pub(crate) struct PendingBootnodeResolution {
+    pub(crate) future: BootnodeResolutionFuture,
+    pub(crate) refresh: bool,
+}
 use crate::TopologyCommand;
 use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
@@ -244,8 +260,22 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// evaluation tick.
     pub(crate) dial_rate_timer: Option<vertex_tasks::time::BoxTimerFuture>,
 
-    // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
-    pub(crate) pending_bootnode_resolution: Option<BootnodeResolutionFuture>,
+    // Pending dnsaddr resolution for bootnodes and trusted peers
+    pub(crate) pending_bootnode_resolution: Option<PendingBootnodeResolution>,
+
+    /// Shared dnsaddr resolver, built lazily on the first resolution and
+    /// reused so DNS responses cache per record TTL across re-resolutions.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) dnsaddr_resolver: Option<vertex_net_dnsaddr::DnsaddrResolver>,
+
+    /// Armed after a dnsaddr resolution completes; fires the TTL-aware
+    /// re-resolution so a rotated bootnode address is picked up by a healthy
+    /// node instead of waiting for isolation.
+    pub(crate) dnsaddr_refresh_timer: Option<vertex_tasks::time::BoxTimerFuture>,
+
+    /// Multiaddrs produced by the previous dnsaddr resolution; a refresh
+    /// dials only addresses outside this set.
+    pub(crate) resolved_bootnode_addrs: HashSet<Multiaddr>,
 
     /// Isolation probe state: `(next_probe_at, current_delay)` while the
     /// table is drained (nothing connected or pending, no candidate queued),
@@ -987,16 +1017,20 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         }
 
         // Poll pending dnsaddr resolution for bootnodes
-        if let Some(ref mut future) = self.pending_bootnode_resolution
-            && let Poll::Ready((resolved_bootnodes, resolved_trusted)) = future.as_mut().poll(cx)
+        if let Some(pending) = &mut self.pending_bootnode_resolution
+            && let Poll::Ready(resolved) = pending.future.as_mut().poll(cx)
         {
-            info!(
-                bootnodes = resolved_bootnodes.len(),
-                trusted = resolved_trusted.len(),
-                "dnsaddr resolution complete, dialing bootnodes"
-            );
+            let refresh = pending.refresh;
             self.pending_bootnode_resolution = None;
-            self.dial_bootnodes(resolved_bootnodes, resolved_trusted);
+            self.on_bootnode_resolution_complete(resolved, refresh);
+        }
+
+        // A fired refresh timer starts the TTL-scheduled dnsaddr re-resolution.
+        if let Some(timer) = self.dnsaddr_refresh_timer.as_mut()
+            && timer.as_mut().poll(cx).is_ready()
+        {
+            self.dnsaddr_refresh_timer = None;
+            self.refresh_bootnode_resolution();
         }
 
         // Drive the gossip engine's timers (the neighbourhood refresh and due

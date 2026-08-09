@@ -103,6 +103,8 @@ In-flight dials are tracked by `DialTracker` (`vertex-net-dialer`), whose pendin
 
 Bootstrap is not a special mode of the evaluator: bootnodes and trusted peers from configuration are dialed directly at startup (with dnsaddr resolution where needed) as `DialTarget::Unknown`, since their overlay addresses are not yet known and no capacity reservation applies. Everything after that first contact flows through gossip supply and the evaluation loop above.
 
+Dnsaddr resolution runs over one shared resolver, so responses cache per record TTL across calls, and re-runs periodically on an interval derived from the earliest remaining TTL (clamped, with a fixed fallback when no TTL is known). A periodic re-resolution dials only addresses that were absent from the previous resolution, so a healthy node picks up a rotated bootnode address without redialing the stable set; a connect (startup, capability transition, isolation probe) still dials everything resolved.
+
 ## Handle surface: forced re-evaluation and dial state
 
 The `TopologyHandle` exposes two read-mostly introspection points over the mpsc command channel, for the gRPC operator surface, FFI, and tests. Neither changes dial policy.
